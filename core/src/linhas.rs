@@ -14,7 +14,7 @@ use memmap2::Mmap;
 
 use crate::compactado::{self, Formato, Opcoes};
 
-const BOM: &[u8] = b"\xEF\xBB\xBF";
+pub(crate) const BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// Onde começa e termina cada linha de um buffer. Não guarda os bytes.
 #[derive(Debug, Clone, Default)]
