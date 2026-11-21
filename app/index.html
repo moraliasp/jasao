@@ -6,17 +6,113 @@
     <title></title>
     <script type="module" src="/src/main.ts"></script>
     <style>
-      body { font: 13px/1.5 system-ui, sans-serif; margin: 0; padding: 12px; }
-      header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
-      ol { font: 12px/1.6 ui-monospace, monospace; margin: 0; padding-left: 7ch; }
-      li { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+      /* Tokens do mockup (docs/mockup-json.html), que vêm do Leve. */
+      :root {
+        --bar-bg: #f6f8fa; --bar-fg: #1f2328; --bar-muted: #656d76; --border: #d0d7de;
+        --page-bg: #ffffff; --accent: #0969da; --hover: rgba(0,0,0,0.06);
+        --change: #9a6700; --ok: #1a7f37; --del: #cf222e;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      }
+      :root[data-theme="dark"] {
+        --bar-bg: #161b22; --bar-fg: #e6edf3; --bar-muted: #8d96a0; --border: #30363d;
+        --page-bg: #0d1117; --accent: #2f81f7; --hover: rgba(255,255,255,0.08);
+        --change: #d29922; --ok: #3fb950; --del: #f85149;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body { display: flex; flex-direction: column; background: var(--page-bg); color: var(--bar-fg); font-size: 14px; line-height: 1.5; scrollbar-color: var(--border) transparent; }
+      ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+      button, input { font: inherit; color: inherit; }
+      svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+      .top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; height: 44px; padding: 0 10px; background: var(--bar-bg); border-bottom: 1px solid var(--border); }
+      .top .side { display: flex; align-items: center; gap: 8px; }
+      .top .side.end { justify-content: flex-end; }
+      .top .name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .ib { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: none; color: var(--bar-muted); cursor: pointer; }
+      .ib:hover { background: var(--hover); color: var(--bar-fg); }
+      .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); font-size: 13px; cursor: pointer; white-space: nowrap; }
+      .btn:hover { background: var(--hover); }
+      .btn:active { transform: translateY(1px); }
+      .btn:disabled { opacity: .5; cursor: default; }
+
+      main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+      .views { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--border); }
+      .views button { padding: 10px 10px 9px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--bar-muted); font-size: 13px; }
+      .views button[aria-selected="true"] { color: var(--bar-fg); font-weight: 600; border-bottom-color: var(--accent); }
+      .pane { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px 24px 16px; }
+      .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 10px; font-size: 13px; }
+      .tools form { display: flex; align-items: center; gap: 6px; color: var(--bar-muted); }
+      .tools input { width: 110px; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); font-variant-numeric: tabular-nums; }
+      .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; font: 12.5px/1.5 var(--mono); color: var(--bar-muted); }
+      .crumbs li + li::before { content: "›"; margin: 0 6px; }
+      .crumbs li:last-child { color: var(--bar-fg); }
+      .tools .acts { margin-left: auto; }
+      .status { color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+      /* Árvore virtualizada: só as linhas visíveis existem no DOM. */
+      .tree { position: relative; flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.5 var(--mono); }
+      .tree:focus-visible { outline-offset: -2px; border-radius: 6px; }
+      .alto { width: 1px; }
+      .rows { position: sticky; top: 0; overflow: hidden; }
+      .row { display: flex; align-items: center; gap: 8px; height: 26px; padding-right: 8px; white-space: nowrap; cursor: default; }
+      .row:hover { background: var(--hover); }
+      .row[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+      .tree:focus-visible .row[aria-selected="true"] { box-shadow: inset 2px 0 var(--accent); }
+      .row .tg, .row .sp { display: grid; place-items: center; width: 20px; height: 20px; flex: none; color: var(--bar-muted); border-radius: 4px; }
+      .row .tg:hover { background: var(--hover); color: var(--bar-fg); }
+      .row .tg svg { width: 13px; height: 13px; }
+      .row .key { color: var(--bar-muted); }
+      .row .val { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .row .dim { color: var(--bar-muted); }
+      .row .err { color: var(--del); display: inline-flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .row .err svg { width: 13px; height: 13px; }
+      .row .cp { margin-left: auto; width: 22px; height: 22px; opacity: 0; }
+      .row .cp svg { width: 13px; height: 13px; }
+      .row:hover .cp { opacity: 1; }
+      @media (hover: none) { .row .cp { opacity: 1; } }
+      .vazio { margin: 24px; color: var(--bar-muted); }
+      @media (max-width: 700px) { .views, .pane { padding-left: 16px; padding-right: 16px; } }
+      @media (prefers-reduced-motion: no-preference) { .ib, .btn { transition: background-color .15s, color .15s; } }
     </style>
   </head>
   <body>
-    <header>
-      <button id="abrir" type="button">Abrir…</button>
-      <span id="status" role="status" aria-live="polite"></span>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <symbol id="right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+      <symbol id="chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+      <symbol id="copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+      <symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    </svg>
+    <header class="top">
+      <div class="side"><span id="status" class="status" role="status" aria-live="polite"></span></div>
+      <div class="name" id="nome"></div>
+      <div class="side end">
+        <button class="ib" id="tema" type="button" aria-label="Alternar tema claro e escuro"><svg class="i"><use href="#moon"/></svg></button>
+        <button class="btn" id="abrir" type="button">Abrir…</button>
+      </div>
     </header>
-    <ol id="linhas"></ol>
+    <main>
+      <div class="views" role="tablist"><button role="tab" aria-selected="true" type="button">Valores</button></div>
+      <div class="pane">
+        <div class="tools">
+          <form id="ir">
+            <label for="linha">Ir para linha</label>
+            <input id="linha" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" />
+          </form>
+          <ol class="crumbs" id="migalhas" aria-label="Caminho do nó selecionado"></ol>
+          <div class="acts"><button class="btn" id="copiar" type="button" disabled><svg class="i"><use href="#copy"/></svg><span>Copiar caminho</span></button></div>
+        </div>
+        <div class="tree" id="arvore" role="tree" tabindex="0" aria-label="Valores do arquivo">
+          <div class="rows" id="linhas" role="presentation"></div>
+          <div class="alto" id="alto"></div>
+        </div>
+      </div>
+    </main>
   </body>
 </html>
