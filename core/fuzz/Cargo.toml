@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 nucleo = { path = ".." }
+flate2 = "1.1"
+zstd = "0.14"
 
 # Workspace próprio: o fuzz roda no nightly e fica fora do workspace principal.
 [workspace]
@@ -18,6 +20,13 @@ members = ["."]
 [[bin]]
 name = "indice_linhas"
 path = "fuzz_targets/indice_linhas.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compactado"
+path = "fuzz_targets/compactado.rs"
 test = false
 doc = false
 bench = false
