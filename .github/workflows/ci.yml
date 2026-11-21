@@ -78,3 +78,6 @@ jobs:
       - name: Fuzz curto da consulta jq
         working-directory: core/fuzz
         run: cargo +nightly fuzz run consulta --fuzz-dir . -- -max_total_time=60 -max_len=4096
+      - name: Fuzz curto das linhas inválidas
+        working-directory: core/fuzz
+        run: cargo +nightly fuzz run erros --fuzz-dir . -- -max_total_time=60 -max_len=4096

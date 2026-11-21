@@ -2,8 +2,10 @@
 
 pub mod arvore;
 pub mod busca;
+pub mod caminho;
 pub mod compactado;
 pub mod consulta;
+pub mod erros;
 pub mod gerador;
 pub mod linhas;
 pub mod texto;

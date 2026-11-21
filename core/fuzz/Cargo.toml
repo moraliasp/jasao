@@ -44,3 +44,10 @@ path = "fuzz_targets/consulta.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "erros"
+path = "fuzz_targets/erros.rs"
+test = false
+doc = false
+bench = false
