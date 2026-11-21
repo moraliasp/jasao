@@ -6,6 +6,7 @@ pub mod compactado;
 pub mod estrutura;
 pub mod gerador;
 pub mod linhas;
+pub mod texto;
 
 pub use arvore::Arvore;
 pub use busca::{Achado, Busca, ErroBusca, Lote, Resumo};
