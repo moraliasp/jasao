@@ -37,3 +37,10 @@ path = "fuzz_targets/busca.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "consulta"
+path = "fuzz_targets/consulta.rs"
+test = false
+doc = false
+bench = false
