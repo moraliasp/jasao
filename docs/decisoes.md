@@ -68,6 +68,24 @@ Pela `cli` com disco (200 MB, cache do sistema quente): gzip 327 ms, zstd 255 ms
 
 `jasao buscar` no mesmo 1 GB em arquivo (mmap, cache quente): 15 ms literal, 17 ms regex, 39 ms ignorando caixa, contagens iguais às do `grep -o`. A folga é de duas ordens de grandeza com o arquivo na memória; leitura a frio do disco não foi medida e deve dominar.
 
+## Formatos de caminho e linhas inválidas (Fase 1, 21/11/2026)
+
+**Caminho (`nucleo::caminho`):** `Caminho(Vec<Segmento>)`, segmento é `Chave(String)` ou `Indice(usize)`, sem dependência nova. Quatro formatos, conferidos na fonte das RFCs:
+- jq: `.a.b[0]`; chave que não é identificador ASCII, ou é palavra-chave do jq (`if`, `and`…), vai como `["…"]` no escape do JSON.
+- JSONPath (RFC 9535): `.chave` quando cabe em `member-name-shorthand` (inclui não ASCII, como `$.ação`); senão `['…']` com o escape do Normalized Path (§2.7): só `'`, `\` e controles; `\b \f \n \r \t` e o resto `\u00xx` minúsculo.
+- JSON Pointer (RFC 6901): `/a/b/0`, `~` → `~0`, `/` → `~1`; a raiz é `""`.
+- JavaScript: `dado.a`, ponto só para identificador ASCII que não é palavra reservada (`class`, `default`… vão entre colchetes, embora o ES5 aceite o ponto); acento vai entre colchetes por não termos a tabela Unicode `ID_Start`.
+
+Leitura de volta para jq e JSON Pointer, com `proptest` de ida e volta. O Pointer não distingue índice de chave numérica: na leitura, token no formato `array-index` (`0`, `12`, nunca `012`) vira `Indice`; `-` vira `Chave("-")`.
+
+**Linhas inválidas (`nucleo::erros`):** validador próprio sobre bytes, sem montar o valor e sem recursão (pilha explícita), porque `main` não tinha validação por linha e um parser de terceiros não dá motivo legível em pt-BR nem a coluna do jeito que queremos. Gramática da RFC 8259; chave duplicada e `\ud800` solto passam (são sintaxe válida). Um motivo por linha, o primeiro: vírgula sobrando, falta vírgula, falta valor, falta `:`, chave sem aspas, aspas simples, valor inválido, número malformado, texto sem fechamento, escape inválido, controle em texto, conteúdo depois do valor, UTF-8 inválido, linha truncada. UTF-8 inválido ganha se vier antes (ou no mesmo byte) do primeiro erro de sintaxe. Linha só com espaço do JSON conta como em branco, não erro.
+
+A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` virou `busca::em_blocos` (genérico no resultado do bloco), usado pelos dois, com a mesma garantia de cancelamento. Teto `max_guardados` (padrão 10.000) corta o que é guardado em cada bloco e o que é entregue; as contagens (`linhas`, `invalidas`, `em_branco`) são sempre do arquivo inteiro. `deslocamento` é o byte do início da linha; `coluna`, o byte do erro dentro dela.
+
+**CLI:** `jasao erros <arquivo> [--json] [--max N]`, linha e coluna a partir de 1, sai com 1 se houver linha inválida (erro de leitura também sai com 1, como nos outros comandos).
+
+**Medido:** 105 MB gerado (699.775 linhas, 139 inválidas injetadas de 6 tipos, 89 em branco), Apple M5 Pro, 18 núcleos, cache quente: **6–7 ms** de varredura, 0,01 s o processo inteiro; mesmo resultado pelo `.gz`. Contagem igual à do `json.loads` do Python linha a linha.
+
 ## Parser da árvore: sonic-rs (Fase 1, 21/11/2026)
 
 **Escolha:** `sonic-rs` (0.5) analisa o registro ao expandir e valida cada linha que aparece na janela.
@@ -123,6 +141,28 @@ Pela `cli` com disco (200 MB, cache do sistema quente): gzip 327 ms, zstd 255 ms
 **Fora desta fatia:** quebra de linha longa no Texto; JSON único em várias linhas aparece como está no arquivo, uma linha por vez (o índice é de linhas); seleção parcial dentro do formatado.
 
 **Conferência:** pela interface no navegador interno contra uma ponte HTTP com os mesmos comandos do núcleo (JSONL fictício de 502 linhas, uma inválida e uma de 9 KB; JSON único fictício). A janela nativa não foi vista.
+
+## Inferência de estrutura (Fase 2, 21/11/2026)
+
+**Como:** `nucleo::estrutura` lê cada linha com um tokenizador próprio que valida a linha inteira antes de mexer no resumo; linha inválida entra em `invalidas` (com a primeira) e a varredura segue. Os blocos são os mesmos de `busca::fatiar`, resumidos com `rayon` (`map`/`reduce`). `Resumo::combinar` é associativo e comutativo: contagens somam, evidência é a menor linha, ordem dos campos é (linha, posição da chave) da primeira aparição. Por isso o resultado não depende do tamanho do bloco nem da ordem da combinação (proptest de partição + teste com blocos de 1, 100 e 4096 linhas).
+
+**Por caminho:** tipos com contagem e primeira linha (nulo, booleano, inteiro, decimal, texto, objeto, lista) e presença. Presença é relativa ao objeto pai: `.a.b` presente em 3 de 5 objetos `.a`. Em `[]` e `.*` conta valores. Chave repetida no mesmo objeto conta o valor, mas a presença só uma vez. Caminhos: `.a.b`, `.["chave estranha"]`, `.itens[]`, `.m.*`.
+
+**Números:** classificados pelo texto, nunca via `f64`: gramática JSON `-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`; com fração ou expoente é decimal, senão inteiro (de qualquer tamanho).
+
+**Mapa ("mapa de X"):** dois critérios.
+- Limite duro: um objeto com mais de `LIMITE_CHAVES` = 1000 chaves distintas vira `.*` já na varredura (e no `combinar`), o que limita a memória.
+- Forma, decidida em `finalizar` depois da redução: ao menos `MAPA_MIN_CHAVES` = 20 chaves distintas, distintas ≥ 2× o maior número de chaves de um único objeto (as chaves variam entre registros) e todos os filhos com o mesmo conjunto de tipos.
+
+**União discriminada:** candidatos são campos de texto no topo do registro, com até `DISCRIMINADOR_MAX_VALORES` = 32 valores distintos (acima disso o campo é descartado). É discriminador se estiver em todo registro objeto, sempre como texto, tiver de 2 a 32 valores e alguma chave aparecer em todos os registros de uma variante e em nenhum de outra. Cada variante lista chaves obrigatórias e opcionais com contagem.
+
+**Entrada:** é "JSON único" se o primeiro byte útil for `[` ou `{` e o arquivo tiver uma linha só ou a primeira linha não for JSON válido sozinha. Lista no topo: cada elemento é um registro, lido em sequência. Objeto no topo: um registro. Se a leitura como JSON único falhar, também se lê como JSONL e fica a que rendeu mais registros (empate: JSONL).
+
+**Cancelamento e progresso:** `AtomicBool` conferido por bloco; cancelado devolve o resumo parcial com `cancelado = true` e `varridas < total`. Progresso em linhas varridas de total, por callback na thread do chamador, a cada ~1%.
+
+**Limites conhecidos:** profundidade máxima 128 (além disso a linha é inválida); a lista externa do JSON único não conta como nível. UTF-8 não é validado (o texto é tratado como bytes). JSON único é lido sem paralelismo.
+
+**Medido:** `jasao inferir` em JSONL gerado de 157 MB (951 mil linhas, cache quente, Apple M5 Pro): 128–168 ms; `--json` 140 ms; o mesmo arquivo em `.zst`, 128 ms depois de descompactar.
 
 ## Painel de entrada (Fase 1, 21/11/2026)
 
