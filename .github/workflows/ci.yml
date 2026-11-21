@@ -17,9 +17,16 @@ env:
 
 jobs:
   rust:
-    runs-on: macos-latest
+    # Linux: minuto de macOS custa ~10x; o build do app no macOS fica no job `app`.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # O clippy do workspace compila o app Tauri, que no Linux precisa do WebKitGTK.
+      - name: Dependências do Tauri (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
       # rust-toolchain.toml fixa a versão; o rustup do runner instala sozinho.
       - uses: Swatinem/rust-cache@v2
       # O app embute app/dist; o clippy do workspace precisa dele existir.
