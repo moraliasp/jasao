@@ -1,0 +1,15 @@
+[package]
+name = "cli"
+description = "Linha de comando sobre o núcleo."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Nome provisório do binário: troque aqui junto com app/src-tauri/tauri.conf.json (ver README).
+[[bin]]
+name = "drj"
+path = "src/main.rs"
+
+[dependencies]
+nucleo.workspace = true
