@@ -2,6 +2,7 @@
 
 pub mod busca;
 pub mod compactado;
+pub mod estrutura;
 pub mod gerador;
 pub mod linhas;
 
