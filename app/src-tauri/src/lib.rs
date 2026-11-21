@@ -46,7 +46,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Estado::default())
         .setup(|app| {
-            // Título vem do productName (tauri.conf.json), o único lugar do nome provisório.
+            // Título vem do productName (tauri.conf.json), onde mora o nome do produto.
             let nome = app.package_info().name.clone();
             if let Some(janela) = app.get_webview_window("main") {
                 janela.set_title(&nome)?;

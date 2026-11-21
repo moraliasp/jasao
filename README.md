@@ -1,4 +1,4 @@
-# Dr. J (nome provisório)
+# Jasão
 
 Visualizador de JSON/JSONL somente leitura. Plano em [docs/plano.md](docs/plano.md); decisões em [docs/decisoes.md](docs/decisoes.md).
 
@@ -37,11 +37,11 @@ cd core/fuzz && cargo +nightly fuzz run indice_linhas --fuzz-dir . -- -max_total
 cargo bench -p nucleo --bench indice              # NUCLEO_BENCH_MB=1024 para 1 GB
 ```
 
-## Trocar o nome
+## Nome
 
-O nome provisório mora em dois arquivos, e só neles:
+"Jasão" na tela; `jasao`, sem acento, em identificadores. Mora em dois arquivos, e só neles:
 
 - `app/src-tauri/tauri.conf.json`: `productName` (nome do app e título da janela) e `identifier` (bundle);
-- `cli/Cargo.toml`: `[[bin]] name` (nome do binário de linha de comando).
+- `cli/Cargo.toml`: `[[bin]] name` (binário de linha de comando).
 
 Pacotes e pastas têm nomes neutros e não mudam.

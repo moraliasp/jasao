@@ -1,4 +1,4 @@
-# Plano do app (nome provisório: Dr. J)
+# Plano do app: Jasão
 
 Visualizador de JSON/JSONL de ponta, somente leitura, no molde do Leve (Tauri 2, Rust, Vite + TypeScript sem framework, pt-BR e inglês). Decisão do Eduardo em 21/11/2026: o visualizador é produto de primeira linha, não um acessório da Estrutura. Estrutura, Diff e Exportar continuam sendo o que ninguém mais entrega.
 
@@ -104,7 +104,7 @@ Edição, decriptar age/gpg, colaboração, nuvem.
 
 ## 6. Decisões em aberto
 
-1. **Nome.** A análise de concorrência recomenda trocar "Dr. J". Candidatos: Jsonda, Laudo, Esquadro (nenhum conferido em INPI/USPTO).
+1. **Nome.** Decidido em 21/11/2026: **Jasão** (substitui o provisório "Dr. J"; ver `docs/decisoes.md`). Falta conferir INPI/USPTO.
 2. **Pasta do repositório.** Sugestão: `~/Code/moralia/<nome>`.
 3. **JSON Schema: um gerador ou dois.** Gerar no Rust a partir do modelo interno (rápido, valida arquivo grande) e conferir no CI contra `z.toJSONSchema()`; ou gerar só o Zod e derivar o Schema na interface (menos código, validação mais lenta). Recomendo o primeiro.
 4. **Origem das "versões" no Diff.** Dois arquivos escolhidos, mais a linha do tempo de pasta na Fase 3. Histórico git fica fora.
