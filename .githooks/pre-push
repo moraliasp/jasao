@@ -1,0 +1,4 @@
+#!/bin/sh
+# Roda os gates antes de todo push. Ativar uma vez por clone: git config core.hooksPath .githooks
+# Pular num caso pontual: git push --no-verify
+exec "$(git rev-parse --show-toplevel)/scripts/gates.sh"
