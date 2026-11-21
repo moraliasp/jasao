@@ -83,9 +83,11 @@ name = "app"
 version = "0.0.1"
 dependencies = [
  "nucleo",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
 ]
 
 [[package]]

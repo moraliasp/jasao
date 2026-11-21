@@ -2,6 +2,7 @@
 // pede a janela que cabe na tela e se desenham essas linhas (o resto não existe no DOM).
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { type Motivo, t } from "./i18n";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -11,7 +12,9 @@ interface Linha {
   pos: number;
   tipo: Tipo;
   previa: string;
+  erro: { byte: number; motivo: Motivo } | null;
   filhos: number;
+  irmaos: number;
   expansivel: boolean;
   aberto: boolean;
   caminho: string;
@@ -31,7 +34,7 @@ const linhasEl = $("linhas");
 const status = $("status");
 const migalhas = $("migalhas");
 const copiar = $<HTMLButtonElement>("copiar");
-const fmt = (n: number) => n.toLocaleString("pt-BR");
+const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
 
@@ -65,7 +68,7 @@ async function pedir(primeira: number, cabem: number): Promise<void> {
     const linhas = await invoke<Linha[]>("linhas", { inicio, quantidade: BLOCO });
     if (v === versao) cache = { inicio, linhas };
   } catch (erro) {
-    status.textContent = `Erro: ${erro}`;
+    status.textContent = `${t.erro}: ${erro}`;
   } finally {
     if (pedido === inicio) pedido = null;
   }
@@ -78,12 +81,15 @@ function cobre(primeira: number, cabem: number): boolean {
   return primeira >= cache.inicio && fim <= cache.inicio + cache.linhas.length;
 }
 
-const plural = (n: number, um: string, varios: string) => `${fmt(n)} ${n === 1 ? um : varios}`;
+const plural = (n: number, [um, varios]: string[]) => `${fmt(n)} ${n === 1 ? um : varios}`;
 
 function valor(l: Linha): string {
-  if (l.tipo === "erro") return `<span class="err">${icone("alert")}<span>${esc(l.previa)}</span></span>`;
+  if (l.erro) {
+    const msg = `${t.byte(fmt(l.erro.byte))}: ${t.motivos[l.erro.motivo] ?? t.motivos.outro}`;
+    return `<span class="err">${icone("alert")}<span>${esc(msg)}</span></span><span class="val dim">${esc(l.previa)}</span>`;
+  }
   if (l.tipo === "objeto" || l.tipo === "lista") {
-    const n = l.tipo === "objeto" ? plural(l.filhos, "campo", "campos") : plural(l.filhos, "item", "itens");
+    const n = plural(l.filhos, l.tipo === "objeto" ? t.campos : t.itens);
     const cru = l.prof === 0 && !l.aberto ? ` ${esc(l.previa)}` : "";
     return `<span class="val dim">${n}${cru}</span>`;
   }
@@ -91,7 +97,7 @@ function valor(l: Linha): string {
 }
 
 function chave(l: Linha): string {
-  if (l.prof === 0) return `Linha ${fmt(l.registro + 1)}`;
+  if (l.prof === 0) return t.linha(fmt(l.registro + 1));
   return l.chave === null ? String(l.pos) : l.chave === "" ? '""' : l.chave;
 }
 
@@ -102,9 +108,9 @@ function linhaHtml(v: number, l: Linha | undefined): string {
     : '<span class="sp"></span>';
   return `<div class="row" id="l${v}" data-v="${v}" role="treeitem" aria-level="${l.prof + 1}"
     aria-selected="${v === sel}"${l.expansivel ? ` aria-expanded="${l.aberto}"` : ""}
-    ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}"`}
+    ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}" aria-setsize="${l.irmaos}"`}
     style="padding-left:${8 + l.prof * 20}px">${exp}<span class="key">${esc(chave(l))}</span>${valor(l)}
-    <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="Copiar caminho ${esc(l.caminho)}">${icone("copy")}</button></div>`;
+    <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(l.caminho)}">${icone("copy")}</button></div>`;
 }
 
 let quadro = 0;
@@ -124,7 +130,7 @@ function desenhar(): void {
   else arvore.removeAttribute("aria-activedescendant");
   copiar.disabled = !atual;
   migalhas.innerHTML = atual
-    ? [`Linha ${fmt(atual.registro + 1)}`, ...atual.migalhas].map((m) => `<li>${esc(m)}</li>`).join("")
+    ? [t.linha(fmt(atual.registro + 1)), ...atual.migalhas].map((m) => `<li>${esc(m)}</li>`).join("")
     : "";
 }
 const agendar = () => (quadro ||= requestAnimationFrame(desenhar));
@@ -187,19 +193,19 @@ async function aoTeclado(e: KeyboardEvent): Promise<void> {
   try {
     await acao();
   } catch (erro) {
-    status.textContent = `Erro: ${erro}`;
+    status.textContent = `${t.erro}: ${erro}`;
   }
 }
 
 async function copiarCaminho(l: Linha, botao: HTMLElement): Promise<void> {
   await navigator.clipboard.writeText(l.caminho);
   const antes = botao.innerHTML;
-  botao.innerHTML = botao === copiar ? `${icone("check")}<span>Copiado</span>` : icone("check");
+  botao.innerHTML = botao === copiar ? `${icone("check")}<span>${t.copiado}</span>` : icone("check");
   setTimeout(() => (botao.innerHTML = antes), 1500);
 }
 
 async function mostrar(caminho: string): Promise<void> {
-  status.textContent = "Abrindo…";
+  status.textContent = t.abrindo;
   $("nome").textContent = caminho.split(/[\\/]/).pop() ?? caminho;
   try {
     const inicio = performance.now();
@@ -207,11 +213,11 @@ async function mostrar(caminho: string): Promise<void> {
     sel = 0;
     arvore.scrollTop = 0;
     await recarregar();
-    status.textContent = `${plural(registros, "registro", "registros")} · aberto em ${fmt(Math.round(performance.now() - inicio))} ms`;
-    if (!registros) linhasEl.innerHTML = '<p class="vazio">Arquivo vazio.</p>';
+    status.textContent = t.aberto(plural(registros, t.registros), fmt(Math.round(performance.now() - inicio)));
+    if (!registros) linhasEl.innerHTML = `<p class="vazio">${t.vazio}</p>`;
     arvore.focus();
   } catch (erro) {
-    status.textContent = `Erro: ${erro}`;
+    status.textContent = `${t.erro}: ${erro}`;
   }
 }
 
@@ -244,12 +250,22 @@ $("ir").addEventListener("submit", async (e) => {
   const n = Number(($("linha") as HTMLInputElement).value);
   const v = Number.isInteger(n) && n >= 1 ? await invoke<number | null>("ir_para", { registro: n - 1 }) : null;
   if (v === null) {
-    status.textContent = `Linha ${n} fora do arquivo (1 a ${fmt(registros)}).`;
+    status.textContent = t.foraDoArquivo(String(n), fmt(registros));
     return;
   }
   mover(v);
   arvore.focus();
 });
+// Textos fixos do HTML no idioma do sistema.
+document.documentElement.lang = t.lang;
+$("abrir").textContent = t.abrir;
+$("aba").textContent = t.valores;
+$("rotulo-linha").textContent = t.irParaLinha;
+copiar.querySelector("span")!.textContent = t.copiarCaminho;
+migalhas.setAttribute("aria-label", t.caminhoSelecionado);
+$("tema").setAttribute("aria-label", t.tema);
+arvore.setAttribute("aria-label", t.valoresDoArquivo);
+
 $("tema").addEventListener("click", () => {
   const raiz = document.documentElement;
   raiz.dataset.theme = raiz.dataset.theme === "dark" ? "light" : "dark";
