@@ -69,3 +69,6 @@ jobs:
       - name: Fuzz curto do índice de linhas
         working-directory: core/fuzz
         run: cargo +nightly fuzz run indice_linhas --fuzz-dir . -- -max_total_time=60
+      - name: Fuzz curto da descompactação
+        working-directory: core/fuzz
+        run: cargo +nightly fuzz run compactado --fuzz-dir . -- -max_total_time=60
