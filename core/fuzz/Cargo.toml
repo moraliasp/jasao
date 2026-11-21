@@ -30,3 +30,10 @@ path = "fuzz_targets/compactado.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "busca"
+path = "fuzz_targets/busca.rs"
+test = false
+doc = false
+bench = false
