@@ -7,6 +7,7 @@
 //!                                         roda o filtro jq em cada linha (ou no documento inteiro);
 //!                                         resultados em JSONL no stdout, erros por linha no stderr
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
+//!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -22,7 +23,8 @@ use nucleo::{ArquivoLinhas, Busca, Opcoes};
 const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]\n  \
-                   erros <arquivo> [--json] [--max N]";
+                   erros <arquivo> [--json] [--max N]\n  \
+                   inferir <arquivo> [--json]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -59,6 +61,8 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         },
+        ["inferir", arquivo] => inferir(arquivo, false),
+        ["inferir", arquivo, "--json"] | ["inferir", "--json", arquivo] => inferir(arquivo, true),
         _ => {
             eprintln!("{USO}");
             return ExitCode::from(2);
@@ -288,6 +292,153 @@ fn consultar(op: OpcoesConsulta) -> Resultado {
     if resumo.tempo_esgotado {
         return Err("tempo máximo esgotado; resultado parcial".into());
     }
+    Ok(())
+}
+
+fn inferir(arquivo: &str, json: bool) -> Resultado {
+    use nucleo::estrutura::{self, Entrada, Relacao, Tipo};
+    let a = abrir(arquivo)?;
+    let t = Instant::now();
+    let inf = estrutura::inferir(a.bytes(), &AtomicBool::new(false), |_| {});
+    let dt = t.elapsed();
+    let r = &inf.resumo;
+    let caminhos = r.caminhos();
+    let discriminadores = r.discriminadores();
+    let linha = |c: nucleo::estrutura::Contagem| c.primeira().map(|l| l + 1);
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    if json {
+        let num = |x: Option<u64>| x.map_or("null".into(), |v| v.to_string());
+        let lista = |v: Vec<String>| v.join(",");
+        let entrada = match inf.entrada {
+            Entrada::Jsonl => "jsonl",
+            Entrada::JsonUnico => "json",
+        };
+        write!(
+            out,
+            r#"{{"entrada":"{entrada}","registros":{},"linhas":{{"varridas":{},"total":{}}},"cancelado":{},"vazias":{},"invalidas":{{"n":{},"primeira_linha":{}}},"caminhos":["#,
+            r.registros(),
+            inf.varridas,
+            inf.total,
+            inf.cancelado,
+            r.vazias,
+            r.invalidas.n,
+            num(linha(r.invalidas)),
+        )?;
+        let itens = caminhos.iter().map(|c| {
+            let relacao = match c.relacao {
+                Relacao::Registro => "registro",
+                Relacao::Campo => "campo",
+                Relacao::Elemento => "elemento",
+                Relacao::Entrada => "entrada",
+            };
+            let tipos = Tipo::TODOS
+                .iter()
+                .filter(|&&t| c.tipos[t as usize].n > 0)
+                .map(|&t| {
+                    let x = c.tipos[t as usize];
+                    format!(
+                        r#""{}":{{"n":{},"primeira_linha":{}}}"#,
+                        t.nome(),
+                        x.n,
+                        num(linha(x))
+                    )
+                });
+            format!(
+                r#"{{"caminho":{},"relacao":"{relacao}","presenca":{},"de":{},"tipos":{{{}}}}}"#,
+                texto_json(&c.caminho),
+                c.presenca,
+                c.de,
+                lista(tipos.collect())
+            )
+        });
+        write!(out, r#"{}],"discriminadores":["#, lista(itens.collect()))?;
+        let ds = discriminadores.iter().map(|d| {
+            let vs = d.variantes.iter().map(|v| {
+                format!(
+                    r#"{{"valor":{},"registros":{},"primeira_linha":{},"obrigatorias":[{}],"opcionais":[{}]}}"#,
+                    texto_json(&v.valor),
+                    v.registros.n,
+                    num(linha(v.registros)),
+                    lista(v.obrigatorias.iter().map(|k| texto_json(k)).collect()),
+                    lista(
+                        v.opcionais
+                            .iter()
+                            .map(|(k, n)| format!(r#"{{"chave":{},"presenca":{n}}}"#, texto_json(k)))
+                            .collect()
+                    ),
+                )
+            });
+            format!(
+                r#"{{"campo":{},"variantes":[{}]}}"#,
+                texto_json(&d.campo),
+                lista(vs.collect())
+            )
+        });
+        writeln!(out, "{}]}}", lista(ds.collect()))?;
+    } else {
+        for c in &caminhos {
+            let tipos: Vec<String> = Tipo::TODOS
+                .iter()
+                .filter(|&&t| c.tipos[t as usize].n > 0)
+                .map(|&t| {
+                    let x = c.tipos[t as usize];
+                    format!("{} {} (l.{})", t.nome(), x.n, x.primeira().unwrap_or(0) + 1)
+                })
+                .collect();
+            let pct = c.presenca as f64 * 100.0 / c.de.max(1) as f64;
+            let presenca = match c.relacao {
+                Relacao::Registro => String::new(),
+                Relacao::Campo => format!("  · em {} de {} ({pct:.1}%)", c.presenca, c.de),
+                Relacao::Elemento => format!("  · {} elementos em {} listas", c.presenca, c.de),
+                Relacao::Entrada => {
+                    format!("  · mapa: {} entradas em {} objetos", c.presenca, c.de)
+                }
+            };
+            writeln!(
+                out,
+                "{:indent$}{}  {}{presenca}",
+                "",
+                c.caminho,
+                tipos.join(", "),
+                indent = 2 * c.profundidade
+            )?;
+        }
+        for d in &discriminadores {
+            writeln!(out, "\nunião discriminada por {}:", d.campo)?;
+            for v in &d.variantes {
+                let opc: Vec<String> = v
+                    .opcionais
+                    .iter()
+                    .map(|(k, n)| format!("{k}?({n})"))
+                    .collect();
+                writeln!(
+                    out,
+                    "  \"{}\"  {} registros (l.{}): {}{}{}",
+                    v.valor,
+                    v.registros.n,
+                    v.registros.primeira().unwrap_or(0) + 1,
+                    v.obrigatorias.join(", "),
+                    if opc.is_empty() { "" } else { "; opcionais: " },
+                    opc.join(", ")
+                )?;
+            }
+        }
+    }
+    out.flush()?;
+    let entrada = match inf.entrada {
+        Entrada::Jsonl => "JSONL",
+        Entrada::JsonUnico => "JSON único",
+    };
+    let primeira = linha(r.invalidas).map_or(String::new(), |l| format!(" (1ª na linha {l})"));
+    eprintln!(
+        "{entrada} · {} registros · {} inválidas{primeira} · {} vazias · {} de {} linhas · {:.1} MB em {dt:.2?}",
+        r.registros(),
+        r.invalidas.n,
+        r.vazias,
+        inf.varridas,
+        inf.total,
+        a.bytes().len() as f64 / 1e6,
+    );
     Ok(())
 }
 

@@ -6,6 +6,7 @@ pub mod caminho;
 pub mod compactado;
 pub mod consulta;
 pub mod erros;
+pub mod estrutura;
 pub mod gerador;
 pub mod linhas;
 pub mod texto;
