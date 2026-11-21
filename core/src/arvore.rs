@@ -31,8 +31,38 @@ pub enum Tipo {
     Numero,
     Booleano,
     Nulo,
-    /// Registro que não é JSON válido; `previa` traz posição e motivo.
+    /// Registro que não é JSON válido; `erro` traz posição e motivo, `previa` o texto cru.
     Erro,
+}
+
+/// Por que um registro não abre. A interface traduz o código; o texto do parser não chega lá.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Motivo {
+    Utf8,
+    /// Aninhamento acima de `MAX_PROFUNDIDADE`.
+    Profundidade,
+    FimInesperado,
+    EsperavaDoisPontos,
+    EsperavaVirgulaOuFimDaLista,
+    EsperavaVirgulaOuFimDoObjeto,
+    EsperavaChaveOuFimDoObjeto,
+    Literal,
+    Valor,
+    Escape,
+    Numero,
+    Unicode,
+    Controle,
+    VirgulaSobrando,
+    TextoDepoisDoValor,
+    Outro,
+}
+
+/// Erro de um registro: byte (base 0, na linha) e motivo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ErroLinha {
+    pub byte: usize,
+    pub motivo: Motivo,
 }
 
 /// Uma linha pronta para desenhar.
@@ -47,10 +77,14 @@ pub struct Linha {
     /// Posição do item na lista ou do campo no objeto.
     pub pos: usize,
     pub tipo: Tipo,
-    /// Texto cru do valor, cortado em `MAX_PREVIA` bytes (com "…"); no erro, posição e motivo.
+    /// Texto cru do valor, cortado em `MAX_PREVIA` bytes (com "…").
     pub previa: String,
+    /// Só em `Tipo::Erro`.
+    pub erro: Option<ErroLinha>,
     /// Quantos campos ou itens tem (objeto e lista).
     pub filhos: usize,
+    /// Quantos campos ou itens tem o pai (0 no registro).
+    pub irmaos: usize,
     pub expansivel: bool,
     pub aberto: bool,
     /// Caminho no estilo jq, relativo ao registro: `.pedidos[0]["nome completo"]`.
@@ -191,14 +225,19 @@ impl Arvore {
             pos: 0,
             tipo: Tipo::Erro,
             previa: String::new(),
+            erro: None,
             filhos: 0,
+            irmaos: 0,
             expansivel: false,
             aberto: false,
             caminho: ".".into(),
             migalhas: Vec::new(),
         };
         match validar(bytes) {
-            Err(e) => linha.previa = e,
+            Err(e) => {
+                linha.erro = Some(e);
+                linha.previa = previa(String::from_utf8_lossy(bytes).trim_matches(ESPACO));
+            }
             Ok(texto) => {
                 let raw = texto.trim_matches(ESPACO);
                 linha.tipo = tipo_de(raw);
@@ -317,29 +356,67 @@ fn previa(raw: &str) -> String {
     format!("{}…", &raw[..fim])
 }
 
-/// Confere UTF-8, profundidade e sintaxe; o erro diz posição (byte, base 0) e motivo.
-fn validar(bytes: &[u8]) -> Result<&str, String> {
-    let texto = std::str::from_utf8(bytes)
-        .map_err(|e| format!("byte {}: UTF-8 inválido", e.valid_up_to()))?;
+/// Confere UTF-8, profundidade e sintaxe.
+fn validar(bytes: &[u8]) -> Result<&str, ErroLinha> {
+    let erro = |byte, motivo| ErroLinha { byte, motivo };
+    let texto = std::str::from_utf8(bytes).map_err(|e| erro(e.valid_up_to(), Motivo::Utf8))?;
     if let Some(pos) = passa_da_profundidade(bytes) {
-        return Err(format!(
-            "byte {pos}: aninhamento passa do limite de {MAX_PROFUNDIDADE} níveis; o registro não é aberto em árvore"
-        ));
+        return Err(erro(pos, Motivo::Profundidade));
     }
     // IgnoredAny no sonic-rs valida o valor inteiro e o que vem depois dele.
-    sonic_rs::from_str::<serde::de::IgnoredAny>(texto)
-        .map_err(|e| format!("byte {}: {}", e.offset(), motivo(&e)))?;
+    // shortcut: não confere os dígitos de `\uXXXX` (ex.: `"\uZZZZ"` passa); validar com
+    // `sonic_rs::Value` se isso aparecer em arquivo real.
+    sonic_rs::from_str::<serde::de::IgnoredAny>(texto).map_err(|e| do_sonic(&e))?;
     Ok(texto)
 }
 
-/// Mensagem do sonic-rs sem a posição repetida e sem o trecho da linha.
-fn motivo(e: &sonic_rs::Error) -> String {
+/// O sonic-rs não expõe o código do erro, só a mensagem; o mapa é pelo começo dela
+/// (versão fixada no Cargo.lock; o teste `motivos_do_sonic` acusa se mudar).
+fn do_sonic(e: &sonic_rs::Error) -> ErroLinha {
+    const MAPA: &[(&str, Motivo)] = &[
+        ("EOF while parsing", Motivo::FimInesperado),
+        (
+            "Expected this character to be a ':'",
+            Motivo::EsperavaDoisPontos,
+        ),
+        (
+            "Expected this character to be either a ',' or a ']'",
+            Motivo::EsperavaVirgulaOuFimDaLista,
+        ),
+        (
+            "Expected this character to be either a ',' or a '}'",
+            Motivo::EsperavaVirgulaOuFimDoObjeto,
+        ),
+        (
+            "Expected this character to be '\"' or '}'",
+            Motivo::EsperavaChaveOuFimDoObjeto,
+        ),
+        ("Invalid literal", Motivo::Literal),
+        ("Invalid JSON value", Motivo::Valor),
+        ("Invalid escape", Motivo::Escape),
+        ("Invalid number", Motivo::Numero),
+        ("Invalid unicode", Motivo::Unicode),
+        ("Invalid surrogate", Motivo::Unicode),
+        ("Invalid UTF-8", Motivo::Utf8),
+        ("Control character", Motivo::Controle),
+        (
+            "JSON has a comma after the last value",
+            Motivo::VirgulaSobrando,
+        ),
+        (
+            "JSON has non-whitespace trailing characters",
+            Motivo::TextoDepoisDoValor,
+        ),
+    ];
     let texto = e.to_string();
-    let corte = texto
-        .find(" at line ")
-        .or_else(|| texto.find('\n'))
-        .unwrap_or(texto.len());
-    texto[..corte].to_owned()
+    let motivo = MAPA
+        .iter()
+        .find(|(m, _)| texto.starts_with(m))
+        .map_or(Motivo::Outro, |&(_, m)| m);
+    ErroLinha {
+        byte: e.offset(),
+        motivo,
+    }
 }
 
 /// Primeiro byte em que o aninhamento passa de `MAX_PROFUNDIDADE`, ignorando o que está em texto.
@@ -371,7 +448,7 @@ fn passa_da_profundidade(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Analisa um registro inteiro em nós; filhos de cada nó ficam contíguos em `nos`.
-fn construir(bytes: &[u8]) -> Result<Vec<No>, String> {
+fn construir(bytes: &[u8]) -> Result<Vec<No>, ErroLinha> {
     let texto = validar(bytes)?;
     let raw = texto.trim_matches(ESPACO);
     let ini = raw.as_ptr() as usize - texto.as_ptr() as usize;
@@ -385,7 +462,7 @@ fn construir(bytes: &[u8]) -> Result<Vec<No>, String> {
         filhos: 0..0,
         aberto: true,
     }];
-    preencher(texto, &mut nos, 0).map_err(|e| format!("byte {}: {}", e.offset(), motivo(&e)))?;
+    preencher(texto, &mut nos, 0).map_err(|e| do_sonic(&e))?;
     Ok(nos)
 }
 
@@ -478,7 +555,9 @@ fn linha_no(registro: usize, bytes: &[u8], nos: &[No], id: usize) -> Linha {
         pos: no.pos,
         tipo: no.tipo,
         previa: previa(texto.get(no.faixa.clone()).unwrap_or_default()),
+        erro: None,
         filhos,
+        irmaos: nos.get(no.pai).map_or(0, |p| p.filhos.len()),
         expansivel: filhos > 0,
         aberto: filhos > 0 && no.aberto,
         caminho,
@@ -595,11 +674,18 @@ mod testes {
                 Tipo::Lista
             ]
         );
-        assert!(
-            linhas[1].previa.starts_with("byte "),
-            "{}",
-            linhas[1].previa
+        let erros: Vec<_> = linhas[1..5].iter().map(|l| l.erro.unwrap()).collect();
+        let e = |byte, motivo| ErroLinha { byte, motivo };
+        assert_eq!(
+            erros,
+            [
+                e(8, Motivo::Literal),
+                e(3, Motivo::Valor),
+                e(8, Motivo::TextoDepoisDoValor),
+                e(2, Motivo::Escape),
+            ]
         );
+        assert_eq!(linhas[1].previa, "{\"a\":tru}", "erro mostra o texto cru");
         assert!(!a.alternar(1), "linha inválida não expande");
         assert!(a.alternar(5));
         assert_eq!(a.total(), 7);
@@ -612,8 +698,15 @@ mod testes {
         let a = Arvore::abrir(f.path()).unwrap();
         let l = &a.janela(0, 1)[0];
         assert_eq!(
-            (l.tipo, l.previa.as_str()),
-            (Tipo::Erro, "byte 2: UTF-8 inválido")
+            (l.tipo, l.erro, l.previa.as_str()),
+            (
+                Tipo::Erro,
+                Some(ErroLinha {
+                    byte: 2,
+                    motivo: Motivo::Utf8
+                }),
+                "\"a\u{fffd}\""
+            )
         );
     }
 
@@ -662,8 +755,11 @@ mod testes {
         assert_eq!(linhas[0].tipo, Tipo::Lista);
         assert_eq!(linhas[1].tipo, Tipo::Erro);
         assert_eq!(
-            linhas[1].previa,
-            "byte 1000: aninhamento passa do limite de 1000 níveis; o registro não é aberto em árvore"
+            linhas[1].erro,
+            Some(ErroLinha {
+                byte: 1000,
+                motivo: Motivo::Profundidade
+            })
         );
         // Abre até o fundo, um nível por vez.
         for v in 0..MAX_PROFUNDIDADE - 1 {
@@ -693,5 +789,33 @@ mod testes {
                 (Tipo::Objeto, true, "{\"a\" : 1}"),
             ]
         );
+    }
+
+    #[test]
+    fn motivos_do_sonic() {
+        let casos = [
+            ("{\"a\":1", Motivo::FimInesperado),
+            ("{\"a\" 1}", Motivo::EsperavaDoisPontos),
+            ("[1 2]", Motivo::EsperavaVirgulaOuFimDaLista),
+            ("{\"a\":1 \"b\":2}", Motivo::EsperavaVirgulaOuFimDoObjeto),
+            ("{1:2}", Motivo::EsperavaChaveOuFimDoObjeto),
+            ("[nul]", Motivo::Literal),
+            ("[-]", Motivo::Numero),
+            ("\"a\tb\"", Motivo::Controle),
+            ("{\"a\":1,}", Motivo::EsperavaChaveOuFimDoObjeto),
+        ];
+        for (json, esperado) in casos {
+            let e = validar(json.as_bytes()).expect_err(json);
+            assert_eq!(e.motivo, esperado, "{json}");
+        }
+    }
+
+    #[test]
+    fn irmaos_contam_os_filhos_do_pai() {
+        let mut a = arvore("{\"a\":[1,2,3],\"b\":0}");
+        a.alternar(0);
+        a.alternar(1);
+        let l: Vec<_> = a.janela(0, 10).iter().map(|l| (l.pos, l.irmaos)).collect();
+        assert_eq!(l, [(0, 0), (0, 2), (0, 3), (1, 3), (2, 3), (1, 2)]);
     }
 }
