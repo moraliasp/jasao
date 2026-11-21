@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["core", "cli"]
+exclude = ["core/fuzz"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+authors = ["Moralia"]
+
+[workspace.dependencies]
+nucleo = { path = "core" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
+# O benchmark mede o código como sai em release.
+[profile.bench]
+debug = false

@@ -1,0 +1,23 @@
+[package]
+name = "nucleo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nucleo = { path = ".." }
+
+# Workspace próprio: o fuzz roda no nightly e fica fora do workspace principal.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "indice_linhas"
+path = "fuzz_targets/indice_linhas.rs"
+test = false
+doc = false
+bench = false
