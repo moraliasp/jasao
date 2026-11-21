@@ -11,6 +11,7 @@ flate2 = "1.1.11"
 fs4 = "1.1.0"
 memchr = "2.8"
 memmap2 = "0.9"
+rayon = "1"
 regex = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 sonic-rs = "0.5.12"
@@ -33,6 +34,10 @@ harness = false
 
 [[bench]]
 name = "busca"
+harness = false
+
+[[bench]]
+name = "estrutura"
 harness = false
 
 [[bench]]

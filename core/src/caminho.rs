@@ -551,7 +551,11 @@ mod testes {
             cam.0
                 .iter()
                 .map(|s| match s {
-                    Chave(x) if (x == "0" || !x.starts_with('0')) && x.parse::<usize>().is_ok() => {
+                    Chave(x)
+                        if (x == "0" || !x.starts_with('0'))
+                            && x.bytes().all(|b| b.is_ascii_digit())
+                            && x.parse::<usize>().is_ok() =>
+                    {
                         Indice(x.parse().unwrap())
                     }
                     s => s.clone(),
