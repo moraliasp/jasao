@@ -1,7 +1,9 @@
 //! Núcleo do visualizador: leitura e índices de JSON/JSONL, sem dependência de interface.
 
 pub mod busca;
+pub mod caminho;
 pub mod compactado;
+pub mod erros;
 pub mod gerador;
 pub mod linhas;
 
