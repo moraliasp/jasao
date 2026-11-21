@@ -69,6 +69,57 @@ fn ir_para(registro: usize, estado: State<'_, Estado>) -> Result<Option<usize>, 
     estado.com(|a| a.linha_do_registro(registro))
 }
 
+/// Linhas cruas para a visão Texto, como bytes (ver `nucleo::texto::janela` e docs/decisoes.md).
+#[tauri::command]
+fn texto(
+    inicio: usize,
+    quantidade: usize,
+    estado: State<'_, Estado>,
+) -> Result<tauri::ipc::Response, String> {
+    estado.com(|a| {
+        let bytes = nucleo::texto::janela(
+            a.arquivo(),
+            inicio,
+            quantidade.min(MAX_JANELA),
+            nucleo::texto::MAX_COLUNAS,
+        );
+        tauri::ipc::Response::new(bytes)
+    })
+}
+
+/// Clique no Texto: abre o caminho até o valor no `byte` do registro e devolve a linha visível
+/// dele e o novo total, como `[v, total]`.
+#[tauri::command]
+fn revelar(
+    registro: usize,
+    byte: usize,
+    estado: State<'_, Estado>,
+) -> Result<Option<[usize; 2]>, String> {
+    estado.com(|a| a.revelar(registro, byte).map(|v| [v, a.total()]))
+}
+
+/// Teto do registro formatado: acima disso a resposta travaria a interface.
+const MAX_FORMATADO: usize = 16 << 20;
+
+/// O registro com um campo por linha, para o painel "Ver formatado".
+#[tauri::command]
+fn formatado(registro: usize, estado: State<'_, Estado>) -> Result<String, String> {
+    estado.com(|a| {
+        let tamanho = a
+            .arquivo()
+            .janela(registro, 1)
+            .first()
+            .map_or(0, |l| l.len());
+        if tamanho > MAX_FORMATADO {
+            return Err(format!(
+                "registro de {tamanho} bytes passa do teto de {MAX_FORMATADO}"
+            ));
+        }
+        a.formatado(registro)
+            .map_err(|e| format!("registro inválido no byte {}", e.byte))
+    })?
+}
+
 /// Estado e comandos; separado de `run` para o teste de IPC usar o mesmo registro.
 fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
     b.manage(Estado::default())
@@ -78,7 +129,10 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             linhas,
             alternar,
             pai,
-            ir_para
+            ir_para,
+            texto,
+            revelar,
+            formatado
         ])
 }
 
@@ -102,7 +156,7 @@ pub fn run() {
 mod testes {
     use super::*;
     use serde_json::{Value, json};
-    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
     use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
     use tauri::webview::{InvokeRequest, WebviewWindowBuilder};
 
@@ -140,5 +194,40 @@ mod testes {
         assert_eq!(chamar("pai", json!({"v": 1})), Ok(json!(0)));
         assert_eq!(chamar("ir_para", json!({"registro": 1})), Ok(json!(2)));
         assert_eq!(chamar("ir_para", json!({"registro": 9})), Ok(Value::Null));
+
+        // Texto volta cru (ArrayBuffer na interface), não JSON.
+        let pedido = |cmd: &str, args: Value| InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        };
+        let texto = get_ipc_response(
+            &janela,
+            pedido("texto", json!({"inicio": 0, "quantidade": 9})),
+        );
+        match texto {
+            Ok(InvokeResponseBody::Raw(b)) => {
+                assert_eq!(b, b"11 9\n{\"a\":[1,2]}\n{\"b\":tru}")
+            }
+            outro => panic!("esperava bytes, veio {outro:?}"),
+        }
+        assert_eq!(chamar("alternar", json!({"v": 0})), Ok(json!(2)));
+        assert_eq!(
+            chamar("revelar", json!({"registro": 0, "byte": 7})),
+            Ok(json!([3, 5]))
+        );
+        assert_eq!(
+            chamar("revelar", json!({"registro": 9, "byte": 0})),
+            Ok(Value::Null)
+        );
+        assert_eq!(
+            chamar("formatado", json!({"registro": 0})),
+            Ok(json!("{\n  \"a\": [\n    1,\n    2\n  ]\n}"))
+        );
+        assert!(chamar("formatado", json!({"registro": 1})).is_err());
     }
 }
