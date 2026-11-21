@@ -123,3 +123,19 @@ Pela `cli` com disco (200 MB, cache do sistema quente): gzip 327 ms, zstd 255 ms
 **Fora desta fatia:** quebra de linha longa no Texto; JSON único em várias linhas aparece como está no arquivo, uma linha por vez (o índice é de linhas); seleção parcial dentro do formatado.
 
 **Conferência:** pela interface no navegador interno contra uma ponte HTTP com os mesmos comandos do núcleo (JSONL fictício de 502 linhas, uma inválida e uma de 9 KB; JSON único fictício). A janela nativa não foi vista.
+
+## Painel de entrada (Fase 1, 21/11/2026)
+
+**O que é:** ao abrir um arquivo aparece um painel não modal no lugar do conteúdo (o arquivo já está aberto): nome, tipo detectado, tempo de abertura, Tamanho, Registros, Linhas inválidas (só se houver) e cartões dos modos com tela. "Início" no cabeçalho e ⌘0 voltam a ele; as abas continuam e ficam sem seleção enquanto ele aparece.
+
+**Tipo detectado:** `nucleo::resumo::conteudo` olha só as 1.000 primeiras linhas: vazio, JSON único, JSON em várias linhas (1ª linha inválida e o arquivo inteiro válido), JSON Lines de objetos, de valores ou misto.
+
+**Varredura de inválidas:** `nucleo::resumo::varrer` valida todas as linhas em paralelo (`thread::scope`, blocos de 4.096 linhas por `AtomicUsize`, sem rayon) com a mesma regra da árvore (`arvore::validar`), então o número bate com o que a árvore mostra, linha vazia inclusive. O PR 7 (`erros::varrer`) trata linha vazia como não erro; quando ele entrar, alinhar as duas regras. `abrir` dispara a varredura numa thread e devolve na hora; o progresso vai pelo evento `varredura` a cada ~50 ms (`{geracao, varridas, total, invalidas, fim}`) e o comando `resumo` devolve o estado atual. Abrir outro arquivo cancela a varredura anterior (`AtomicBool`) e sobe a `geracao`, que descarta avisos atrasados. JSON em várias linhas pula a varredura: cada linha dele é inválida sozinha. 400 MB / 2,4 milhões de linhas varrem em ~0,2 s no M-series.
+
+**Cartões declarativos:** `MODOS` em `main.ts`, um registro por modo com `disponivel` e `sempre` (entra no seletor "Abrir sempre em…"). Hoje Árvore e Texto; Tabela está na lista com `disponivel: false`, e o sugerido é o primeiro disponível (Árvore até a Tabela existir). Atalhos 1, 2… por posição; Enter abre o sugerido.
+
+**Preferência:** "Ao abrir um arquivo" (mostrar o painel, ir ao sugerido, sempre em Árvore) fica no `localStorage` (`jasao.aoAbrir`); sem valor mostra o painel, valor desconhecido cai no sugerido, armazenamento bloqueado fica no padrão.
+
+**Fora desta fatia:** indicador de Campos (depende da inferência do PR 8, que não está na `main`); cartões de modos sem tela (busca, esquema, filtro).
+
+**Conferência:** interface no navegador interno contra a ponte HTTP com `resumo` e o evento simulado por consulta a cada 50 ms; JSONL fictício de 400 MB do `gerador` com 60 linhas quebradas. Vistos: parcial "Analisando N de M", 60 inválidas no fim, pt-BR e inglês, claro e escuro, atalhos 2, ⌘0 e Enter, as três preferências. A janela nativa não foi vista.

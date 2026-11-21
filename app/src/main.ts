@@ -1,6 +1,7 @@
 // Tela Valores: Árvore e Texto sobre a mesma seleção. O Rust guarda o arquivo e a lista plana
 // de linhas visíveis; aqui só se pede a janela que cabe na tela (o resto não existe no DOM).
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { type Motivo, t } from "./i18n";
 import { espaco, geometria as geo, mostrarLinha as mostrarEm } from "./rolagem";
@@ -57,6 +58,7 @@ let texto: JanelaTexto | null = null;
 let pedidoTexto: number | null = null;
 let alvo = 0; // registro pedido pelo teclado no Texto, antes da resposta chegar
 let selecao = 0; // descarta resposta de seleção mais velha que a última pedida
+let noPainel = false; // painel de entrada no lugar do conteúdo
 
 const geometria = () => geo(arvore, total, ALTURA);
 
@@ -129,7 +131,7 @@ function desenhar(): void {
   const fim = Math.min(primeira + cabem, total);
   let html = "";
   for (let v = primeira; v < fim; v++) html += linhaHtml(v, linhaEm(v));
-  linhasEl.innerHTML = html;
+  linhasEl.innerHTML = html || (resumo && !registros ? `<p class="vazio">${t.vazio}</p>` : "");
   (linhasEl.firstElementChild as HTMLElement | null)?.style.setProperty("margin-top", `${-resto}px`);
   atual = linhaEm(sel);
   if (document.getElementById(`l${sel}`)) arvore.setAttribute("aria-activedescendant", `l${sel}`);
@@ -249,6 +251,9 @@ async function teclaTexto(e: KeyboardEvent): Promise<void> {
 
 function trocarModo(m: Modo): void {
   modo = m;
+  noPainel = false;
+  painel.hidden = true;
+  conteudo.hidden = false;
   for (const [k, aba] of Object.entries(abas)) {
     aba.setAttribute("aria-selected", String(k === m));
     aba.tabIndex = k === m ? 0 : -1;
@@ -336,22 +341,110 @@ async function copiarCaminho(l: Linha, botao: HTMLElement): Promise<void> {
 
 async function mostrar(caminho: string): Promise<void> {
   status.textContent = t.abrindo;
-  $("nome").textContent = caminho.split(/[\\/]/).pop() ?? caminho;
+  const nome = caminho.split(/[\\/]/).pop() ?? caminho;
+  $("nome").textContent = nome;
   try {
     const inicio = performance.now();
     total = registros = await invoke<number>("abrir", { caminho });
+    const ms = fmt(Math.round(performance.now() - inicio));
     sel = 0;
     atual = undefined;
     texto = null;
     arvore.scrollTop = textoEl.scrollTop = 0;
+    resumo = await invoke<Resumo>("resumo");
+    status.textContent = t.aberto(plural(registros, t.registros), ms);
+    $("painel-nome").textContent = nome;
+    $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], ms);
+    desenharPainel();
+    inicioBtn.disabled = false;
+    const destino = destinoAoAbrir();
+    if (destino === "painel") mostrarPainel();
     await recarregar();
-    if (modo === "texto") await selecionar(0);
-    status.textContent = t.aberto(plural(registros, t.registros), fmt(Math.round(performance.now() - inicio)));
-    if (!registros) linhasEl.innerHTML = `<p class="vazio">${t.vazio}</p>`;
-    (modo === "texto" ? textoEl : arvore).focus();
+    if (destino === "texto") await selecionar(0);
+    if (destino !== "painel") trocarModo(destino);
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
   }
+}
+
+// ---- Painel de entrada: o que é o arquivo e por onde começar. ----
+
+type Conteudo = keyof typeof t.painel.conteudo;
+interface Andamento { geracao: number; varridas: number; total: number; invalidas: number; fim: boolean }
+interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
+
+/** Modos com cartão, na ordem dos cartões e dos atalhos 1, 2…; o sugerido é o primeiro disponível.
+ * `sempre`: entra no seletor "Abrir sempre em…". Modo novo entra ligando `disponivel`. */
+const MODOS: { id: Modo | "tabela"; icone: string; disponivel: boolean; sempre: boolean }[] = [
+  { id: "tabela", icone: "table", disponivel: false, sempre: true },
+  { id: "arvore", icone: "binary-tree", disponivel: true, sempre: true },
+  { id: "texto", icone: "file-text", disponivel: true, sempre: false },
+];
+const disponiveis = MODOS.filter((m) => m.disponivel) as { id: Modo; icone: string; sempre: boolean }[];
+const sugerido = disponiveis[0].id;
+const PREFERENCIA = "jasao.aoAbrir";
+const opcoes = ["painel", "sugerido", ...disponiveis.filter((m) => m.sempre).map((m) => m.id)];
+
+const painel = $("painel");
+const conteudo = $("conteudo");
+const inicioBtn = $<HTMLButtonElement>("inicio");
+const painelModos = $("painel-modos");
+const preferencia = $<HTMLSelectElement>("painel-pref");
+let resumo: Resumo | null = null;
+
+function lerPreferencia(): string {
+  let v: string | null = null;
+  try {
+    v = localStorage.getItem(PREFERENCIA);
+  } catch {} // armazenamento bloqueado: fica o padrão
+  if (v === null) return "painel";
+  return opcoes.includes(v) ? v : "sugerido";
+}
+
+function destinoAoAbrir(): Modo | "painel" {
+  const p = lerPreferencia();
+  return p === "painel" ? "painel" : p === "sugerido" ? sugerido : (p as Modo);
+}
+
+const tamanho = (b: number) => {
+  const [unit, base] = b >= 1e9 ? ["gigabyte", 1e9] : b >= 1e6 ? ["megabyte", 1e6] : b >= 1e3 ? ["kilobyte", 1e3] : ["byte", 1];
+  return new Intl.NumberFormat(t.lang, { style: "unit", unit, unitDisplay: "short", maximumFractionDigits: 1 }).format(b / (base as number));
+};
+
+/** Selo e indicadores: refeitos a cada aviso de progresso da varredura. */
+function desenharAndamento(): void {
+  if (!resumo) return;
+  const selo = $("painel-selo");
+  selo.classList.toggle("fim", resumo.fim);
+  selo.innerHTML = resumo.fim
+    ? `${icone("check")}<span>${t.painel.completa}</span>`
+    : `<span>${t.painel.analisando(fmt(resumo.varridas), fmt(resumo.total))}</span>`;
+  const indicador = (rotulo: string, valor: string, classe = "") => `<div class="${classe}"><dt>${rotulo}</dt><dd>${valor}</dd></div>`;
+  $("painel-indic").innerHTML =
+    indicador(t.painel.tamanho, tamanho(resumo.bytes)) +
+    indicador(t.painel.registros, fmt(resumo.registros)) +
+    (resumo.invalidas ? indicador(t.painel.invalidas, fmt(resumo.invalidas), "aviso") : "");
+}
+
+function desenharPainel(): void {
+  desenharAndamento();
+  painelModos.innerHTML = disponiveis
+    .map((m, i) => {
+      const [titulo, desc] = t.painel.modos[m.id];
+      const s = m.id === sugerido;
+      return `<button class="modo${s ? " sugerido" : ""}" type="button" data-modo="${m.id}" aria-keyshortcuts="${i + 1}">
+        ${icone(m.icone)}<b>${titulo}</b><span>${desc}</span>${s ? `<em>${t.painel.sugerido}</em>` : ""}<kbd>${i + 1}</kbd></button>`;
+    })
+    .join("");
+}
+
+function mostrarPainel(): void {
+  if (!resumo) return;
+  noPainel = true;
+  painel.hidden = false;
+  conteudo.hidden = true;
+  for (const aba of Object.values(abas)) aba.setAttribute("aria-selected", "false");
+  painelModos.querySelector<HTMLElement>(".sugerido")?.focus();
 }
 
 arvore.addEventListener("scroll", agendar, { passive: true });
@@ -398,11 +491,45 @@ $("abas").addEventListener("keydown", (e) => {
   abas[m].focus();
 });
 document.addEventListener("keydown", (e) => {
-  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+  if (e.altKey || e.shiftKey) return;
+  if (!(e.metaKey || e.ctrlKey)) {
+    // No painel: 1, 2… abrem o cartão daquela posição; Enter fora de um botão abre o sugerido.
+    const alvo = e.target as HTMLElement;
+    if (!noPainel || alvo.closest("select, input, dialog")) return;
+    const m =
+      e.key === "Enter" && !alvo.closest("button") ? sugerido
+      : /^[1-9]$/.test(e.key) ? disponiveis[Number(e.key) - 1]?.id
+      : undefined;
+    if (!m) return;
+    e.preventDefault();
+    trocarModo(m);
+    return;
+  }
+  if (e.key === "0") {
+    e.preventDefault();
+    mostrarPainel();
+    return;
+  }
   const m = ({ "1": "arvore", "2": "texto" } as const)[e.key as "1" | "2"];
   if (!m) return;
   e.preventDefault();
   trocarModo(m);
+});
+painelModos.addEventListener("click", (e) => {
+  const m = (e.target as HTMLElement).closest<HTMLElement>("[data-modo]")?.dataset.modo;
+  if (m) trocarModo(m as Modo);
+});
+inicioBtn.addEventListener("click", mostrarPainel);
+preferencia.addEventListener("change", () => {
+  try {
+    localStorage.setItem(PREFERENCIA, preferencia.value);
+  } catch {} // armazenamento bloqueado: vale só nesta sessão
+});
+void listen<Andamento>("varredura", ({ payload: p }) => {
+  // Aviso de arquivo anterior, ou mais velho que o `resumo` já recebido: ignora.
+  if (!resumo || p.geracao !== resumo.geracao || (p.varridas < resumo.varridas && !p.fim)) return;
+  Object.assign(resumo, p);
+  desenharAndamento();
 });
 $("ir").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -434,6 +561,11 @@ copiar.querySelector("span")!.textContent = t.copiarCaminho;
 migalhas.setAttribute("aria-label", t.caminhoSelecionado);
 $("tema").setAttribute("aria-label", t.tema);
 arvore.setAttribute("aria-label", t.valoresDoArquivo);
+inicioBtn.querySelector("span")!.textContent = t.inicio;
+$("painel-pergunta").textContent = t.painel.pergunta;
+$("painel-rotulo").textContent = t.painel.aoAbrir;
+preferencia.innerHTML = opcoes.map((o) => `<option value="${o}">${t.painel.pref[o as keyof typeof t.painel.pref]}</option>`).join("");
+preferencia.value = lerPreferencia();
 
 $("tema").addEventListener("click", () => {
   const raiz = document.documentElement;
