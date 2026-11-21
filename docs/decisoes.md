@@ -107,3 +107,19 @@ Pela `cli` com disco (200 MB, cache do sistema quente): gzip 327 ms, zstd 255 ms
 **Caminho copiado:** relativo ao registro (`.a.b[0]`), por design: é o filtro certo para `jq '<caminho>' arquivo.jsonl`, que processa linha a linha.
 
 **IPC:** o teste `comandos_pelo_ipc` (`app/src-tauri`) chama os comandos pelo runtime mock do Tauri (`tauri::test`), com o mesmo `Builder` do app; cobre serialização e erros sem abrir janela. A janela nativa não foi vista nesta fatia.
+
+## Visão Texto e barra de modos (Fase 1, 21/11/2026)
+
+**Escolha:** abas Árvore e Texto (⌘/Ctrl+1 e 2, ←/→ na barra) sobre o mesmo arquivo aberto. O Texto mostra uma linha do arquivo por linha da tela (20 px), virtualizado com a mesma rolagem da árvore (`app/src/rolagem.ts`).
+
+**Bytes, não JSON:** `texto(inicio, quantidade)` devolve `tauri::ipc::Response` (ArrayBuffer). A 1ª linha do buffer traz o tamanho completo de cada linha; cada linha vem cortada em `MAX_COLUNAS = 4096` bytes sem partir caractere UTF-8, e a tela mostra "… +N bytes". Assim uma linha de 1 GB não vai inteira para a interface. Realce por regex no TypeScript, sobre o texto que já chegou.
+
+**Sincronia:** cada trecho realçado leva o byte inicial; clique chama `revelar(registro, byte)`, que abre a árvore até o valor daquele byte (byte em chave, `:` ou `,` conta para o valor seguinte) e devolve `[linha visível, total]`. No outro sentido, a seleção da árvore realça no Texto a faixa de bytes do nó (`Linha.faixa`). ↑↓/PgUp/PgDn/Home/End andam por registro; Enter volta para a Árvore.
+
+**Ver formatado:** `formatado(registro)` devolve o registro com um campo por linha, preservando os bytes crus de chaves e escalares (número grande, escapes); teto de 16 MB. Abre num `<dialog>`; linha inválida desabilita o botão.
+
+**Corrigido no caminho:** um erro de IPC em `pedir` fazia o redesenho pedir de novo, em laço (vinha da árvore do PR 6); agora o erro vai para o status e para. Teclas rápidas no Texto descartam a resposta de tecla anterior (contador `selecao`).
+
+**Fora desta fatia:** quebra de linha longa no Texto; JSON único em várias linhas aparece como está no arquivo, uma linha por vez (o índice é de linhas); seleção parcial dentro do formatado.
+
+**Conferência:** pela interface no navegador interno contra uma ponte HTTP com os mesmos comandos do núcleo (JSONL fictício de 502 linhas, uma inválida e uma de 9 KB; JSON único fictício). A janela nativa não foi vista.
