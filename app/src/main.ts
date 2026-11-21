@@ -370,7 +370,7 @@ async function mostrar(caminho: string): Promise<void> {
 // ---- Painel de entrada: o que é o arquivo e por onde começar. ----
 
 type Conteudo = keyof typeof t.painel.conteudo;
-interface Andamento { geracao: number; varridas: number; total: number; invalidas: number; fim: boolean }
+interface Andamento { geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null }
 interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
 
 /** Modos com cartão, na ordem dos cartões e dos atalhos 1, 2…; o sugerido é o primeiro disponível.
@@ -423,6 +423,7 @@ function desenharAndamento(): void {
   $("painel-indic").innerHTML =
     indicador(t.painel.tamanho, tamanho(resumo.bytes)) +
     indicador(t.painel.registros, fmt(resumo.registros)) +
+    (resumo.campos ? indicador(t.painel.campos, fmt(resumo.campos)) : "") +
     (resumo.invalidas ? indicador(t.painel.invalidas, fmt(resumo.invalidas), "aviso") : "");
 }
 

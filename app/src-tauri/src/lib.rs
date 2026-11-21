@@ -26,6 +26,8 @@ struct Varredura {
     cancelar: Arc<AtomicBool>,
     conteudo: Option<Conteudo>,
     progresso: Option<Progresso>,
+    /// Chega depois do fim da varredura (ver `resumo::campos`).
+    campos: Option<usize>,
 }
 
 /// Evento `varredura` e parte do `resumo`.
@@ -34,6 +36,7 @@ struct Andamento {
     geracao: u64,
     #[serde(flatten)]
     progresso: Progresso,
+    campos: Option<usize>,
 }
 
 impl Estado {
@@ -82,25 +85,41 @@ async fn abrir<R: Runtime>(
             fim: pular,
             cancelado: false,
         });
+        v.campos = None;
         v.geracao
     };
     *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
-    if !pular {
-        std::thread::spawn(move || {
-            resumo::varrer(&arquivo, &cancelar, |progresso| {
-                let estado = app.state::<Estado>();
-                let Ok(mut v) = estado.varredura.lock() else {
-                    return;
-                };
-                if v.geracao != geracao {
-                    return;
-                }
-                v.progresso = Some(progresso);
-                drop(v);
-                let _ = app.emit("varredura", Andamento { geracao, progresso });
-            });
-        });
-    }
+    std::thread::spawn(move || {
+        // Grava no estado e emite, se o arquivo ainda for este.
+        let avisar = |f: &dyn Fn(&mut Varredura)| {
+            let estado = app.state::<Estado>();
+            let Ok(mut v) = estado.varredura.lock() else {
+                return;
+            };
+            if v.geracao != geracao {
+                return;
+            }
+            f(&mut v);
+            let (Some(progresso), campos) = (v.progresso, v.campos) else {
+                return;
+            };
+            drop(v);
+            let _ = app.emit(
+                "varredura",
+                Andamento {
+                    geracao,
+                    progresso,
+                    campos,
+                },
+            );
+        };
+        if !pular {
+            resumo::varrer(&arquivo, &cancelar, |p| avisar(&|v| v.progresso = Some(p)));
+        }
+        if let Some(n) = resumo::campos(&arquivo, &cancelar) {
+            avisar(&|v| v.campos = Some(n));
+        }
+    });
     Ok(total)
 }
 
@@ -128,6 +147,7 @@ fn resumo(estado: State<'_, Estado>) -> Result<Resumo, String> {
         andamento: Andamento {
             geracao: v.geracao,
             progresso,
+            campos: v.campos,
         },
     })
 }
@@ -289,12 +309,12 @@ mod testes {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 chamar("resumo", json!({})).unwrap()
             })
-            .find(|r| r["fim"] == true)
+            .find(|r| r["campos"] != Value::Null)
             .expect("varredura não terminou");
         assert_eq!(
             resumo,
             json!({"conteudo": "objetos", "bytes": 22, "registros": 2, "geracao": 1,
-                   "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false})
+                   "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false, "campos": 1})
         );
         assert_eq!(chamar("alternar", json!({"v": 0})), Ok(json!(3)));
         let linhas = chamar("linhas", json!({"inicio": 0, "quantidade": 10})).unwrap();

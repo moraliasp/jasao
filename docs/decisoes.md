@@ -176,6 +176,8 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 
 **Preferência:** "Ao abrir um arquivo" (mostrar o painel, ir ao sugerido, sempre em Árvore) fica no `localStorage` (`jasao.aoAbrir`); sem valor mostra o painel, valor desconhecido cai no sugerido, armazenamento bloqueado fica no padrão.
 
-**Fora desta fatia:** indicador de Campos (depende da inferência do PR 8, que não está na `main`); cartões de modos sem tela (busca, esquema, filtro).
+**Campos:** depois da varredura, a mesma thread roda a inferência do PR 8 (`estrutura::inferir`) e conta as chaves do topo dos registros (`resumo::campos`); o número chega por um último evento `varredura`. Sem registro-objeto, ou com topo que é mapa, o indicador não aparece.
+
+**Fora desta fatia:** cartões de modos sem tela (busca, esquema, filtro).
 
 **Conferência:** interface no navegador interno contra a ponte HTTP com `resumo` e o evento simulado por consulta a cada 50 ms; JSONL fictício de 400 MB do `gerador` com 60 linhas quebradas. Vistos: parcial "Analisando N de M", 60 inválidas no fim, pt-BR e inglês, claro e escuro, atalhos 2, ⌘0 e Enter, as três preferências. A janela nativa não foi vista.

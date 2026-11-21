@@ -4,6 +4,7 @@
 //! - `varrer` valida todas as linhas em paralelo, fora da thread da interface, com progresso e
 //!   cancelamento. A regra de "inválida" é a da árvore (`arvore::validar`): o número do painel
 //!   bate com o que a árvore mostra (linha vazia conta como inválida).
+//! - `campos` conta as chaves do topo dos registros pela inferência (`estrutura::inferir`).
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::thread;
@@ -13,6 +14,7 @@ use serde::Serialize;
 
 use crate::ArquivoLinhas;
 use crate::arvore::validar;
+use crate::estrutura;
 
 /// Linhas olhadas por `conteudo` para dizer de que é feito um JSONL.
 const AMOSTRA: usize = 1_000;
@@ -136,6 +138,15 @@ pub fn varrer(
     fim
 }
 
+/// Chaves distintas do topo dos registros-objeto, pela inferência do arquivo inteiro. `None`
+/// sem registro-objeto, com topo que é mapa (chaves variam demais para virar "campos") ou
+/// cancelada.
+pub fn campos(arquivo: &ArquivoLinhas, cancelar: &AtomicBool) -> Option<usize> {
+    let inf = estrutura::inferir(arquivo.bytes(), cancelar, |_| {});
+    let raiz = &inf.resumo.raiz;
+    (!inf.cancelado && raiz.mapa.is_none() && !raiz.filhos.is_empty()).then_some(raiz.filhos.len())
+}
+
 #[cfg(test)]
 mod testes {
     use super::*;
@@ -199,5 +210,31 @@ mod testes {
         let a = arquivo(b"1\n2\n3\n");
         let p = varrer(&a, &AtomicBool::new(true), |_| {});
         assert_eq!((p.varridas, p.fim, p.cancelado), (0, true, true));
+    }
+
+    #[test]
+    fn campos_do_topo() {
+        let nao = AtomicBool::new(false);
+        let casos: &[(&[u8], Option<usize>)] = &[
+            (
+                b"{\"a\":1,\"b\":{\"c\":2}}\n{\"a\":3,\"d\":4}\n{\"a\":tru}\n",
+                Some(3),
+            ),
+            (b"[{\"a\":1},\n{\"b\":2}]\n", Some(2)),
+            (b"1\n2\n", None),
+            (b"", None),
+        ];
+        for (bytes, esperado) in casos {
+            assert_eq!(
+                campos(&arquivo(bytes), &nao),
+                *esperado,
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        assert_eq!(
+            campos(&arquivo(b"{\"a\":1}\n{\"b\":2}\n"), &AtomicBool::new(true)),
+            None
+        );
     }
 }
