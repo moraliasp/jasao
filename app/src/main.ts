@@ -1,8 +1,10 @@
-// Tela Valores: árvore virtualizada. O Rust guarda a lista plana de linhas visíveis; aqui só se
-// pede a janela que cabe na tela e se desenham essas linhas (o resto não existe no DOM).
+// Tela Valores: Árvore e Texto sobre a mesma seleção. O Rust guarda o arquivo e a lista plana
+// de linhas visíveis; aqui só se pede a janela que cabe na tela (o resto não existe no DOM).
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { type Motivo, t } from "./i18n";
+import { espaco, geometria as geo, mostrarLinha as mostrarEm } from "./rolagem";
+import { decodificar, type JanelaTexto, linhaHtml as textoHtml } from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -19,13 +21,12 @@ interface Linha {
   aberto: boolean;
   caminho: string;
   migalhas: string[];
+  faixa: [number, number];
 }
 
 const ALTURA = 26; // px por linha; igual ao CSS de .row
+const ALTURA_TEXTO = 20; // px por linha do Texto; igual ao CSS de .tl
 const BLOCO = 300; // linhas por pedido ao Rust
-// Navegadores limitam a altura de um elemento (~33 milhões de px). Acima disto a barra de
-// rolagem passa a ser proporcional em vez de 1 px = 1 px.
-const MAX_PX = 8_000_000;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const arvore = $("arvore");
@@ -34,6 +35,12 @@ const linhasEl = $("linhas");
 const status = $("status");
 const migalhas = $("migalhas");
 const copiar = $<HTMLButtonElement>("copiar");
+const textoEl = $("texto");
+const textoAlto = $("texto-alto");
+const textoLinhas = $("texto-linhas");
+const verFormatado = $<HTMLButtonElement>("ver-formatado");
+const abas = { arvore: $("aba-arvore"), texto: $("aba-texto") };
+type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
@@ -44,17 +51,14 @@ let sel = 0;
 let versao = 0; // muda a cada expandir/recolher/abrir: janela antiga deixa de valer
 let cache: { inicio: number; linhas: Linha[] } | null = null;
 let pedido: number | null = null; // início do pedido em voo
+let modo: Modo = "arvore";
+let atual: Linha | undefined; // linha da seleção; Texto e rodapé leem daqui
+let texto: JanelaTexto | null = null;
+let pedidoTexto: number | null = null;
+let alvo = 0; // registro pedido pelo teclado no Texto, antes da resposta chegar
+let selecao = 0; // descarta resposta de seleção mais velha que a última pedida
 
-/** Geometria da rolagem: primeira linha visível e deslocamento em px dentro dela. */
-function geometria() {
-  const vista = arvore.clientHeight;
-  const totalPx = total * ALTURA;
-  const altoPx = Math.min(totalPx, MAX_PX);
-  const escala = altoPx > vista ? (totalPx - vista) / (altoPx - vista) : 1;
-  const px = arvore.scrollTop * escala;
-  const primeira = Math.floor(px / ALTURA);
-  return { vista, escala, primeira, resto: px - primeira * ALTURA, cabem: Math.ceil(vista / ALTURA) + 1 };
-}
+const geometria = () => geo(arvore, total, ALTURA);
 
 const linhaEm = (v: number): Linha | undefined =>
   cache && v >= cache.inicio ? cache.linhas[v - cache.inicio] : undefined;
@@ -69,6 +73,7 @@ async function pedir(primeira: number, cabem: number): Promise<void> {
     if (v === versao) cache = { inicio, linhas };
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
+    return; // redesenhar pediria de novo, em laço
   } finally {
     if (pedido === inicio) pedido = null;
   }
@@ -116,39 +121,152 @@ function linhaHtml(v: number, l: Linha | undefined): string {
 let quadro = 0;
 function desenhar(): void {
   quadro = 0;
-  alto.style.height = `${Math.max(0, Math.min(total * ALTURA, MAX_PX) - arvore.clientHeight)}px`;
+  if (modo === "texto") return desenharTexto();
+  alto.style.height = espaco(arvore, total, ALTURA);
   linhasEl.style.height = `${arvore.clientHeight}px`;
   const { primeira, resto, cabem } = geometria();
-  if (!cobre(primeira, cabem)) void pedir(primeira, cabem);
+  if (total && !cobre(primeira, cabem)) void pedir(primeira, cabem);
   const fim = Math.min(primeira + cabem, total);
   let html = "";
   for (let v = primeira; v < fim; v++) html += linhaHtml(v, linhaEm(v));
   linhasEl.innerHTML = html;
   (linhasEl.firstElementChild as HTMLElement | null)?.style.setProperty("margin-top", `${-resto}px`);
-  const atual = linhaEm(sel);
+  atual = linhaEm(sel);
   if (document.getElementById(`l${sel}`)) arvore.setAttribute("aria-activedescendant", `l${sel}`);
   else arvore.removeAttribute("aria-activedescendant");
+  rodape();
+}
+const agendar = () => (quadro ||= requestAnimationFrame(desenhar));
+
+/** Migalhas e botões do rodapé da seleção, iguais nas duas visões. */
+function rodape(): void {
   copiar.disabled = !atual;
+  verFormatado.disabled = !atual || atual.erro !== null;
   migalhas.innerHTML = atual
     ? [t.linha(fmt(atual.registro + 1)), ...atual.migalhas].map((m) => `<li>${esc(m)}</li>`).join("")
     : "";
 }
-const agendar = () => (quadro ||= requestAnimationFrame(desenhar));
 
-/** Rola o mínimo para a linha `v` ficar inteira na tela. */
-function mostrarLinha(v: number): void {
-  const { vista, escala, primeira, cabem } = geometria();
-  let px: number | null = null;
-  if (v <= primeira) px = v * ALTURA;
-  else if (v >= primeira + cabem - 2) px = (v + 1) * ALTURA - vista;
-  if (px !== null) arvore.scrollTop = Math.max(0, px / escala);
-}
+const mostrarLinha = (v: number) => mostrarEm(arvore, v, total, ALTURA);
 
 function mover(v: number): void {
   if (!total) return;
   sel = Math.max(0, Math.min(total - 1, v));
   mostrarLinha(sel);
   desenhar();
+}
+
+// ---- Texto: uma linha por registro, na ordem do arquivo. ----
+
+const geoTexto = () => geo(textoEl, registros, ALTURA_TEXTO);
+
+async function pedirTexto(primeira: number, cabem: number): Promise<void> {
+  const inicio = Math.max(0, primeira - Math.floor((BLOCO - cabem) / 2));
+  if (pedidoTexto === inicio) return;
+  pedidoTexto = inicio;
+  try {
+    texto = decodificar(inicio, await invoke<ArrayBuffer>("texto", { inicio, quantidade: BLOCO }));
+  } catch (erro) {
+    status.textContent = `${t.erro}: ${erro}`;
+    return; // redesenhar pediria de novo, em laço
+  } finally {
+    if (pedidoTexto === inicio) pedidoTexto = null;
+  }
+  if (modo === "texto") desenharTexto();
+}
+
+function desenharTexto(): void {
+  textoAlto.style.height = espaco(textoEl, registros, ALTURA_TEXTO);
+  textoLinhas.style.height = `${textoEl.clientHeight}px`;
+  const { primeira, resto, cabem } = geoTexto();
+  const fim = Math.min(primeira + cabem, registros);
+  if (registros && (!texto || primeira < texto.inicio || fim > texto.inicio + texto.linhas.length)) void pedirTexto(primeira, cabem);
+  const digitos = String(registros).length;
+  let html = "";
+  for (let r = primeira; r < fim; r++) {
+    const i = texto ? r - texto.inicio : -1;
+    const linha = texto && i >= 0 ? texto.linhas[i] : undefined;
+    const marcado = atual?.registro === r;
+    const corpo = linha === undefined ? "" : textoHtml(linha, texto!.tamanhos[i], marcado ? atual!.faixa : null, (n) => t.maisBytes(fmt(n)));
+    html += `<div class="tl" id="t${r}" data-r="${r}" role="option" aria-selected="${marcado}"
+      aria-label="${esc(t.linha(fmt(r + 1)))}"><span class="nl" style="width:${digitos + 2}ch">${r + 1}</span><span class="tx">${corpo}</span></div>`;
+  }
+  textoLinhas.innerHTML = html;
+  (textoLinhas.firstElementChild as HTMLElement | null)?.style.setProperty("margin-top", `${-resto}px`);
+  if (atual && document.getElementById(`t${atual.registro}`)) textoEl.setAttribute("aria-activedescendant", `t${atual.registro}`);
+  else textoEl.removeAttribute("aria-activedescendant");
+  rodape();
+}
+
+/** Seleciona a linha visível `v` da árvore a partir do Texto (o cache da árvore pode não cobri-la). */
+async function selecionar(v: number, n = ++selecao): Promise<void> {
+  const l = linhaEm(v) ?? (await invoke<Linha[]>("linhas", { inicio: v, quantidade: 1 }))[0];
+  if (n !== selecao) return;
+  sel = v;
+  atual = l;
+  if (atual) mostrarEm(textoEl, (alvo = atual.registro), registros, ALTURA_TEXTO);
+  desenharTexto();
+}
+
+async function irParaRegistro(r: number): Promise<void> {
+  const n = ++selecao; // senão a resposta de uma tecla anterior devolve `alvo` para trás
+  alvo = Math.max(0, Math.min(registros - 1, r));
+  const v = await invoke<number | null>("ir_para", { registro: alvo });
+  if (v !== null && n === selecao) await selecionar(v, n);
+}
+
+/** Clique num trecho do Texto: abre a árvore até o valor daquele byte e seleciona. */
+async function revelar(registro: number, byte: number): Promise<void> {
+  const r = await invoke<[number, number] | null>("revelar", { registro, byte });
+  if (!r) return;
+  total = r[1];
+  versao++; // a lista da árvore mudou
+  cache = null;
+  await selecionar(r[0]);
+}
+
+async function teclaTexto(e: KeyboardEvent): Promise<void> {
+  const r = alvo;
+  const pagina = Math.max(1, geoTexto().cabem - 2);
+  const acoes: Record<string, () => unknown> = {
+    ArrowDown: () => irParaRegistro(r + 1),
+    ArrowUp: () => irParaRegistro(r - 1),
+    PageDown: () => irParaRegistro(r + pagina),
+    PageUp: () => irParaRegistro(r - pagina),
+    Home: () => irParaRegistro(0),
+    End: () => irParaRegistro(registros - 1),
+    Enter: () => trocarModo("arvore"),
+  };
+  const acao = acoes[e.key];
+  if (!acao) return;
+  e.preventDefault();
+  try {
+    await acao();
+  } catch (erro) {
+    status.textContent = `${t.erro}: ${erro}`;
+  }
+}
+
+function trocarModo(m: Modo): void {
+  modo = m;
+  for (const [k, aba] of Object.entries(abas)) {
+    aba.setAttribute("aria-selected", String(k === m));
+    aba.tabIndex = k === m ? 0 : -1;
+  }
+  arvore.hidden = m !== "arvore";
+  textoEl.hidden = m !== "texto";
+  if (m === "texto") {
+    alvo = atual?.registro ?? 0;
+    mostrarEm(textoEl, alvo, registros, ALTURA_TEXTO);
+    desenharTexto();
+    textoEl.focus();
+  } else {
+    void recarregar().then(() => {
+      mostrarLinha(sel);
+      desenhar();
+    });
+    arvore.focus();
+  }
 }
 
 /** Recarrega a janela atual depois de uma mudança na lista, sem piscar linhas vazias. */
@@ -197,6 +315,18 @@ async function aoTeclado(e: KeyboardEvent): Promise<void> {
   }
 }
 
+async function abrirFormatado(): Promise<void> {
+  if (!atual) return;
+  const dialogo = $<HTMLDialogElement>("formatado");
+  $("formatado-titulo").textContent = `${t.registroFormatado} · ${t.linha(fmt(atual.registro + 1))}`;
+  try {
+    $("formatado-texto").textContent = await invoke<string>("formatado", { registro: atual.registro });
+    dialogo.showModal();
+  } catch (erro) {
+    status.textContent = `${t.erro}: ${erro}`;
+  }
+}
+
 async function copiarCaminho(l: Linha, botao: HTMLElement): Promise<void> {
   await navigator.clipboard.writeText(l.caminho);
   const antes = botao.innerHTML;
@@ -211,11 +341,14 @@ async function mostrar(caminho: string): Promise<void> {
     const inicio = performance.now();
     total = registros = await invoke<number>("abrir", { caminho });
     sel = 0;
-    arvore.scrollTop = 0;
+    atual = undefined;
+    texto = null;
+    arvore.scrollTop = textoEl.scrollTop = 0;
     await recarregar();
+    if (modo === "texto") await selecionar(0);
     status.textContent = t.aberto(plural(registros, t.registros), fmt(Math.round(performance.now() - inicio)));
     if (!registros) linhasEl.innerHTML = `<p class="vazio">${t.vazio}</p>`;
-    arvore.focus();
+    (modo === "texto" ? textoEl : arvore).focus();
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
   }
@@ -242,8 +375,34 @@ linhasEl.addEventListener("dblclick", (e) => {
     void alternar(Number(row.dataset.v));
 });
 copiar.addEventListener("click", () => {
-  const l = linhaEm(sel);
-  if (l) void copiarCaminho(l, copiar);
+  if (atual) void copiarCaminho(atual, copiar);
+});
+verFormatado.addEventListener("click", () => void abrirFormatado());
+$("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
+textoEl.addEventListener("scroll", () => (quadro ||= requestAnimationFrame(desenhar)), { passive: true });
+new ResizeObserver(agendar).observe(textoEl);
+textoEl.addEventListener("keydown", (e) => void teclaTexto(e));
+textoLinhas.addEventListener("click", (e) => {
+  const alvo = e.target as HTMLElement;
+  const tl = alvo.closest<HTMLElement>(".tl[data-r]");
+  if (!tl) return;
+  const b = alvo.closest<HTMLElement>("[data-b]")?.dataset.b;
+  void revelar(Number(tl.dataset.r), b === undefined ? 0 : Number(b)).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+  textoEl.focus({ preventScroll: true });
+});
+for (const [k, aba] of Object.entries(abas)) aba.addEventListener("click", () => trocarModo(k as Modo));
+$("abas").addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const m: Modo = modo === "arvore" ? "texto" : "arvore";
+  trocarModo(m);
+  abas[m].focus();
+});
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+  const m = ({ "1": "arvore", "2": "texto" } as const)[e.key as "1" | "2"];
+  if (!m) return;
+  e.preventDefault();
+  trocarModo(m);
 });
 $("ir").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -253,13 +412,23 @@ $("ir").addEventListener("submit", async (e) => {
     status.textContent = t.foraDoArquivo(String(n), fmt(registros));
     return;
   }
-  mover(v);
-  arvore.focus();
+  if (modo === "texto") {
+    await selecionar(v);
+    textoEl.focus();
+  } else {
+    mover(v);
+    arvore.focus();
+  }
 });
 // Textos fixos do HTML no idioma do sistema.
 document.documentElement.lang = t.lang;
 $("abrir").textContent = t.abrir;
-$("aba").textContent = t.valores;
+abas.arvore.firstChild!.textContent = t.arvore;
+abas.texto.firstChild!.textContent = t.texto;
+$("abas").setAttribute("aria-label", t.valores);
+verFormatado.querySelector("span")!.textContent = t.verFormatado;
+$("formatado-fechar").setAttribute("aria-label", t.fechar);
+textoEl.setAttribute("aria-label", t.textoDoArquivo);
 $("rotulo-linha").textContent = t.irParaLinha;
 copiar.querySelector("span")!.textContent = t.copiarCaminho;
 migalhas.setAttribute("aria-label", t.caminhoSelecionado);

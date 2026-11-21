@@ -91,6 +91,9 @@ pub struct Linha {
     pub caminho: String,
     /// Rótulos do caminho para as migalhas: `["pedidos", "[0]", "nome completo"]`.
     pub migalhas: Vec<String>,
+    /// Bytes `[início, fim)` do valor na linha do arquivo, para a visão Texto realçar o trecho.
+    /// No registro inválido, a linha inteira.
+    pub faixa: [usize; 2],
 }
 
 const SEM_PAI: usize = usize::MAX;
@@ -232,6 +235,7 @@ impl Arvore {
             aberto: false,
             caminho: ".".into(),
             migalhas: Vec::new(),
+            faixa: [0, bytes.len()],
         };
         match validar(bytes) {
             Err(e) => {
@@ -240,6 +244,8 @@ impl Arvore {
             }
             Ok(texto) => {
                 let raw = texto.trim_matches(ESPACO);
+                let ini = raw.as_ptr() as usize - texto.as_ptr() as usize;
+                linha.faixa = [ini, ini + raw.len()];
                 linha.tipo = tipo_de(raw);
                 linha.filhos = contar(raw);
                 linha.expansivel = linha.filhos > 0;
@@ -298,6 +304,65 @@ impl Arvore {
         true
     }
 
+    /// Abre o caminho até o nó mais fundo que contém `byte` (base 0, na linha do registro) e
+    /// devolve a linha visível dele: é o clique na visão Texto. Byte em chave, `:` ou `,` conta
+    /// para o valor seguinte; byte no `{`/`[` de abertura, no fechamento ou fora do valor fica no
+    /// nó de fora. Registro inválido devolve a linha do registro; registro inexistente, `None`.
+    pub fn revelar(&mut self, registro: usize, byte: usize) -> Option<usize> {
+        let linha_r = self.linha_do_registro(registro)?;
+        if !self.abertos.contains_key(&registro) && !self.alternar(linha_r) {
+            return Some(linha_r);
+        }
+        let a = self.abertos.get_mut(&registro)?;
+        let mut id = 0;
+        while byte > a.nos[id].faixa.start && byte < a.nos[id].faixa.end {
+            let Some(f) = a.nos[id]
+                .filhos
+                .clone()
+                .find(|&f| a.nos[f].faixa.end > byte)
+            else {
+                break;
+            };
+            id = f;
+            if a.nos[f].faixa.start > byte {
+                break;
+            }
+        }
+        let mut n = a.nos[id].pai;
+        while n != SEM_PAI {
+            a.nos[n].aberto = true;
+            n = a.nos[n].pai;
+        }
+        let antes = a.visiveis.len();
+        a.visiveis.clear();
+        descendentes_visiveis(&a.nos, 0, &mut a.visiveis);
+        self.total = self.total + a.visiveis.len() - antes;
+        if id == 0 {
+            return Some(linha_r);
+        }
+        a.visiveis
+            .iter()
+            .position(|&n| n == id)
+            .map(|p| linha_r + 1 + p)
+    }
+
+    /// O registro com um campo ou item por linha e dois espaços por nível. Só o espaço entre
+    /// os valores muda: chaves e escalares saem com o texto cru do arquivo (escape, número de
+    /// 400 dígitos e chave repetida intactos).
+    pub fn formatado(&self, registro: usize) -> Result<String, ErroLinha> {
+        let bytes = self.bytes(registro);
+        let nos = construir(bytes)?;
+        let texto = std::str::from_utf8(bytes).unwrap_or_default();
+        let mut saida = String::with_capacity(bytes.len() * 2);
+        escrever(texto, &nos, 0, 0, &mut saida);
+        Ok(saida)
+    }
+
+    /// Arquivo por baixo da árvore (a visão Texto lê as linhas cruas dele).
+    pub fn arquivo(&self) -> &ArquivoLinhas {
+        &self.arquivo
+    }
+
     /// Linha visível do pai de `v` (seta para a esquerda); `None` para linha de registro.
     pub fn pai(&self, v: usize) -> Option<usize> {
         let (r, Some(p)) = self.localizar(v)? else {
@@ -324,6 +389,38 @@ fn descendentes_visiveis(nos: &[No], id: usize, saida: &mut Vec<usize>) {
 }
 
 const ESPACO: &[char] = &[' ', '\t', '\n', '\r'];
+
+/// Escreve o nó `id` formatado; ver `Arvore::formatado`.
+fn escrever(texto: &str, nos: &[No], id: usize, nivel: usize, saida: &mut String) {
+    let no = &nos[id];
+    if no.filhos.is_empty() {
+        saida.push_str(&texto[no.faixa.clone()]);
+        return;
+    }
+    let objeto = no.tipo == Tipo::Objeto;
+    saida.push(if objeto { '{' } else { '[' });
+    let mut anterior = no.faixa.start + 1;
+    for (i, f) in no.filhos.clone().enumerate() {
+        if i > 0 {
+            saida.push(',');
+        }
+        saida.push('\n');
+        saida.extend(std::iter::repeat_n("  ", nivel + 1));
+        if objeto {
+            // A chave crua fica entre o valor anterior (ou o `{`) e o valor deste campo.
+            let chave = texto[anterior..nos[f].faixa.start]
+                .trim_start_matches(|c: char| c == ',' || ESPACO.contains(&c))
+                .trim_end_matches(|c: char| c == ':' || ESPACO.contains(&c));
+            saida.push_str(chave);
+            saida.push_str(": ");
+        }
+        escrever(texto, nos, f, nivel + 1, saida);
+        anterior = nos[f].faixa.end;
+    }
+    saida.push('\n');
+    saida.extend(std::iter::repeat_n("  ", nivel));
+    saida.push(if objeto { '}' } else { ']' });
+}
 
 fn tipo_de(raw: &str) -> Tipo {
     match raw.as_bytes().first() {
@@ -562,6 +659,7 @@ fn linha_no(registro: usize, bytes: &[u8], nos: &[No], id: usize) -> Linha {
         aberto: filhos > 0 && no.aberto,
         caminho,
         migalhas,
+        faixa: [no.faixa.start, no.faixa.end],
     }
 }
 
@@ -817,5 +915,63 @@ mod testes {
         a.alternar(1);
         let l: Vec<_> = a.janela(0, 10).iter().map(|l| (l.pos, l.irmaos)).collect();
         assert_eq!(l, [(0, 0), (0, 2), (0, 3), (1, 3), (2, 3), (1, 2)]);
+    }
+
+    #[test]
+    fn revelar_byte_do_texto() {
+        // {"a":1,"b":{"c":[true,null]},"d":"x"}: `true` em 17, `{` de .b em 11, chave a em 2.
+        let mut a = arvore(DOIS);
+        assert_eq!(a.revelar(0, 18), Some(4));
+        assert_eq!(a.janela(4, 1)[0].caminho, ".b.c[0]");
+        assert_eq!(
+            a.revelar(0, 2).map(|v| a.janela(v, 1)[0].caminho.clone()),
+            Some(".a".into())
+        );
+        assert_eq!(
+            a.revelar(0, 11).map(|v| a.janela(v, 1)[0].caminho.clone()),
+            Some(".b".into())
+        );
+        assert_eq!(a.revelar(0, 0), Some(0));
+        assert_eq!(a.revelar(0, 99), Some(0), "fora do valor fica no registro");
+        // Registro 1 vem depois das 7 linhas do registro 0 aberto; byte 1 é o `1` de [1,2].
+        assert_eq!(a.revelar(1, 1), Some(8));
+        assert_eq!(a.janela(8, 1)[0].caminho, ".[0]");
+        assert_eq!(a.total(), 10);
+        assert_eq!(a.revelar(2, 0), None);
+
+        let mut inv = arvore("{x\n[]\n");
+        assert_eq!(inv.revelar(0, 1), Some(0));
+        assert_eq!(inv.revelar(1, 0), Some(1), "registro sem filhos fica nele");
+    }
+
+    #[test]
+    fn faixa_do_valor_na_linha() {
+        let mut a = arvore(" {\"a\":1} \n{x\n");
+        assert_eq!(a.janela(0, 2)[0].faixa, [1, 8]);
+        assert_eq!(a.janela(0, 2)[1].faixa, [0, 2]);
+        assert!(a.alternar(0));
+        assert_eq!(a.janela(1, 1)[0].faixa, [6, 7]);
+    }
+
+    #[test]
+    fn formatado_mantem_bytes() {
+        let a = arvore(concat!(
+            r#"{"n":123456789012345678901234567890, "ké":{},"ké":[1,{"x":"a\"b"}],"v":[]}"#,
+            "\n{x\n"
+        ));
+        let esperado = r#"{
+  "n": 123456789012345678901234567890,
+  "ké": {},
+  "ké": [
+    1,
+    {
+      "x": "a\"b"
+    }
+  ],
+  "v": []
+}"#;
+        assert_eq!(a.formatado(0).unwrap(), esperado);
+        assert!(a.formatado(1).is_err());
+        assert_eq!(arvore("7\n").formatado(0).unwrap(), "7");
     }
 }
