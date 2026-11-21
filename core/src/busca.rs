@@ -301,7 +301,7 @@ pub(crate) fn em_blocos<R: Send>(
 
 /// Blocos de ~`alvo` bytes a partir de `base`, cada um terminando logo depois de um `\n`
 /// (o último pode terminar no fim do arquivo).
-fn fatiar(dados: &[u8], base: usize, alvo: usize) -> Vec<Range<usize>> {
+pub(crate) fn fatiar(dados: &[u8], base: usize, alvo: usize) -> Vec<Range<usize>> {
     let mut blocos = Vec::with_capacity((dados.len() - base) / alvo + 1);
     let mut ini = base;
     while ini < dados.len() {
