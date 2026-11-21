@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title></title>
+    <script type="module" src="/src/main.ts"></script>
+    <style>
+      body { font: 13px/1.5 system-ui, sans-serif; margin: 0; padding: 12px; }
+      header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+      ol { font: 12px/1.6 ui-monospace, monospace; margin: 0; padding-left: 7ch; }
+      li { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <button id="abrir" type="button">Abrir…</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </header>
+    <ol id="linhas"></ol>
+  </body>
+</html>
