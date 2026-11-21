@@ -134,82 +134,37 @@ impl Busca {
         cancelar: &AtomicBool,
         mut ao_lote: impl FnMut(Lote),
     ) -> Resumo {
-        let base = if dados.starts_with(BOM) { BOM.len() } else { 0 };
         let total = dados.len();
-        let blocos = fatiar(dados, base, self.bloco);
         let mut resumo = Resumo {
             achados: 0,
-            varridos: base.max(blocos.first().map_or(total, |b| b.start)),
+            varridos: 0,
             total,
             cancelado: false,
         };
-        let trabalhadores = thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .min(blocos.len())
-            .max(1);
-        let proximo = AtomicUsize::new(0);
-        let entregues = AtomicUsize::new(0);
-
-        thread::scope(|s| {
-            let (tx, rx) = mpsc::sync_channel::<(usize, Vec<Achado>, usize)>(trabalhadores * 2);
-            for _ in 0..trabalhadores {
-                let tx = tx.clone();
-                let (blocos, proximo, entregues) = (&blocos, &proximo, &entregues);
-                s.spawn(move || {
-                    loop {
-                        if cancelar.load(Relaxed) {
-                            return;
-                        }
-                        let i = proximo.fetch_add(1, Relaxed);
-                        let Some(faixa) = blocos.get(i) else { return };
-                        while i >= entregues.load(Relaxed) + ADIANTE_MAX {
-                            if cancelar.load(Relaxed) {
-                                return;
-                            }
-                            thread::sleep(Duration::from_micros(100));
-                        }
-                        let (achados, quebras) = self.varrer_bloco(&dados[faixa.clone()]);
-                        if tx.send((i, achados, quebras)).is_err() {
-                            return;
-                        }
-                    }
-                });
-            }
-            drop(tx);
-
-            let mut pendentes = BTreeMap::new();
-            let (mut prox, mut linha0, mut ultimo_aviso) = (0, 0, 0);
-            'receber: for (i, achados, quebras) in &rx {
-                pendentes.insert(i, (achados, quebras));
-                while let Some((mut achados, quebras)) = pendentes.remove(&prox) {
-                    // Conferido a cada bloco, não a cada mensagem: uma mensagem pode liberar
-                    // vários blocos que esperavam, e nenhum lote sai depois do cancelamento.
-                    if cancelar.load(Relaxed) {
-                        break 'receber;
-                    }
-                    for a in &mut achados {
-                        a.linha += linha0;
-                    }
-                    linha0 += quebras;
-                    resumo.achados += achados.len() as u64;
-                    resumo.varridos = blocos[prox].end;
-                    prox += 1;
-                    entregues.store(prox, Relaxed);
-                    let fim = prox == blocos.len();
-                    if !achados.is_empty() || fim || resumo.varridos - ultimo_aviso >= total / 100 {
-                        ultimo_aviso = resumo.varridos;
-                        ao_lote(Lote {
-                            achados,
-                            varridos: resumo.varridos,
-                            total,
-                        });
-                    }
+        let (mut linha0, mut ultimo_aviso) = (0, 0);
+        let (varridos, cancelado) = em_blocos(
+            dados,
+            self.bloco,
+            cancelar,
+            |b| self.varrer_bloco(b),
+            |(mut achados, quebras), faixa, fim| {
+                for a in &mut achados {
+                    a.linha += linha0;
                 }
-            }
-            // Sem o receptor, quem estiver preso no `send` desiste.
-            drop(rx);
-            resumo.cancelado = prox < blocos.len();
-        });
+                linha0 += quebras;
+                resumo.achados += achados.len() as u64;
+                if !achados.is_empty() || fim || faixa.end - ultimo_aviso >= total / 100 {
+                    ultimo_aviso = faixa.end;
+                    ao_lote(Lote {
+                        achados,
+                        varridos: faixa.end,
+                        total,
+                    });
+                }
+            },
+        );
+        resumo.varridos = varridos;
+        resumo.cancelado = cancelado;
         resumo
     }
 
@@ -272,6 +227,76 @@ impl Busca {
         }
         (achados, memchr_iter(b'\n', b).count())
     }
+}
+
+/// Varre `dados` (sem o BOM) em blocos de ~`alvo` bytes que terminam em `\n`, com `trabalhar`
+/// em paralelo, e entrega cada resultado a `receber` na thread do chamador, em ordem de arquivo,
+/// com a faixa do bloco e se é o último. Ligar `cancelar` para antes do próximo bloco: depois que
+/// o sinal é visto, nada mais é entregue. Devolve (bytes varridos, cancelado).
+pub(crate) fn em_blocos<R: Send>(
+    dados: &[u8],
+    alvo: usize,
+    cancelar: &AtomicBool,
+    trabalhar: impl Fn(&[u8]) -> R + Sync,
+    mut receber: impl FnMut(R, Range<usize>, bool),
+) -> (usize, bool) {
+    let base = if dados.starts_with(BOM) { BOM.len() } else { 0 };
+    let blocos = fatiar(dados, base, alvo);
+    let mut varridos = base.max(blocos.first().map_or(dados.len(), |b| b.start));
+    let trabalhadores = thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(blocos.len())
+        .max(1);
+    let proximo = AtomicUsize::new(0);
+    let entregues = AtomicUsize::new(0);
+    let mut prox = 0;
+
+    thread::scope(|s| {
+        let (tx, rx) = mpsc::sync_channel::<(usize, R)>(trabalhadores * 2);
+        for _ in 0..trabalhadores {
+            let tx = tx.clone();
+            let (blocos, proximo, entregues, trabalhar) =
+                (&blocos, &proximo, &entregues, &trabalhar);
+            s.spawn(move || {
+                loop {
+                    if cancelar.load(Relaxed) {
+                        return;
+                    }
+                    let i = proximo.fetch_add(1, Relaxed);
+                    let Some(faixa) = blocos.get(i) else { return };
+                    while i >= entregues.load(Relaxed) + ADIANTE_MAX {
+                        if cancelar.load(Relaxed) {
+                            return;
+                        }
+                        thread::sleep(Duration::from_micros(100));
+                    }
+                    if tx.send((i, trabalhar(&dados[faixa.clone()]))).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(tx);
+
+        let mut pendentes = BTreeMap::new();
+        'receber: for (i, r) in &rx {
+            pendentes.insert(i, r);
+            while let Some(r) = pendentes.remove(&prox) {
+                // Conferido a cada bloco, não a cada mensagem: uma mensagem pode liberar
+                // vários blocos que esperavam, e nada sai depois do cancelamento.
+                if cancelar.load(Relaxed) {
+                    break 'receber;
+                }
+                varridos = blocos[prox].end;
+                prox += 1;
+                entregues.store(prox, Relaxed);
+                receber(r, blocos[prox - 1].clone(), prox == blocos.len());
+            }
+        }
+        // Sem o receptor, quem estiver preso no `send` desiste.
+        drop(rx);
+    });
+    (varridos, prox < blocos.len())
 }
 
 /// Blocos de ~`alvo` bytes a partir de `base`, cada um terminando logo depois de um `\n`

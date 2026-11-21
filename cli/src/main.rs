@@ -3,6 +3,7 @@
 //!   janela <arquivo> <inicio> <quantidade> imprime as linhas cruas pedidas
 //!   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]
 //!                                         imprime linha:coluna (em bytes, a partir de 1) e trecho
+//!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -10,14 +11,18 @@ use std::time::Instant;
 
 use std::sync::atomic::AtomicBool;
 
+use nucleo::caminho::texto_json;
+use nucleo::erros::{self, OpcoesErros};
 use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
 const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
-                   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]";
+                   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
+                   erros <arquivo> [--json] [--max N]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut saida = ExitCode::SUCCESS;
     let resultado = match args.as_slice() {
         ["linhas", arquivo] => linhas(arquivo),
         ["janela", arquivo, inicio, quantidade] => match (inicio.parse(), quantidade.parse()) {
@@ -31,13 +36,24 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         },
+        ["erros", resto @ ..] => match opcoes_erros(resto) {
+            Some((arquivo, json, max)) => erros(arquivo, json, max).map(|invalidas| {
+                if invalidas {
+                    saida = ExitCode::from(1);
+                }
+            }),
+            None => {
+                eprintln!("{USO}");
+                return ExitCode::from(2);
+            }
+        },
         _ => {
             eprintln!("{USO}");
             return ExitCode::from(2);
         }
     };
     match resultado {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => saida,
         // Pipe fechado (ex.: `| head`) não é erro.
         Err(e)
             if e.downcast_ref::<io::Error>().map(io::Error::kind)
@@ -171,4 +187,76 @@ fn buscar(op: OpcoesBusca) -> Resultado {
         t.elapsed()
     );
     Ok(())
+}
+
+fn opcoes_erros<'a>(args: &[&'a str]) -> Option<(&'a str, bool, usize)> {
+    let (mut arquivo, mut json, mut max) = (None, false, 100);
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--json" => json = true,
+            "--max" => max = it.next()?.parse().ok()?,
+            _ if arquivo.is_none() => arquivo = Some(a),
+            _ => return None,
+        }
+    }
+    Some((arquivo?, json, max))
+}
+
+/// Devolve se havia linha inválida. `--max` limita o que é guardado e impresso; as contagens
+/// são sempre do arquivo inteiro.
+fn erros(arquivo: &str, json: bool, max: usize) -> Result<bool, Box<dyn std::error::Error>> {
+    let a = abrir(arquivo)?;
+    let t = Instant::now();
+    let op = OpcoesErros {
+        max_guardados: max,
+        ..OpcoesErros::default()
+    };
+    let mut lista = Vec::new();
+    let r = erros::varrer(a.bytes(), &op, &AtomicBool::new(false), |l| {
+        lista.extend(l.erros)
+    });
+    let dt = t.elapsed();
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    if json {
+        write!(
+            out,
+            "{{\"linhas\":{},\"invalidas\":{},\"em_branco\":{},\"erros\":[",
+            r.linhas, r.invalidas, r.em_branco
+        )?;
+        for (i, e) in lista.iter().enumerate() {
+            write!(
+                out,
+                "{}{{\"linha\":{},\"deslocamento\":{},\"coluna\":{},\"codigo\":\"{}\",\"motivo\":{}}}",
+                if i > 0 { "," } else { "" },
+                e.linha + 1,
+                e.deslocamento,
+                e.coluna + 1,
+                e.motivo.codigo(),
+                texto_json(&e.motivo.to_string()),
+            )?;
+        }
+        writeln!(out, "]}}")?;
+    } else {
+        for e in &lista {
+            writeln!(
+                out,
+                "{}:{} (byte {}): {}",
+                e.linha + 1,
+                e.coluna + 1,
+                e.deslocamento + e.coluna,
+                e.motivo
+            )?;
+        }
+    }
+    out.flush()?;
+    eprintln!(
+        "{} inválidas (mostrando {}) · {} em branco · {} linhas · {:.1} MB em {dt:.2?}",
+        r.invalidas,
+        lista.len(),
+        r.em_branco,
+        r.linhas,
+        r.total as f64 / 1e6,
+    );
+    Ok(r.invalidas > 0)
 }
