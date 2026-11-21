@@ -1,4 +1,4 @@
-//! Comandos:
+//! Comandos (o arquivo pode ser JSONL cru, gzip ou zstd):
 //!   linhas <arquivo>                      conta as linhas e mostra o tempo do índice
 //!   janela <arquivo> <inicio> <quantidade> imprime as linhas cruas pedidas
 
@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use nucleo::ArquivoLinhas;
+use nucleo::{ArquivoLinhas, Opcoes};
 
 const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>";
 
@@ -43,7 +43,22 @@ fn main() -> ExitCode {
 type Resultado = Result<(), Box<dyn std::error::Error>>;
 
 fn abrir(arquivo: &str) -> Result<ArquivoLinhas, Box<dyn std::error::Error>> {
-    ArquivoLinhas::abrir(arquivo).map_err(|e| format!("{arquivo}: {e}").into())
+    // Progresso só aparece para compactado (o núcleo só chama ao descompactar), em stderr.
+    let mostrou = std::cell::Cell::new(false);
+    let progresso = |lidos: u64, total: u64| {
+        mostrou.set(true);
+        let pct = lidos * 100 / total.max(1);
+        eprint!("\rdescompactando… {pct}%");
+    };
+    let op = Opcoes {
+        progresso: Some(&progresso),
+        ..Opcoes::default()
+    };
+    let r = ArquivoLinhas::abrir_com(arquivo, &op);
+    if mostrou.get() {
+        eprintln!();
+    }
+    r.map_err(|e| format!("{arquivo}: {e}").into())
 }
 
 fn linhas(arquivo: &str) -> Resultado {

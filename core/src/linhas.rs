@@ -6,11 +6,13 @@
 //! - quebra final não cria linha vazia; arquivo vazio (ou só BOM) tem zero linhas.
 
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 use std::ops::Range;
 use std::path::Path;
 
 use memmap2::Mmap;
+
+use crate::compactado::{self, Formato, Opcoes};
 
 const BOM: &[u8] = b"\xEF\xBB\xBF";
 
@@ -75,8 +77,22 @@ pub struct ArquivoLinhas {
 }
 
 impl ArquivoLinhas {
+    /// Abre JSONL cru, gzip ou zstd (pelos bytes mágicos), com as opções padrão.
     pub fn abrir(caminho: impl AsRef<Path>) -> io::Result<Self> {
-        let arquivo = File::open(caminho)?;
+        Self::abrir_com(caminho, &Opcoes::default())
+    }
+
+    /// Como `abrir`, com cache, limites, progresso e cancelamento escolhidos por quem chama.
+    /// Compactado é descompactado para o cache e o cache é que é mapeado.
+    pub fn abrir_com(caminho: impl AsRef<Path>, op: &Opcoes) -> io::Result<Self> {
+        let caminho = caminho.as_ref();
+        let mut arquivo = File::open(caminho)?;
+        let mut magico = [0u8; 4];
+        let n = arquivo.by_ref().take(4).read(&mut magico)?;
+        let arquivo = match compactado::detectar(&magico[..n]) {
+            Formato::Cru => arquivo,
+            f => File::open(compactado::para_cache(caminho, f, op)?)?,
+        };
         let mapa = if arquivo.metadata()?.len() == 0 {
             None
         } else {
