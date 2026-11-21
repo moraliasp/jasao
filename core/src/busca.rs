@@ -126,7 +126,8 @@ impl Busca {
 
     /// Varre `dados` inteiro. `ao_lote` roda na thread do chamador, em ordem de arquivo; recebe
     /// um lote sempre que há achados novos e, sem achados, a cada ~1% varrido e no fim.
-    /// Ligar `cancelar` (de qualquer thread) para a varredura logo depois.
+    /// Ligar `cancelar` (de qualquer thread) para a varredura antes do próximo bloco: depois que
+    /// o sinal é visto, nenhum lote é entregue, e `Resumo::varridos` para no último bloco aceito.
     pub fn executar(
         &self,
         dados: &[u8],
@@ -178,12 +179,14 @@ impl Busca {
 
             let mut pendentes = BTreeMap::new();
             let (mut prox, mut linha0, mut ultimo_aviso) = (0, 0, 0);
-            for (i, achados, quebras) in &rx {
-                if cancelar.load(Relaxed) {
-                    break;
-                }
+            'receber: for (i, achados, quebras) in &rx {
                 pendentes.insert(i, (achados, quebras));
                 while let Some((mut achados, quebras)) = pendentes.remove(&prox) {
+                    // Conferido a cada bloco, não a cada mensagem: uma mensagem pode liberar
+                    // vários blocos que esperavam, e nenhum lote sai depois do cancelamento.
+                    if cancelar.load(Relaxed) {
+                        break 'receber;
+                    }
                     for a in &mut achados {
                         a.linha += linha0;
                     }
