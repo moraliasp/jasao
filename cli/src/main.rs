@@ -3,21 +3,26 @@
 //!   janela <arquivo> <inicio> <quantidade> imprime as linhas cruas pedidas
 //!   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]
 //!                                         imprime linha:coluna (em bytes, a partir de 1) e trecho
+//!   consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]
+//!                                         roda o filtro jq em cada linha (ou no documento inteiro);
+//!                                         resultados em JSONL no stdout, erros por linha no stderr
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
 
 use std::io::{self, Write};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 use nucleo::caminho::texto_json;
+use nucleo::consulta::Consulta;
 use nucleo::erros::{self, OpcoesErros};
 use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
 const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
+                   consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]";
 
@@ -33,6 +38,13 @@ fn main() -> ExitCode {
         },
         ["buscar", resto @ ..] => match opcoes_busca(resto) {
             Some(op) => buscar(op),
+            None => {
+                eprintln!("{USO}");
+                return ExitCode::from(2);
+            }
+        },
+        ["consultar", resto @ ..] => match opcoes_consulta(resto) {
+            Some(op) => consultar(op),
             None => {
                 eprintln!("{USO}");
                 return ExitCode::from(2);
@@ -190,6 +202,96 @@ fn buscar(op: OpcoesBusca) -> Resultado {
         resumo.total as f64 / 1e6,
         t.elapsed()
     );
+    Ok(())
+}
+
+struct OpcoesConsulta<'a> {
+    filtro: &'a str,
+    arquivo: &'a str,
+    documento: bool,
+    tempo_max: Option<Duration>,
+}
+
+fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
+    let (mut posicionais, mut documento, mut tempo_max) = (Vec::new(), false, None);
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--documento" => documento = true,
+            "--tempo-max" => {
+                tempo_max = Some(Duration::try_from_secs_f64(it.next()?.parse().ok()?).ok()?)
+            }
+            _ => posicionais.push(a),
+        }
+    }
+    let [filtro, arquivo] = posicionais[..] else {
+        return None;
+    };
+    Some(OpcoesConsulta {
+        filtro,
+        arquivo,
+        documento,
+        tempo_max,
+    })
+}
+
+/// Folga depois do teto de tempo antes de derrubar o processo: o núcleo só vê o teto entre
+/// resultados, e filtro que não produz nada (`last(range(1e12))`, `def f: f; f`) nunca devolve.
+const FOLGA_TEMPO: Duration = Duration::from_secs(2);
+
+fn consultar(op: OpcoesConsulta) -> Resultado {
+    let consulta = Consulta::nova(op.filtro)?.com_tempo_max(op.tempo_max);
+    let a = abrir(op.arquivo)?;
+    if let Some(t) = op.tempo_max {
+        std::thread::spawn(move || {
+            std::thread::sleep(t + FOLGA_TEMPO);
+            eprintln!("erro: tempo máximo de {t:.1?} esgotado (filtro não respondeu)");
+            std::process::exit(3);
+        });
+    }
+    let t = Instant::now();
+    let cancelar = AtomicBool::new(false);
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut erro = None;
+    let ao_lote = |lote: nucleo::consulta::LoteConsulta| {
+        for r in lote.resultados {
+            if let Err(e) = writeln!(out, "{}", r.json) {
+                erro = Some(e);
+                cancelar.store(true, Relaxed);
+                return;
+            }
+        }
+    };
+    let resumo = if op.documento {
+        consulta.executar_documento(a.bytes(), &cancelar, ao_lote)
+    } else {
+        consulta.executar_jsonl(a.bytes(), &cancelar, ao_lote)
+    };
+    if let Some(e) = erro {
+        return Err(e.into());
+    }
+    out.flush()?;
+    for e in &resumo.primeiros_erros {
+        eprintln!("linha {}: {}", e.linha + 1, e.motivo);
+    }
+    if resumo.erros > resumo.primeiros_erros.len() as u64 {
+        eprintln!(
+            "… e mais {} erros",
+            resumo.erros - resumo.primeiros_erros.len() as u64
+        );
+    }
+    eprintln!(
+        "{} resultados · {} erros · {} de {} linhas · {:.1} MB em {:.2?}",
+        resumo.resultados,
+        resumo.erros,
+        resumo.linhas,
+        resumo.total_linhas,
+        a.bytes().len() as f64 / 1e6,
+        t.elapsed()
+    );
+    if resumo.tempo_esgotado {
+        return Err("tempo máximo esgotado; resultado parcial".into());
+    }
     Ok(())
 }
 

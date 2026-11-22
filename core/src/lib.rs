@@ -4,6 +4,7 @@ pub mod arvore;
 pub mod busca;
 pub mod caminho;
 pub mod compactado;
+pub mod consulta;
 pub mod erros;
 pub mod estrutura;
 pub mod gerador;
