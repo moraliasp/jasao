@@ -1,12 +1,30 @@
 // Busca no arquivo inteiro. O Rust varre em 2º plano (`buscar`) e guarda os achados; aqui ficam
 // a barra, a contagem e qual achado é o atual. O realce pede só os achados da janela visível.
-import { invoke } from "@tauri-apps/api/core";
+// Cada documento (aba) tem a sua busca: termo, opções, contagem e achado atual.
 import { listen } from "@tauri-apps/api/event";
+import { chamar } from "./doc";
 import { t } from "./i18n";
 import type { Marca } from "./texto";
 
-interface Andamento { geracao: number; achados: number; guardados: number; varridos: number; total: number; fim: boolean }
+interface Andamento { id: number; geracao: number; achados: number; guardados: number; varridos: number; total: number; fim: boolean }
 type Trio = [number, number, number]; // registro, byte na linha, comprimento
+
+/** Estado da busca de um documento. */
+interface Estado {
+  termo: string;
+  caixa: boolean;
+  regex: boolean;
+  geracao: number; // da busca atual; evento de geração menor é de busca velha
+  esperando: boolean; // `buscar` em voo: até a resposta, só vale evento de geração nova
+  andamento: Andamento | null;
+  atual: number; // índice do achado atual (-1: nenhum ainda)
+  erro: string;
+  janela: { inicio: number; fim: number; indice: number; lista: Trio[] } | null;
+  pedido: boolean;
+}
+const novo = (): Estado => ({
+  termo: "", caixa: false, regex: false, geracao: 0, esperando: false, andamento: null, atual: -1, erro: "", janela: null, pedido: false,
+});
 
 const ESPERA = 200; // ms sem digitar antes de buscar
 const JANELA = 1_000; // registros por pedido de achados (= MAX_JANELA do Rust)
@@ -30,19 +48,14 @@ export function criarBusca(form: HTMLFormElement, o: Opcoes) {
   const anteriorBtn = form.querySelector<HTMLButtonElement>("[data-anterior]")!;
   const proximoBtn = form.querySelector<HTMLButtonElement>("[data-proximo]")!;
 
-  let geracao = 0; // da busca atual; evento de geração menor é de busca velha
-  let esperando = false; // `buscar` em voo: até a resposta, só vale evento de geração nova
-  let estado: Andamento | null = null;
-  let atual = -1; // índice do achado atual (-1: nenhum ainda)
-  let erro = "";
+  const estados = new Map<number, Estado>();
+  let s = novo(); // o do documento ativo
   let espera: number | undefined;
-  let janela: { inicio: number; fim: number; indice: number; lista: Trio[] } | null = null;
-  let pedido = false;
 
   const ligado = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
 
   function mostrarInfo(): void {
-    const e = estado;
+    const { andamento: e, erro, atual } = s;
     info.classList.toggle("err", erro !== "");
     info.textContent =
       erro ? erro
@@ -60,49 +73,50 @@ export function criarBusca(form: HTMLFormElement, o: Opcoes) {
   async function buscar(): Promise<void> {
     clearTimeout(espera);
     espera = undefined;
-    atual = -1;
-    janela = null;
-    erro = "";
-    estado = null;
-    esperando = true;
+    const e = s; // a resposta vale para este documento, mesmo que a aba mude no meio
+    Object.assign(e, { termo: campo.value, atual: -1, janela: null, erro: "", andamento: null, esperando: true });
     mostrarInfo();
     try {
-      const g = await invoke<number>("buscar", { padrao: campo.value, regex: ligado(regex), ignorarCaixa: !ligado(caixa) });
-      if (g > geracao) geracao = g;
-    } catch (e) {
-      erro = String(e);
+      const g = await chamar<number>("buscar", { padrao: e.termo, regex: e.regex, ignorarCaixa: !e.caixa });
+      if (g > e.geracao) e.geracao = g;
+    } catch (erro) {
+      e.erro = String(erro);
     } finally {
-      esperando = false;
+      e.esperando = false;
     }
+    if (e !== s) return;
     mostrarInfo();
     o.mudou();
   }
 
   async function ir(delta: number): Promise<void> {
     if (espera !== undefined) await buscar();
-    const n = estado?.guardados ?? 0;
+    const e = s;
+    const n = e.andamento?.guardados ?? 0;
     if (!n) return;
-    atual = atual < 0 ? (delta > 0 ? 0 : n - 1) : (atual + delta + n) % n;
+    e.atual = e.atual < 0 ? (delta > 0 ? 0 : n - 1) : (e.atual + delta + n) % n;
     mostrarInfo();
-    const a = await invoke<Trio | null>("achado", { i: atual });
+    const a = await chamar<Trio | null>("achado", { i: e.atual });
+    if (e !== s) return;
     if (a) await o.ir(a[0], a[1]);
     o.mudou();
   }
 
   async function pedirJanela(r: number): Promise<void> {
-    pedido = true;
-    const g = geracao;
+    const e = s;
+    e.pedido = true;
+    const g = e.geracao;
     const inicio = Math.max(0, r - JANELA / 2);
     try {
-      const [indice, lista] = await invoke<[number, Trio[]]>("achados", { inicio, quantidade: JANELA });
-      if (g !== geracao) return;
+      const [indice, lista] = await chamar<[number, Trio[]]>("achados", { inicio, quantidade: JANELA });
+      if (g !== e.geracao) return;
       // Lista cortada no teto: só os registros antes do último vêm completos.
       const fim = lista.length === MAX_JANELA ? Math.max(lista[lista.length - 1][0], r + 1) : inicio + JANELA;
-      janela = { inicio, fim, indice, lista };
+      e.janela = { inicio, fim, indice, lista };
     } finally {
-      pedido = false;
+      e.pedido = false;
     }
-    o.mudou();
+    if (e === s) o.mudou();
   }
 
   campo.addEventListener("input", () => {
@@ -129,16 +143,20 @@ export function criarBusca(form: HTMLFormElement, o: Opcoes) {
   for (const b of [caixa, regex])
     b.addEventListener("click", () => {
       b.setAttribute("aria-pressed", String(!ligado(b)));
+      s.caixa = ligado(caixa);
+      s.regex = ligado(regex);
       if (campo.value) void buscar();
     });
   anteriorBtn.addEventListener("click", () => void ir(-1));
   proximoBtn.addEventListener("click", () => void ir(1));
 
   void listen<Andamento>("busca", ({ payload: p }) => {
-    if (p.geracao < geracao || (esperando && p.geracao === geracao)) return;
-    geracao = p.geracao;
-    estado = p;
-    janela = null; // chegaram achados novos na faixa
+    const e = estados.get(p.id);
+    if (!e || p.geracao < e.geracao || (e.esperando && p.geracao === e.geracao)) return;
+    e.geracao = p.geracao;
+    e.andamento = p;
+    e.janela = null; // chegaram achados novos na faixa
+    if (e !== s) return;
     mostrarInfo();
     o.mudou();
   });
@@ -164,23 +182,38 @@ export function criarBusca(form: HTMLFormElement, o: Opcoes) {
     },
     proximo: () => ir(1),
     anterior: () => ir(-1),
-    /** Arquivo novo: o Rust já limpou a busca; refaz com o termo que estiver no campo. */
+    /** Arquivo novo no documento ativo: o Rust já limpou a busca; refaz com o termo do campo. */
     reabrir(): void {
       if (campo.value) void buscar();
       else {
-        estado = null;
-        janela = null;
-        atual = -1;
+        Object.assign(s, { andamento: null, janela: null, atual: -1 });
         mostrarInfo();
       }
     },
+    /** Troca de aba: mostra a busca do documento `id` (nova, se ainda não houver). */
+    usar(id: number | null): void {
+      if (espera !== undefined) void buscar(); // termo digitado ainda sem busca: vale para a aba que sai
+      s.termo = campo.value;
+      if (id === null) s = novo();
+      else {
+        const e = estados.get(id) ?? novo();
+        estados.set(id, (s = e));
+      }
+      campo.value = s.termo;
+      caixa.setAttribute("aria-pressed", String(s.caixa));
+      regex.setAttribute("aria-pressed", String(s.regex));
+      mostrarInfo();
+    },
+    /** Aba fechada: esquece a busca dela. */
+    fechar: (id: number) => void estados.delete(id),
     /** Há achados para mostrar (régua). */
-    ativa: () => (estado?.guardados ?? 0) > 0,
+    ativa: () => (s.andamento?.guardados ?? 0) > 0,
     /** Achados do registro `r` como marcas em bytes, pedindo a janela se faltar. */
     marcas(r: number): Marca[] {
-      if (!estado?.guardados) return [];
+      const { andamento, janela, atual } = s;
+      if (!andamento?.guardados) return [];
       if (!janela || r < janela.inicio || r >= janela.fim) {
-        if (!pedido) void pedirJanela(r);
+        if (!s.pedido) void pedirJanela(r);
         return [];
       }
       const { lista, indice } = janela;
