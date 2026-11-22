@@ -24,19 +24,12 @@ const VAR_DESTINO: &str = "JASAO_CONSULTA_DESTINO";
 /// Teto do resultado em disco: filtro que multiplica a entrada (`range(1e12)`) para aqui.
 pub(crate) const TETO_SAIDA: u64 = if cfg!(test) { 1 << 20 } else { 1 << 30 };
 
-/// Recusa o que não é arquivo comum: abrir um FIFO ou dispositivo bloqueia ou nunca acaba.
+/// Recusa o que não é arquivo comum antes de criar o filho, para o erro voltar na hora.
 pub(crate) fn arquivo_comum(caminho: &str) -> Result<(), String> {
     if exemplos::embutido(caminho).is_some() {
         return Ok(());
     }
-    match std::fs::metadata(caminho) {
-        Ok(m) if m.is_file() => Ok(()),
-        Ok(m) if m.is_dir() => Err(format!("{caminho}: é uma pasta, não um arquivo")),
-        Ok(_) => Err(format!(
-            "{caminho}: não é um arquivo comum (FIFO, socket ou dispositivo); a consulta só lê arquivo comum"
-        )),
-        Err(e) => Err(format!("{caminho}: {e}")),
-    }
+    nucleo::linhas::arquivo_comum(Path::new(caminho)).map_err(|e| format!("{caminho}: {e}"))
 }
 
 /// O executável do filho: o próprio app. Nos testes, o binário de teste rodando só `modo_filho`.
@@ -85,14 +78,19 @@ pub(crate) fn rodar(
     let stderr = filho.stderr.take().expect("stderr do filho");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for linha in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if tx.send(linha).is_err() {
+        // Em bytes: uma linha que não é UTF-8 não pode encerrar a leitura.
+        let (mut leitor, mut linha) = (BufReader::new(stderr), Vec::new());
+        while leitor.read_until(b'\n', &mut linha).is_ok_and(|n| n > 0) {
+            let texto = String::from_utf8_lossy(&linha).trim_end().to_owned();
+            if tx.send(texto).is_err() {
                 return;
             }
+            linha.clear();
         }
     });
-    let (mut fim, mut ultima) = (None, String::new());
-    loop {
+    let (mut fim, mut ultima, mut aberto) = (None, String::new(), true);
+    // O cancelar vale até o filho sair, mesmo depois de ele fechar o stderr.
+    let saida = loop {
         if cancelar.load(Relaxed) {
             let _ = filho.kill();
             let _ = filho.wait();
@@ -102,6 +100,14 @@ pub(crate) fn rodar(
                 ..Default::default()
             };
         }
+        if !aberto {
+            match filho.try_wait() {
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Ok(Some(s)) => break Ok(s),
+                Err(e) => break Err(e),
+            }
+            continue;
+        }
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(linha) => match serde_json::from_str::<AndamentoConsulta>(&linha) {
                 Ok(a) if a.fim => fim = Some(a),
@@ -109,10 +115,10 @@ pub(crate) fn rodar(
                 Err(_) => ultima = linha,
             },
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Disconnected) => aberto = false,
         }
-    }
-    match (filho.wait(), fim) {
+    };
+    match (saida, fim) {
         (Ok(s), Some(a)) if s.success() => a,
         (s, _) => falhou(format!(
             "a consulta parou sem terminar (recursão sem fundo ou falta de memória?): {}",
@@ -300,5 +306,35 @@ mod testes {
         );
         let falha = fim.falha.expect("recursão sem fundo devia falhar");
         assert!(falha.contains("parou sem terminar"), "{falha}");
+    }
+
+    /// Se o pai morre, o stdin do filho fecha e ele sai, mesmo com o filtro preso.
+    #[test]
+    fn filho_sai_quando_o_pai_some() {
+        let (f, destino) = jsonl(b"1\n");
+        let mut filho = comando()
+            .unwrap()
+            .env(VAR, f.path())
+            .env(VAR_FILTRO, "def f: f; f")
+            .env(VAR_DESTINO, destino.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        drop(filho.stdin.take());
+        let ate = Instant::now() + Duration::from_secs(10);
+        let saiu = loop {
+            if let Some(s) = filho.try_wait().unwrap() {
+                break Some(s);
+            }
+            if Instant::now() > ate {
+                let _ = filho.kill();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(saiu.and_then(|s| s.code()), Some(4), "filho não saiu");
     }
 }

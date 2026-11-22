@@ -1421,6 +1421,35 @@ mod testes {
             "{a}"
         );
         assert_eq!(a["arquivo"], Value::Null);
+        // Filtro preso e `fechar_consulta`: a thread da consulta só termina (e solta o
+        // `cancelar`) depois de matar e esperar o filho.
+        assert!(
+            em(
+                2,
+                "consultar",
+                json!({"filtro": "def f: f; f", "caminho": caminho})
+            )
+            .is_ok()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let preso = Arc::downgrade(
+            &app.state::<Estado>()
+                .doc(2)
+                .unwrap()
+                .consulta
+                .lock()
+                .unwrap()
+                .cancelar,
+        );
+        assert_eq!(em(2, "fechar_consulta", json!({})), Ok(Value::Null));
+        let t = Instant::now();
+        while preso.upgrade().is_some() {
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(10),
+                "cancelar não parou o filtro preso"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
 
         // Achado 9: FIFO é recusado na hora, sem abrir (abrir bloquearia até alguém escrever).
         #[cfg(unix)]
@@ -1452,6 +1481,13 @@ mod testes {
                     .as_str()
                     .unwrap()
                     .contains("não é um arquivo comum"),
+                "{erro}"
+            );
+            assert!(t.elapsed() < std::time::Duration::from_secs(2));
+            // `abrir` recusa o mesmo FIFO sem ficar em "Abrindo…" (recusa no núcleo).
+            let erro = chamar("abrir", json!({ "caminho": fifo.to_str().unwrap() })).unwrap_err();
+            assert!(
+                erro.as_str().unwrap().contains("não é um arquivo comum"),
                 "{erro}"
             );
             assert!(t.elapsed() < std::time::Duration::from_secs(2));
