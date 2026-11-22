@@ -25,8 +25,8 @@ export interface Opcoes {
 }
 
 export function criarRegua(el: HTMLElement, legendaEl: HTMLElement, o: Opcoes) {
-  el.innerHTML = `<canvas class="rb"></canvas><canvas class="rc"></canvas><div class="janela"></div><div class="baloes"></div>`;
-  const [base, cor] = el.querySelectorAll("canvas");
+  el.innerHTML = `<canvas class="rb"></canvas><canvas class="rc"></canvas><canvas class="rs"></canvas><div class="janela"></div><div class="baloes"></div>`;
+  const [base, cor, achadosEl] = el.querySelectorAll("canvas");
   const janelaEl = el.querySelector<HTMLElement>(".janela")!;
   const baloesEl = el.querySelector<HTMLElement>(".baloes")!;
   el.setAttribute("aria-label", t.regua.rotulo);
@@ -42,6 +42,9 @@ export function criarRegua(el: HTMLElement, legendaEl: HTMLElement, o: Opcoes) {
   let janela: [number, number] = [0, 0];
   let marcas: { inicio: number; valores: number[] } | null = null;
   let pedidoMarcas: number | null = null;
+  let busca = false; // mostra os achados da busca
+  let lendoBusca = false;
+  let deNovo = false;
 
   const token = (nome: string) => getComputedStyle(document.documentElement).getPropertyValue(nome).trim();
 
@@ -70,10 +73,41 @@ export function criarRegua(el: HTMLElement, legendaEl: HTMLElement, o: Opcoes) {
     desenharJanela();
   }
 
+  const baldesK = () => Math.min(4096, Math.max(1, Math.floor(el.clientHeight)));
+
+  /** Achados da busca: um traço na borda esquerda por balde com achado. Pedido que chega durante
+   * uma leitura vira mais uma leitura no fim dela (a última sempre pinta). */
+  async function lerBusca(): Promise<void> {
+    if (lendoBusca) return void (deNovo = true);
+    lendoBusca = true;
+    const c = achadosEl;
+    const g = geracao;
+    const k = baldesK();
+    try {
+      const lista = visivel && busca && el.clientHeight ? await invoke<number[]>("regua_busca", { k }) : [];
+      if (g !== geracao) return;
+      const dpr = devicePixelRatio || 1;
+      c.width = Math.round(el.clientWidth * dpr);
+      c.height = Math.round(el.clientHeight * dpr);
+      const ctx = c.getContext("2d")!;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const alto = el.clientHeight / k;
+      ctx.fillStyle = token("--change");
+      for (const i of lista) ctx.fillRect(0, i * alto, 10, Math.max(2, alto));
+    } finally {
+      lendoBusca = false;
+      if (deNovo) {
+        deNovo = false;
+        void lerBusca();
+      }
+    }
+  }
+
   async function ler(): Promise<void> {
+    void lerBusca();
     if (!visivel || !el.clientHeight) return;
     const g = geracao;
-    const k = Math.min(4096, Math.max(1, Math.floor(el.clientHeight)));
+    const k = baldesK();
     const b = await invoke<Baldes>("regua", { k });
     if (g !== geracao) return;
     baldes = b;
@@ -237,7 +271,15 @@ export function criarRegua(el: HTMLElement, legendaEl: HTMLElement, o: Opcoes) {
       janela = [a, Math.max(a, b)];
       if (visivel) desenharJanela();
     },
-    redesenhar: desenhar,
+    redesenhar(): void {
+      desenhar();
+      void lerBusca();
+    },
+    /** Busca mudou: `ativa` liga ou desliga os traços dos achados. */
+    busca(ativa: boolean): void {
+      busca = ativa;
+      void lerBusca();
+    },
     /** Classe do ponto de cor do registro `r` ("" sem cor), pedindo as marcas se faltarem. */
     ponto(r: number): string | null {
       if (!visivel || !legenda) return null;

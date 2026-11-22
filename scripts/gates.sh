@@ -9,7 +9,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 passo() { printf '\n== %s\n' "$*"; "$@"; }
 
-(cd app && passo pnpm install --frozen-lockfile && passo pnpm build)
+(cd app && passo pnpm install --frozen-lockfile && passo pnpm build && passo pnpm test)
 passo cargo fmt --all --check
 passo cargo clippy --workspace --all-targets -- -D warnings
 passo cargo test --workspace
