@@ -159,6 +159,14 @@
         .regua .rc { transition: opacity .4s ease-out; }
         .balao { animation: pulsar 1.2s ease-out 3; }
       }
+      .exemplos { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 12px; background: color-mix(in srgb, var(--accent) 8%, var(--bar-bg)); border-bottom: 1px solid var(--border); font-size: 13px; }
+      .exemplos .aviso { color: var(--bar-muted); }
+      .exemplos .alternador { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+      .exemplos .alternador button { height: 28px; padding: 0 10px; border: 0; background: var(--page-bg); color: var(--bar-fg); font-size: 13px; cursor: pointer; }
+      .exemplos .alternador button + button { border-left: 1px solid var(--border); }
+      .exemplos .alternador button:hover { background: var(--hover); }
+      .exemplos .alternador button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+      .exemplos .btn { margin-left: auto; }
     </style>
   </head>
   <body>
