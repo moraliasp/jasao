@@ -182,6 +182,46 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 
 **Conferência:** interface no navegador interno contra a ponte HTTP com `resumo` e o evento simulado por consulta a cada 50 ms; JSONL fictício de 400 MB do `gerador` com 60 linhas quebradas. Vistos: parcial "Analisando N de M", 60 inválidas no fim, pt-BR e inglês, claro e escuro, atalhos 2, ⌘0 e Enter, as três preferências. A janela nativa não foi vista.
 
+## Consulta jq (Fase 1, 21/11/2026)
+
+**Escolha:** `jaq` (jaq-core 3.1.2, jaq-std 3.0.4, jaq-json 2.0.3), em Rust, sem processo externo nem `libjq`. `nucleo::consulta`: `Consulta::nova(filtro)` compila uma vez; erro de compilação vem como `ErroFiltro { falhas: [Falha { faixa, linha, coluna, mensagem }] }` (linha e coluna a partir de 1, coluna em caracteres), nunca pânico. `executar_jsonl` roda o filtro em cada linha, no mesmo molde da busca (blocos de ~256 KiB que terminam em `\n`, `thread::scope`, no máximo 64 blocos adiante, reordenação na thread do chamador); `executar_documento` trata o arquivo inteiro como um valor JSON. Resultados chegam por callback em `LoteConsulta { resultados, linhas, total_linhas }`, em ordem de arquivo, cada um com a linha de origem (a partir de 0) e o JSON compacto. CLI: `jasao consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]`, JSONL no stdout, erros por linha e resumo no stderr; filtro que não compila sai com código 1. `.gz`/`.zst` passam pela mesma `abrir`.
+
+**Erros por linha:** linha só de espaço é pulada. Linha que não é JSON, com mais de 10 000 níveis de aninhamento (o mesmo teto do `jq`; sem ele, o parser recursivo do `jaq` pode estourar a pilha) ou em que o filtro falha (`"x" + 1`) conta em `ResumoConsulta::erros`; os 100 primeiros ficam com linha e motivo, e a varredura segue. Como no `jq`, os resultados que a linha produziu antes do erro ficam; os seguintes, não.
+
+**Limites explícitos:** um trabalhador junta no máximo `max_lote` resultados (padrão 10 000) antes de entregar, e um lote nunca passa disso, mesmo numa linha que explode (`range(1e12)`). Cancelamento (`AtomicBool`) e teto de tempo opcional (`com_tempo_max`) são conferidos entre linhas e entre resultados; visto o sinal, nenhum lote sai. Filtro limitado a 16 KiB e compilado e avaliado em threads de 256 MiB de pilha (reserva virtual): o parser desce no filtro e um filtro de 16 KiB todo de `-` ou `(` compila e roda até em debug; com 128 MiB em debug, ou 64 MiB em release a partir de ~60 mil níveis, abortava.
+
+**Limite conhecido (cancelar):** o `jaq` não tem ponto de interrupção. Filtro que gira sem entregar resultado (`last(range(1e12))`, `[range(1e12)]`, `def f: f; f`) só é visto parar quando termina, e recursão sem fundo (`def f: 1 + f; f`) estoura a pilha e aborta o processo inteiro. Por isso a CLI, com `--tempo-max`, tem um vigia que encerra o processo (código 3) dois segundos depois do teto. Recomendação para a interface: rodar a consulta num processo filho (`jasao consultar`) e matar o processo no cancelar, em vez de rodar o `jaq` dentro do processo do app.
+
+**Fidelidade de número** (testado em `consulta::testes::fidelidade_de_numero`):
+
+| Entrada | Filtro | Saída | Nota |
+|---|---|---|---|
+| `12345678901234567890123` | `.` | `12345678901234567890123` | inteiro grande é exato (BigInt) |
+| `9007199254740993` (2^53 + 1) | `. + 1` | `9007199254740994` | soma, subtração e produto de inteiros são exatos |
+| `9007199254740993` | `. / 1` | `9007199254740992.0` | divisão vai para `f64` e perde |
+| `0.1000000000000000000000001` | `.` | igual à entrada | decimal sai como veio enquanto não entra em conta |
+| `0.1000000000000000000000001` | `. * 1` | `0.1` | em conta, decimal vira `f64` |
+| `1e400` | `.` | `1e400` | fora do `f64`, preservado como texto |
+| — | `[nan, infinite]` | `[null,1.7976931348623157e308]` | como o `jq`: NaN vira `null`, infinito o maior `f64` |
+
+Outros comportamentos do `jaq` que o usuário pode estranhar: chave duplicada (`{"a":1,"b":2,"a":3}`) fica com o último valor na posição da primeira (`{"a":3,"b":2}`); a ordem das chaves do arquivo é mantida (`keys` ordena, `keys_unsorted` não); o leitor aceita além do JSON estrito `NaN`, `Infinity` e comentários `#`. `input`, `inputs` e `$ENV` não existem (erro de compilação); `env` existe.
+
+**Pendência:** `--slurp` (todas as linhas num array) ficou de fora desta fatia.
+
+**Medido** (`jasao consultar`, 157 MB de JSONL gerado, 951 144 linhas, cache quente, saída descartada, Apple M5 Pro, 18 núcleos; mediana de 3):
+
+| Filtro | Resultados | Tempo |
+|---|---|---|
+| `.` | 951 144 | 473 ms |
+| `keys \| length` | 951 144 | 473 ms |
+| `select(.tipo == "pedido") \| .id` | 317 330 | 667 ms |
+| `.itens[]?.preco \| tonumber` | 792 828 | 812 ms |
+| `[.. \| numbers] \| add` | 951 144 | 4,08 s |
+
+O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descompactação + consulta: 552 ms. Pico de memória com `.`: ~270 MB. `..` é o caso lento do `jaq` (~10× o `.`); não investigado.
+
+**Licenças** (registro, sem decisão): `jaq-core`, `jaq-std` e `jaq-json` são MIT. Dependências que vêm com eles: MIT (`hifijson`, `libm`, `typed-arena`, `urlencoding`, `bytes`); MIT OR Apache-2.0 (`base64`, `bstr`, `dyn-clone`, `hashbrown`, `indexmap`, `equivalent`, `log`, `num-bigint`, `num-integer`, `num-traits`, `once_cell`, `regex-automata`, `regex-bites`, `regex-syntax`); Unlicense OR MIT (`aho-corasick`, `jiff`, `jiff-core`, `memchr`); Zlib (`foldhash`); Apache-2.0 OR BSL-1.0 (`ryu`); **Apache-2.0 OR GPL-2.0-only** (`self_cell`, usado pelo `jaq-json`; a opção Apache-2.0 evita a GPL, mas fica o registro para quem decidir a licença do Jasão).
+
 ## Micronavegador (Fase 1, 22/11/2026)
 
 **O que é:** régua de 44 px à direita da Árvore e do Texto com o arquivo inteiro: uma faixa por balde de registros, colorida pela variante do discriminador, inválidas em vermelho com balões numerados e o retângulo da janela visível. O cabeçalho mostra "linhas X–Y de N" (só linhas inteiras na tela). Árvore e Texto ganham um ponto de cor por registro.
