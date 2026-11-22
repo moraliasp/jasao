@@ -22,14 +22,14 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 |---|---|---|---|---|---|---|
 | Abrir JSONL grande sem travar | ✅ índice + varredura paralela em 2º plano (#12) | ✅ | ◐ | ❌ | — | — |
 | `.gz` / `.zst` | ✅ #4 | ? | ? | ❌ | — | — |
-| Busca no arquivo inteiro | ◐ core (#5) e interface (em PR) | ✅ | ✅ | ✅ | — | ◐ |
+| Busca no arquivo inteiro | ✅ core (#5) e interface (#19) | ✅ | ✅ | ✅ | — | ◐ |
 | Abas e arrastar vários arquivos | ◐ em PR | ? | ? | ❌ | — | ? |
 | Árvore de valores | ✅ #6 | ✅ | ✅ | ✅ | — | ✅ |
 | Texto cru sincronizado com a árvore | ✅ #9 | ? | ? | ◐ | — | — |
 | Tabela por coluna | ❌ | ? | ✅ | ❌ | — | ✅ |
-| Copiar caminho (jq, JSONPath, Pointer) | ◐ core e CLI (#7), interface em PR | ✅ | ✅ | ✅ | — | — |
+| Copiar caminho (jq, JSONPath, Pointer) | ✅ core e CLI (#7), interface (#19) | ✅ | ✅ | ✅ | — | — |
 | Linha inválida sem quebrar o resto | ✅ #7, #12 | ? | ? | ❌ | — | — |
-| Consulta jq | ◐ core e CLI (#10), interface em PR | ◐ JSONPath | ✅ | ❌ | — | ✅ (consulta Mongo) |
+| Consulta jq | ✅ core e CLI (#10), interface (#19) | ◐ JSONPath | ✅ | ❌ | — | ✅ (consulta Mongo) |
 | Valores inteligentes (data, JWT, base64) | ❌ | ? | ? | ✅ prévias | — | — |
 | Visão do arquivo inteiro (régua por variante e inválidas) | ✅ #16 | ? | ❌ | ❌ | — | ❌ |
 | Resumo ao abrir (painel de entrada) | ✅ #12 | ? | ? | ❌ | — | ◐ |
