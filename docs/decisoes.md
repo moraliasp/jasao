@@ -277,3 +277,23 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Memória:** cada documento aberto guarda o próprio índice e árvore. Acima de 50 milhões de registros somados nas abas, abrir mais um avisa no status. Medido no app release (Apple M5 Pro) com o JSONL de 1 GB e 6,46 milhões de linhas do `gerador`: abre em 221 ms, com 99 MB de memória própria (`vmmap`, physical footprint). O RSS de 1,2 GB é quase todo o arquivo mapeado, que o sistema recupera. Então 50 milhões de registros dão cerca de 770 MB. Fechar a aba devolve a memória (RSS de 1,22 GB para 171 MB no debug). Abrir é assíncrono, então arquivo grande não trava a interface.
 
 **Fora:** recentes, associação de tipo, restaurar abas, reordenar e destacar abas.
+
+## Modo Estrutura (Fase 2, 22/11/2026)
+
+**O que é:** terceiro modo ao lado de Árvore e Texto (⌥⌘3), com a estrutura inferida pelo `nucleo::estrutura`: uma linha por caminho (campo recuado pela profundidade | tipos vistos | presença) e, depois dos caminhos, uma linha por variante de cada discriminador (`.campo = "valor"` | sempre / às vezes | N registros). Segue a tabela do `docs/mockup-json.html`. O front não infere nada: `app/src/estrutura.ts` só formata o que o comando devolve.
+
+**Sem trabalho novo pesado:** o `abrir` já roda `estrutura::inferir` em segundo plano (para o indicador de Campos e a régua), com cancelamento por `AtomicBool` e `geracao`. O resultado agora fica guardado em `Varredura.estrutura` (`Arc`), e o comando `estrutura` só o lê: devolve `null` enquanto a inferência não terminou. O evento `varredura` ganhou `inferiu`; a tela mostra "Inferindo…" e carrega quando ele chega.
+
+**Presença:** campo = "todos" ou "N de M" (M = objetos onde o pai apareceu), opcional em destaque; `[]` = "N itens em M listas"; mapa (`*`) = "N entradas em M objetos". Vários tipos no mesmo caminho mostram a contagem de cada um.
+
+**Ir para a ocorrência:** Enter ou duplo clique troca para a Árvore no registro da 1ª ocorrência (`Contagem::primeira()`, a linha base 0, que na Árvore é o índice do registro). Vai ao registro, não ao nó exato.
+
+**Com busca, jq e Ir para linha:** a Estrutura não tem registros. Achado da busca e Ir para linha trocam para a Árvore; o resultado do jq abre na Estrutura do arquivo de resultado; Esc na barra devolve o foco à Estrutura.
+
+**Teclado e leitor de tela:** `role=listbox` com `aria-activedescendant`, linhas `role=option` com rótulo completo (caminho, tipos, presença, opcional); setas, PgUp/PgDn, Home/End, Enter. O resumo (`role=status`) diz quantos caminhos e registros e que Enter abre a Árvore. Copiar caminho copia o caminho da linha.
+
+**Conferência:** front no navegador interno contra a ponte HTTP (a mesma dos PRs #12, #16 e #18) com os comandos reais: JSONL fictício de 3.000 linhas (3 tipos, 3 inválidas, campo opcional com dois tipos), JSON único fictício e os dois exemplos embutidos. Vistos: Estrutura pelo painel (3) e por ⌥⌘3, caminhos, variantes, opcional, Enter levando à Árvore no registro certo, clique e duplo clique, `aria-activedescendant` e rótulo da linha, pt-BR e inglês, claro e escuro. A janela nativa abriu (`pnpm tauri dev`), mas não foi vista: o shell não tem permissão de Gravação de Tela.
+
+**Por aba:** cada documento guarda a própria inferência no Rust (`estrutura` leva o `id`, como os outros comandos) e cada aba guarda no front a lista formatada e a seleção. Trocar de aba não refaz o pedido; resposta que chega depois da troca é descartada (documento ativo e `geracao`).
+
+**Pendências:** abrir o nó exato na Árvore (não só o registro); progresso e resultado parcial da inferência (meta de 500 ms do plano); virtualizar a lista (hoje desenha tudo; `shortcut:` no código); filtro por variante como no mockup.
