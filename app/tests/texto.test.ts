@@ -63,6 +63,17 @@ test("visivel mostra controles bidi e de largura zero sem tirá-los do texto", (
   assert.equal(visivel("comum é ok"), "comum é ok");
 });
 
+test("visivel cobre a lista inteira dos invisíveis e só ela", () => {
+  // Os mesmos 17 de `perigoso` na CLI (cli/src/main.rs).
+  const lista = [0x61c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff];
+  for (const cp of lista) {
+    const u = cp.toString(16).toUpperCase().padStart(4, "0");
+    assert.equal(visivel(`a${String.fromCodePoint(cp)}b`), `a<span class="inv" data-u="${u}">${String.fromCodePoint(cp)}</span>b`, u);
+  }
+  // Vizinhos que não entram: NBSP, U+200A, U+2010, U+202F, U+2065, U+206A, U+FEFE.
+  for (const cp of [0xa0, 0x200a, 0x2010, 0x202f, 0x2065, 0x206a, 0xfefe]) assert.equal(visivel(String.fromCodePoint(cp)), String.fromCodePoint(cp));
+});
+
 test("linhaHtml e marcado marcam o invisível e mantêm o byte de cada pedaço", () => {
   const html = linhaHtml('{"a\u202e":1}', 10, null, () => "");
   assert.match(html, /<span data-b="1" class="k">"a<span class="inv" data-u="202E">\u202e<\/span>"<\/span>/);
