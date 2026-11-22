@@ -7,9 +7,10 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { aposFechar, ciclo, EXTENSOES, nomes, porAtalho, posicaoNova, triar } from "./abas";
-import { chamar, usarDoc } from "./doc";
+import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
+import { type Estrutura, type ItemE, itens as itensEstrutura } from "./estrutura";
 import { type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
@@ -51,7 +52,7 @@ const textoEl = $("texto");
 const textoAlto = $("texto-alto");
 const textoLinhas = $("texto-linhas");
 const verFormatado = $<HTMLButtonElement>("ver-formatado");
-const abas = { arvore: $("aba-arvore"), texto: $("aba-texto") };
+const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura") };
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
@@ -71,6 +72,11 @@ let alvo = 0; // registro pedido pelo teclado no Texto, antes da resposta chegar
 let selecao = 0; // descarta resposta de seleção mais velha que a última pedida
 let noPainel = false; // painel de entrada no lugar do conteúdo
 let irN = 0; // descarta resposta de arraste na régua mais velha que a última
+const estruturaEl = $("estrutura");
+const estruturaLinhas = $("estrutura-linhas");
+let estr: ItemE[] | null = null; // null: ainda não pedida (ou a inferência não acabou)
+let selE = 0;
+let registrosE = 0;
 
 const faixa = $("faixa");
 const regua = criarRegua($("regua"), $("legenda"), {
@@ -85,13 +91,14 @@ const regua = criarRegua($("regua"), $("legenda"), {
   fmt: (n) => fmt(n),
 });
 
+const visaoAtual = () => (modo === "texto" ? textoEl : modo === "estrutura" ? estruturaEl : arvore);
 const busca = criarBusca($("busca") as HTMLFormElement, {
   ir: irAoAchado,
   mudou: () => {
     regua.busca(busca.ativa());
     agendar();
   },
-  voltar: () => (modo === "texto" ? textoEl : arvore).focus(),
+  voltar: () => visaoAtual().focus(),
   fmt: (n) => fmt(n),
 });
 
@@ -171,6 +178,7 @@ let quadro = 0;
 function desenhar(): void {
   quadro = 0;
   if (modo === "texto") return desenharTexto();
+  if (modo === "estrutura") return;
   alto.style.height = espaco(arvore, total, ALTURA);
   linhasEl.style.height = `${arvore.clientHeight}px`;
   const g = geometria();
@@ -192,6 +200,13 @@ const agendar = () => (quadro ||= requestAnimationFrame(desenhar));
 
 /** Migalhas e botões do rodapé da seleção, iguais nas duas visões. */
 function rodape(): void {
+  if (modo === "estrutura") {
+    const it = estr?.[selE];
+    copiar.disabled = !it;
+    verFormatado.disabled = true;
+    migalhas.innerHTML = it ? `<li>${esc(it.caminho)}</li>` : "";
+    return;
+  }
   copiar.disabled = !atual;
   verFormatado.disabled = !atual || atual.erro !== null;
   migalhas.innerHTML = atual
@@ -286,6 +301,7 @@ async function revelar(registro: number, byte: number): Promise<void> {
 
 /** Achado da busca: abre a árvore até o byte e seleciona, nas duas visões. */
 async function irAoAchado(registro: number, byte: number): Promise<void> {
+  if (modo === "estrutura") trocarModo("arvore"); // achado é de registro: mostra na Árvore
   const r = await chamar<[number, number] | null>("revelar", { registro, byte });
   if (!r) return;
   total = r[1];
@@ -324,6 +340,72 @@ async function teclaTexto(e: KeyboardEvent): Promise<void> {
   }
 }
 
+// ---- Estrutura: o que o núcleo inferiu, um caminho por linha. ----
+
+/** Pede a estrutura se a inferência já acabou; senão o evento `varredura` (inferiu) chama de novo. */
+async function carregarEstrutura(): Promise<void> {
+  if (estr || !resumo?.inferiu) return desenharEstrutura();
+  const g = resumo.geracao;
+  const d = docAtivo();
+  const e = await chamar<Estrutura | null>("estrutura");
+  if (!e || d !== docAtivo() || g !== resumo?.geracao) return; // trocou de aba ou reabriu
+  estr = itensEstrutura(e, t, fmt);
+  selE = 0;
+  registrosE = e.registros;
+  desenharEstrutura();
+}
+
+// shortcut: sem rolagem virtual (são centenas de caminhos, não linhas do arquivo); virtualizar
+// como a Árvore se aparecer arquivo com dezenas de milhares de caminhos.
+function desenharEstrutura(): void {
+  const resumoEl = $("estrutura-resumo");
+  if (!estr) {
+    resumoEl.textContent = t.estrutura.inferindo;
+    estruturaLinhas.innerHTML = "";
+  } else {
+    resumoEl.textContent = registrosE ? t.estrutura.resumo(fmt(estr.length), fmt(registrosE)) : t.vazio;
+    estruturaLinhas.innerHTML = registrosE
+      ? estr.map((it, i) => `<div class="row" id="e${i}" data-i="${i}" role="option" aria-selected="${i === selE}" aria-label="${esc(it.rotulo)}">${it.html}</div>`).join("")
+      : "";
+  }
+  const el = document.getElementById(`e${selE}`);
+  if (el) {
+    estruturaEl.setAttribute("aria-activedescendant", el.id);
+    el.scrollIntoView({ block: "nearest" });
+  } else estruturaEl.removeAttribute("aria-activedescendant");
+  rodape();
+}
+
+function moverE(i: number): void {
+  if (!estr?.length) return;
+  selE = Math.max(0, Math.min(estr.length - 1, i));
+  desenharEstrutura();
+}
+
+/** Primeira ocorrência na Árvore: o registro dela (o núcleo dá a linha, não o nó). */
+async function abrirOcorrencia(): Promise<void> {
+  const linha = estr?.[selE]?.linha;
+  if (linha === null || linha === undefined) return;
+  await focarRegistro(linha);
+}
+
+function teclaEstrutura(e: KeyboardEvent): void {
+  const pagina = Math.max(1, Math.floor(estruturaEl.clientHeight / ALTURA) - 2);
+  const acoes: Record<string, () => unknown> = {
+    ArrowDown: () => moverE(selE + 1),
+    ArrowUp: () => moverE(selE - 1),
+    PageDown: () => moverE(selE + pagina),
+    PageUp: () => moverE(selE - pagina),
+    Home: () => moverE(0),
+    End: () => moverE(Infinity),
+    Enter: () => abrirOcorrencia(),
+  };
+  const acao = acoes[e.key];
+  if (!acao) return;
+  e.preventDefault();
+  Promise.resolve(acao()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+}
+
 /** Foca `el`, a menos que o usuário esteja andando pela barra de abas (aba ainda preparando não rouba o foco). */
 function focar(el: HTMLElement | null | undefined): void {
   if (!$("arquivos-lista").contains(document.activeElement)) el?.focus();
@@ -341,7 +423,11 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
   }
   arvore.hidden = m !== "arvore";
   textoEl.hidden = m !== "texto";
-  if (m === "texto") {
+  estruturaEl.hidden = m !== "estrutura";
+  if (m === "estrutura") {
+    void carregarEstrutura().catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+    focar(estruturaEl);
+  } else if (m === "texto") {
     alvo = atual?.registro ?? 0;
     if (rolagem) {
       textoAlto.style.height = espaco(textoEl, registros, ALTURA_TEXTO);
@@ -423,7 +509,11 @@ async function abrirFormatado(): Promise<void> {
 let antesDaCopia: { msg: string; texto: string } | null = null;
 /** Copia o nó `v` (chamar dentro do clique ou da tecla) e confirma no status e no botão. */
 function copiarComo(v: number, f: Formato, botao?: HTMLElement): void {
-  copiarNo(v, f).then(
+  confirmarCopia(copiarNo(v, f), f, botao);
+}
+/** Confirma no status e no botão a cópia de `p` (texto copiado, no formato `f`). */
+function confirmarCopia(p: Promise<string>, f: Formato, botao?: HTMLElement): void {
+  p.then(
     (s) => {
       const msg = t.copiar.feito(t.copiar[f], resumir(s));
       // Volta o status de antes, se nada mais o trocou nesse meio-tempo.
@@ -451,7 +541,7 @@ const consulta = criarConsulta($("consulta"), {
     const a = lista.find((x) => x.doc === id);
     if (a) await mostrar(c, a, a === abaAtiva() ? (noPainel ? undefined : modo) : a.modo);
   },
-  voltar: () => (modo === "texto" ? textoEl : arvore).focus(),
+  voltar: () => visaoAtual().focus(),
   fmt,
 });
 
@@ -475,6 +565,9 @@ interface Aba {
   alvo: number;
   rolagem: [number, number];
   status: string;
+  estr: ItemE[] | null; // Estrutura já formatada (null: ainda não pedida)
+  selE: number;
+  registrosE: number;
 }
 const listaEl = $("arquivos-lista");
 const semArquivo = $("sem-arquivo");
@@ -487,13 +580,14 @@ const abaAtiva = (): Aba | undefined => lista[ativa];
 const abaVazia = (): Aba => ({
   chave: ++chaves, doc: null, arquivo: null, caminho: null, ms: "", total: 0, registros: 0, sel: 0, modo: "arvore",
   noPainel: false, resumo: null, atual: undefined, alvo: 0, rolagem: [0, 0], status: "",
+  estr: null, selE: 0, registrosE: 0,
 });
 /** Acima desta soma de registros nas abas, abrir mais um avisa (o Rust guarda índice e árvore de cada). */
 const AVISO_REGISTROS = 50_000_000;
 
 function guardar(a: Aba): void {
   Object.assign(a, {
-    total, registros, sel, modo, noPainel, resumo, atual, alvo,
+    total, registros, sel, modo, noPainel, resumo, atual, alvo, estr, selE, registrosE,
     rolagem: [arvore.scrollTop, textoEl.scrollTop], status: status.textContent ?? "",
   });
 }
@@ -531,7 +625,7 @@ function ativar(i: number, foco = false): void {
   if (antes && i !== ativa) guardar(antes);
   ativa = i;
   const a = lista[i];
-  ({ total, registros, sel, modo, noPainel, resumo, atual, alvo } = a);
+  ({ total, registros, sel, modo, noPainel, resumo, atual, alvo, estr, selE, registrosE } = a);
   status.textContent = a.status;
   // Respostas em voo eram da aba que saiu.
   versao++;
@@ -586,7 +680,7 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<boolean> 
     const ms = fmt(Math.round(performance.now() - inicio));
     Object.assign(a, {
       doc: r.id, caminho, ms, visao, total: r.total, registros: r.total, sel: 0, atual: undefined, alvo: 0,
-      resumo: null, rolagem: [0, 0], status: t.aberto(plural(r.total, t.registros), ms),
+      resumo: null, rolagem: [0, 0], status: t.aberto(plural(r.total, t.registros), ms), estr: null, selE: 0,
     });
     const soma = lista.reduce((n, x) => n + x.registros, 0);
     if (soma > AVISO_REGISTROS) a.status += ` · ${t.abasArquivos.memoria(fmt(soma))}`;
@@ -720,7 +814,7 @@ $("nova-aba").addEventListener("click", novaAba);
 type Conteudo = keyof typeof t.painel.conteudo;
 interface Andamento {
   geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null;
-  legenda: Legenda | null; coloriu: boolean;
+  legenda: Legenda | null; coloriu: boolean; inferiu: boolean;
 }
 interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
 
@@ -730,6 +824,7 @@ const MODOS: { id: Modo | "tabela"; icone: string; disponivel: boolean; sempre: 
   { id: "tabela", icone: "table", disponivel: false, sempre: true },
   { id: "arvore", icone: "binary-tree", disponivel: true, sempre: true },
   { id: "texto", icone: "file-text", disponivel: true, sempre: false },
+  { id: "estrutura", icone: "list-tree", disponivel: true, sempre: false },
 ];
 const disponiveis = MODOS.filter((m) => m.disponivel) as { id: Modo; icone: string; sempre: boolean }[];
 const sugerido = disponiveis[0].id;
@@ -828,7 +923,20 @@ linhasEl.addEventListener("contextmenu", (e) => {
   menu.abrir(e.clientX, e.clientY, arvore);
 });
 copiar.addEventListener("click", () => {
-  if (atual) copiarComo(sel, "jq", copiar);
+  if (modo === "estrutura") {
+    const c = estr?.[selE]?.caminho;
+    // Caminho da Estrutura já é texto jq (vem do núcleo): copia direto, sem `caminhos`.
+    if (c) confirmarCopia(navigator.clipboard.writeText(c).then(() => c), "jq", copiar);
+  } else if (atual) copiarComo(sel, "jq", copiar);
+});
+estruturaEl.addEventListener("keydown", teclaEstrutura);
+estruturaLinhas.addEventListener("click", (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
+  if (row) moverE(Number(row.dataset.i));
+  estruturaEl.focus({ preventScroll: true });
+});
+estruturaLinhas.addEventListener("dblclick", (e) => {
+  if ((e.target as HTMLElement).closest("[data-i]")) void abrirOcorrencia();
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
@@ -857,7 +965,8 @@ textoLinhas.addEventListener("contextmenu", (e) => {
 for (const [k, aba] of Object.entries(abas)) aba.addEventListener("click", () => trocarModo(k as Modo));
 $("abas").addEventListener("keydown", (e) => {
   if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-  const m: Modo = modo === "arvore" ? "texto" : "arvore";
+  const ordem = Object.keys(abas) as Modo[];
+  const m = ordem[(ordem.indexOf(modo) + (e.key === "ArrowRight" ? 1 : ordem.length - 1)) % ordem.length];
   trocarModo(m);
   abas[m].focus();
 });
@@ -909,13 +1018,13 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return fecharAba(ativa);
   }
-  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto (`code`: com ⌥ o `key` vira outro caractere).
+  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura (`code`: com ⌥ o `key` vira outro caractere).
   if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && resumo) {
-    const m = ({ Digit1: "arvore", Digit2: "texto" } as const)[e.code as "Digit1" | "Digit2"];
+    const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura" } as const)[e.code as "Digit1" | "Digit2" | "Digit3"];
     if (m) {
       e.preventDefault();
       trocarModo(m);
-      (m === "texto" ? textoEl : arvore).focus(); // pedido explícito: o foco vai mesmo saindo da barra de abas
+      visaoAtual().focus(); // pedido explícito: o foco vai mesmo saindo da barra de abas
     }
     return;
   }
@@ -962,10 +1071,12 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   Object.assign(r, p);
   if (!ativo) return;
   desenharAndamento();
+  if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
   regua.andamento(p);
 });
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
 async function focarRegistro(r: number): Promise<boolean> {
+  if (modo === "estrutura") trocarModo("arvore"); // a Estrutura não tem registros
   const v = await chamar<number | null>("ir_para", { registro: r });
   if (v === null) return false;
   if (modo === "texto") {
@@ -988,6 +1099,8 @@ document.documentElement.lang = t.lang;
 $("abrir").textContent = t.abrir;
 abas.arvore.firstChild!.textContent = t.arvore;
 abas.texto.firstChild!.textContent = t.texto;
+abas.estrutura.firstChild!.textContent = t.estrutura.aba;
+estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);
 $("abas").setAttribute("aria-label", t.valores);
 listaEl.setAttribute("aria-label", t.abasArquivos.rotulo);
 $("nova-aba").setAttribute("aria-label", t.abasArquivos.nova);
