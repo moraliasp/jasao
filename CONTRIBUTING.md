@@ -6,8 +6,10 @@ Thanks for your interest. Jasão is a small app maintained by Moralia; issues an
 - **Pull requests:** keep them focused, one change per PR. Before opening one, run:
 
   ```bash
-  cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+  scripts/gates.sh
   ```
+
+  It runs the same steps as CI (`--completo` adds the app build and a short fuzz). To run it before every push, enable the hook once per clone: `git config core.hooksPath .githooks`.
 
 - **Sample files:** never commit real data. Fixtures are invented (documentation IPs such as 192.0.2.x, fictional names).
 - **Design decisions** are recorded in [`docs/decisoes.md`](docs/decisoes.md) (Portuguese). Read the relevant entry before changing something listed there.
