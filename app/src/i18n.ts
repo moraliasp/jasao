@@ -27,6 +27,14 @@ const pt = {
   itens: ["item", "itens"],
   byte: (n: string) => `byte ${n}`,
   inicio: "Início",
+  recentes: {
+    titulo: "Recentes",
+    arquivo: "Arquivo",
+    menu: "Abrir recente",
+    vazio: "Nenhum arquivo recente",
+    limpar: "Limpar recentes",
+    sumiu: (nome: string) => `${nome} não existe mais e saiu dos recentes.`,
+  },
   regua: {
     rotulo: "Posição no arquivo",
     faixa: (a: string, b: string, n: string) => `linhas ${a}–${b} de ${n}`,
@@ -116,6 +124,14 @@ const en: Textos = {
   itens: ["item", "items"],
   byte: (n) => `byte ${n}`,
   inicio: "Home",
+  recentes: {
+    titulo: "Recent",
+    arquivo: "File",
+    menu: "Open Recent",
+    vazio: "No recent files",
+    limpar: "Clear Recent",
+    sumiu: (nome: string) => `${nome} no longer exists and was removed from Recent.`,
+  },
   regua: {
     rotulo: "Position in file",
     faixa: (a, b, n) => `lines ${a}–${b} of ${n}`,
