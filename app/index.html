@@ -183,20 +183,26 @@
         .regua .rc { transition: opacity .4s ease-out; }
         .balao { animation: pulsar 1.2s ease-out 3; }
       }
-      .exemplos { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 12px; background: color-mix(in srgb, var(--accent) 8%, var(--bar-bg)); border-bottom: 1px solid var(--border); font-size: 13px; }
-      .exemplos .aviso { color: var(--bar-muted); }
-      .exemplos .alternador { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-      .exemplos .alternador button { height: 28px; padding: 0 10px; border: 0; background: var(--page-bg); color: var(--bar-fg); font-size: 13px; cursor: pointer; }
-      .exemplos .alternador button + button { border-left: 1px solid var(--border); }
-      .exemplos .alternador button:hover { background: var(--hover); }
-      .exemplos .alternador button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
-      .exemplos .btn { margin-left: auto; }
-      .recentes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 12px; background: var(--bar-bg); border-bottom: 1px solid var(--border); font-size: 13px; }
-      .recentes h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--bar-muted); }
-      .recentes ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
-      .recentes button { display: inline-flex; align-items: baseline; gap: 6px; max-width: 46ch; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); color: var(--bar-fg); font: inherit; cursor: pointer; }
-      .recentes button:hover { border-color: var(--accent); }
-      .recentes .pasta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bar-muted); }
+      .arquivos { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bar-bg); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+      .arquivos [role="tablist"] { display: flex; gap: 2px; min-width: 0; }
+      .arquivos .arq { display: flex; align-items: center; max-width: 220px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--bar-muted); }
+      .arquivos .arq:hover { background: var(--hover); }
+      .arquivos .arq:has([aria-selected="true"]) { background: var(--page-bg); border-color: var(--border); color: var(--bar-fg); margin-bottom: -1px; padding-bottom: 1px; }
+      .arquivos [role="tab"] { min-width: 0; padding: 5px 4px 5px 10px; border: 0; background: none; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+      .arquivos [role="tab"][aria-selected="true"] { font-weight: 600; }
+      .arquivos .arq .ib { width: 22px; height: 22px; margin-right: 4px; }
+      .arquivos .arq .ib svg.i { width: 13px; height: 13px; }
+      .arquivos > .ib { margin: 0 0 3px 2px; flex: none; }
+      .sem-arquivo { flex: 1; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 24px; text-align: center; color: var(--bar-muted); }
+      .sem-arquivo h1 { margin: 0; font-size: 18px; color: var(--bar-fg); }
+      .sem-arquivo p { margin: 0; max-width: 42ch; }
+      .soltar { position: fixed; inset: 8px; z-index: 50; display: grid; place-content: center; border: 2px dashed var(--accent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 12%, color-mix(in srgb, var(--page-bg) 85%, transparent)); color: var(--accent); font-size: 16px; font-weight: 600; pointer-events: none; }
+      .sem-arquivo .recentes { display: grid; gap: 6px; margin-top: 18px; width: min(460px, 90vw); text-align: left; }
+      .sem-arquivo .recentes h2 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--bar-muted); }
+      .sem-arquivo .recentes ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+      .sem-arquivo .recentes button { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--bar-fg); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+      .sem-arquivo .recentes button:hover, .sem-arquivo .recentes button:focus-visible { background: var(--hover); }
+      .sem-arquivo .recentes .pasta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bar-muted); }
     </style>
   </head>
   <body>
@@ -206,6 +212,7 @@
       <symbol id="moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
       <symbol id="copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
       <symbol id="braces" viewBox="0 0 24 24"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></symbol>
+      <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
       <symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
       <symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
       <symbol id="home" viewBox="0 0 24 24"><path d="M5 12H3l9-9 9 9h-2"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/><path d="M9 21v-6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v6"/></symbol>
@@ -222,10 +229,22 @@
         <button class="btn" id="abrir" type="button">Abrir…</button>
       </div>
     </header>
-    <main>
+    <div class="arquivos" id="arquivos">
+      <div role="tablist" id="arquivos-lista" aria-label="Arquivos abertos"></div>
+      <button class="ib" id="nova-aba" type="button" aria-keyshortcuts="Meta+T Control+T" aria-label="Nova aba"><svg class="i"><use href="#plus"/></svg></button>
+    </div>
+    <section class="sem-arquivo" id="sem-arquivo" role="tabpanel" hidden>
+      <svg class="i" style="width:32px;height:32px" aria-hidden="true"><use href="#braces"/></svg>
+      <h1 id="sem-arquivo-titulo"></h1>
+      <p id="sem-arquivo-dica"></p>
+      <button class="btn" id="sem-arquivo-abrir" type="button"></button>
+      <nav class="recentes" id="recentes" hidden></nav>
+    </section>
+    <div class="soltar" id="soltar" hidden></div>
+    <main id="area" role="tabpanel">
       <div class="views" role="tablist" id="abas" aria-label="Valores">
-        <button role="tab" aria-selected="true" aria-controls="arvore" type="button" id="aba-arvore" aria-keyshortcuts="Meta+1 Control+1">Árvore<kbd>⌘1</kbd></button>
-        <button role="tab" aria-selected="false" aria-controls="texto" type="button" id="aba-texto" tabindex="-1" aria-keyshortcuts="Meta+2 Control+2">Texto<kbd>⌘2</kbd></button>
+        <button role="tab" aria-selected="true" aria-controls="arvore" type="button" id="aba-arvore" aria-keyshortcuts="Alt+Meta+1 Alt+Control+1">Árvore<kbd>⌥⌘1</kbd></button>
+        <button role="tab" aria-selected="false" aria-controls="texto" type="button" id="aba-texto" tabindex="-1" aria-keyshortcuts="Alt+Meta+2 Alt+Control+2">Texto<kbd>⌥⌘2</kbd></button>
       </div>
       <section class="painel" id="painel" aria-labelledby="painel-nome" hidden>
         <div>

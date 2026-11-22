@@ -22,13 +22,14 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 |---|---|---|---|---|---|---|
 | Abrir JSONL grande sem travar | ✅ índice + varredura paralela em 2º plano (#12) | ✅ | ◐ | ❌ | — | — |
 | `.gz` / `.zst` | ✅ #4 | ? | ? | ❌ | — | — |
-| Busca no arquivo inteiro | ◐ core (#5) e interface (em PR) | ✅ | ✅ | ✅ | — | ◐ |
+| Busca no arquivo inteiro | ✅ core (#5) e interface (#19) | ✅ | ✅ | ✅ | — | ◐ |
+| Abas e arrastar vários arquivos | ◐ em PR | ? | ? | ❌ | — | ? |
 | Árvore de valores | ✅ #6 | ✅ | ✅ | ✅ | — | ✅ |
 | Texto cru sincronizado com a árvore | ✅ #9 | ? | ? | ◐ | — | — |
 | Tabela por coluna | ❌ | ? | ✅ | ❌ | — | ✅ |
-| Copiar caminho (jq, JSONPath, Pointer) | ◐ core e CLI (#7), interface em PR | ✅ | ✅ | ✅ | — | — |
+| Copiar caminho (jq, JSONPath, Pointer) | ✅ core e CLI (#7), interface (#19) | ✅ | ✅ | ✅ | — | — |
 | Linha inválida sem quebrar o resto | ✅ #7, #12 | ? | ? | ❌ | — | — |
-| Consulta jq | ◐ core e CLI (#10), interface em PR | ◐ JSONPath | ✅ | ❌ | — | ✅ (consulta Mongo) |
+| Consulta jq | ✅ core e CLI (#10), interface (#19) | ◐ JSONPath | ✅ | ❌ | — | ✅ (consulta Mongo) |
 | Valores inteligentes (data, JWT, base64) | ❌ | ? | ? | ✅ prévias | — | — |
 | Visão do arquivo inteiro (régua por variante e inválidas) | ✅ #16 | ? | ❌ | ❌ | — | ❌ |
 | Resumo ao abrir (painel de entrada) | ✅ #12 | ? | ? | ❌ | — | ◐ |
@@ -57,4 +58,5 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 - 21/11/2026: radar criado. Core com índice de linhas, `.gz`/`.zst` e busca. Em PR: árvore (#6), caminhos e linhas inválidas (#7), estrutura (#8), texto (#9) e jq (#10).
 - 22/11/2026: mergeados #6 a #10, #12 e #16. Novo: árvore, texto, painel de entrada e régua na interface; caminho, jq, estrutura e união discriminada no core e na CLI. CI passou a rodar em runner próprio (#15). Gap 1: busca, caminho e jq na interface.
 - 22/11/2026 (tarde): busca (⌘F, contagem, marcas na régua), copiar caminho (menu e atalhos) e consulta jq (⌘J, resultado no visualizador, volta ao arquivo) em PR. Sai o antigo gap 1; benchmark contra o Dadroit vira o primeiro.
+- 22/11/2026 (noite): abas de arquivo (estado por documento no Rust e no front, ⌘T/⌘W/⌘1…9/Ctrl+Tab) e arrastar vários arquivos para a janela em PR. Os exemplos embutidos viram duas abas.
 - 22/11/2026: em PR, recentes (os 10 últimos, na tela sem arquivo e no menu Arquivo) e associação de `.json`/`.jsonl`/`.ndjson` como visualizador alternativo, com abertura pelo Finder e instância única. Fica fora do placar, que compara visualização e não integração com o sistema.

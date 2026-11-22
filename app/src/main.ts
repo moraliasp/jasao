@@ -1,15 +1,20 @@
 // Tela Valores: Árvore e Texto sobre a mesma seleção. O Rust guarda o arquivo e a lista plana
 // de linhas visíveis; aqui só se pede a janela que cabe na tela (o resto não existe no DOM).
+// Cada aba de arquivo é um documento no Rust; as variáveis abaixo são as da aba ativa, guardadas
+// na aba ao sair dela e trazidas de volta ao voltar (ver `ativar`).
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
+import { aposFechar, ciclo, EXTENSOES, nomes, porAtalho, posicaoNova, triar } from "./abas";
+import { chamar, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
-import { criarExemplos } from "./exemplos";
+import { EXEMPLOS, nomeExemplo } from "./exemplos";
 import { type Motivo, t } from "./i18n";
-import { criarRecentes } from "./recentes";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { criarConsulta } from "./consulta";
+import { criarRecentes } from "./recentes";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
 import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml } from "./texto";
 
@@ -72,7 +77,7 @@ const regua = criarRegua($("regua"), $("legenda"), {
   ir: async (r) => {
     if (modo === "texto") return rolarPara(textoEl, r, registros, ALTURA_TEXTO);
     const n = ++irN;
-    const v = await invoke<number | null>("ir_para", { registro: r });
+    const v = await chamar<number | null>("ir_para", { registro: r });
     if (v !== null && n === irN) rolarPara(arvore, v, total, ALTURA);
   },
   selecionar: (r) => void focarRegistro(r),
@@ -108,7 +113,7 @@ async function pedir(primeira: number, cabem: number): Promise<void> {
   pedido = inicio;
   const v = versao;
   try {
-    const linhas = await invoke<Linha[]>("linhas", { inicio, quantidade: BLOCO });
+    const linhas = await chamar<Linha[]>("linhas", { inicio, quantidade: BLOCO });
     if (v === versao) cache = { inicio, linhas };
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
@@ -211,15 +216,17 @@ async function pedirTexto(primeira: number, cabem: number): Promise<void> {
   const inicio = Math.max(0, primeira - Math.floor((BLOCO - cabem) / 2));
   if (pedidoTexto === inicio) return;
   pedidoTexto = inicio;
+  const v = versao;
   try {
-    texto = decodificar(inicio, await invoke<ArrayBuffer>("texto", { inicio, quantidade: BLOCO }));
+    const j = decodificar(inicio, await chamar<ArrayBuffer>("texto", { inicio, quantidade: BLOCO }));
+    if (v === versao) texto = j;
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
     return; // redesenhar pediria de novo, em laço
   } finally {
     if (pedidoTexto === inicio) pedidoTexto = null;
   }
-  if (modo === "texto") desenharTexto();
+  if (v === versao && modo === "texto") desenharTexto();
 }
 
 function desenharTexto(): void {
@@ -252,7 +259,7 @@ function desenharTexto(): void {
 
 /** Seleciona a linha visível `v` da árvore a partir do Texto (o cache da árvore pode não cobri-la). */
 async function selecionar(v: number, n = ++selecao): Promise<void> {
-  const l = linhaEm(v) ?? (await invoke<Linha[]>("linhas", { inicio: v, quantidade: 1 }))[0];
+  const l = linhaEm(v) ?? (await chamar<Linha[]>("linhas", { inicio: v, quantidade: 1 }))[0];
   if (n !== selecao) return;
   sel = v;
   atual = l;
@@ -263,13 +270,13 @@ async function selecionar(v: number, n = ++selecao): Promise<void> {
 async function irParaRegistro(r: number): Promise<void> {
   const n = ++selecao; // senão a resposta de uma tecla anterior devolve `alvo` para trás
   alvo = Math.max(0, Math.min(registros - 1, r));
-  const v = await invoke<number | null>("ir_para", { registro: alvo });
+  const v = await chamar<number | null>("ir_para", { registro: alvo });
   if (v !== null && n === selecao) await selecionar(v, n);
 }
 
 /** Clique num trecho do Texto: abre a árvore até o valor daquele byte e seleciona. */
 async function revelar(registro: number, byte: number): Promise<void> {
-  const r = await invoke<[number, number] | null>("revelar", { registro, byte });
+  const r = await chamar<[number, number] | null>("revelar", { registro, byte });
   if (!r) return;
   total = r[1];
   versao++; // a lista da árvore mudou
@@ -279,7 +286,7 @@ async function revelar(registro: number, byte: number): Promise<void> {
 
 /** Achado da busca: abre a árvore até o byte e seleciona, nas duas visões. */
 async function irAoAchado(registro: number, byte: number): Promise<void> {
-  const r = await invoke<[number, number] | null>("revelar", { registro, byte });
+  const r = await chamar<[number, number] | null>("revelar", { registro, byte });
   if (!r) return;
   total = r[1];
   if (modo === "texto") {
@@ -317,7 +324,13 @@ async function teclaTexto(e: KeyboardEvent): Promise<void> {
   }
 }
 
-function trocarModo(m: Modo): void {
+/** Foca `el`, a menos que o usuário esteja andando pela barra de abas (aba ainda preparando não rouba o foco). */
+function focar(el: HTMLElement | null | undefined): void {
+  if (!$("arquivos-lista").contains(document.activeElement)) el?.focus();
+}
+
+/** `rolagem`: [árvore, texto] guardados na aba; sem ela, a seleção vem para a vista. */
+function trocarModo(m: Modo, rolagem?: [number, number]): void {
   modo = m;
   noPainel = false;
   painel.hidden = true;
@@ -330,15 +343,22 @@ function trocarModo(m: Modo): void {
   textoEl.hidden = m !== "texto";
   if (m === "texto") {
     alvo = atual?.registro ?? 0;
-    mostrarEm(textoEl, alvo, registros, ALTURA_TEXTO);
+    if (rolagem) {
+      textoAlto.style.height = espaco(textoEl, registros, ALTURA_TEXTO);
+      textoEl.scrollTop = rolagem[1];
+    } else mostrarEm(textoEl, alvo, registros, ALTURA_TEXTO);
     desenharTexto();
-    textoEl.focus();
+    focar(textoEl);
   } else {
+    if (rolagem) {
+      alto.style.height = espaco(arvore, total, ALTURA);
+      arvore.scrollTop = rolagem[0];
+    }
     void recarregar().then(() => {
-      mostrarLinha(sel);
+      if (!rolagem) mostrarLinha(sel);
       desenhar();
     });
-    arvore.focus();
+    focar(arvore);
   }
 }
 
@@ -349,14 +369,14 @@ async function recarregar(): Promise<void> {
   const { primeira, cabem } = geometria();
   const v = versao;
   const inicio = Math.max(0, primeira - Math.floor((BLOCO - cabem) / 2));
-  const linhas = await invoke<Linha[]>("linhas", { inicio, quantidade: BLOCO });
+  const linhas = await chamar<Linha[]>("linhas", { inicio, quantidade: BLOCO });
   if (v !== versao) return;
   cache = { inicio, linhas };
   desenhar();
 }
 
 async function alternar(v: number): Promise<void> {
-  total = await invoke<number>("alternar", { v });
+  total = await chamar<number>("alternar", { v });
   await recarregar();
 }
 
@@ -374,7 +394,7 @@ async function aoTeclado(e: KeyboardEvent): Promise<void> {
     ArrowRight: () => (l?.aberto ? mover(sel + 1) : l?.expansivel && alternar(sel)),
     ArrowLeft: async () => {
       if (l?.aberto) return alternar(sel);
-      const p = await invoke<number | null>("pai", { v: sel });
+      const p = await chamar<number | null>("pai", { v: sel });
       if (p !== null) mover(p);
     },
   };
@@ -393,7 +413,7 @@ async function abrirFormatado(): Promise<void> {
   const dialogo = $<HTMLDialogElement>("formatado");
   $("formatado-titulo").textContent = `${t.registroFormatado} · ${t.linha(fmt(atual.registro + 1))}`;
   try {
-    $("formatado-texto").textContent = await invoke<string>("formatado", { registro: atual.registro });
+    $("formatado-texto").textContent = await chamar<string>("formatado", { registro: atual.registro });
     dialogo.showModal();
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
@@ -424,53 +444,276 @@ function copiarComo(v: number, f: Formato, botao?: HTMLElement): void {
 }
 const menu = criarMenu($("menu"), (f) => copiarComo(sel, f));
 
-let aberto: string | null = null;
 const consulta = criarConsulta($("consulta"), {
-  aberto: () => aberto,
+  aberto: () => abaAtiva()?.caminho ?? null,
   // Resultado e volta abrem na visão em uso, sem passar pelo painel de entrada.
-  abrir: (c) => mostrar(c, noPainel ? undefined : modo),
+  abrir: async (c, id) => {
+    const a = lista.find((x) => x.doc === id);
+    if (a) await mostrar(c, a, a === abaAtiva() ? (noPainel ? undefined : modo) : a.modo);
+  },
   voltar: () => (modo === "texto" ? textoEl : arvore).focus(),
   fmt,
 });
 
-async function mostrar(caminho: string, visao?: Modo): Promise<boolean> {
-  consulta.abriu(caminho);
-  aberto = caminho;
-  status.textContent = t.abrindo;
-  const nome = exemplos.nome(caminho);
-  $("nome").textContent = nome;
+// ---- Abas de arquivo ----
+
+/** Uma aba. Os campos de estado só valem fora da aba ativa: a ativa vive nas variáveis do módulo. */
+interface Aba {
+  chave: number; // id no DOM
+  doc: number | null; // documento no Rust (null: aba vazia ou abrindo)
+  arquivo: string | null; // arquivo do usuário (dá o nome da aba)
+  caminho: string | null; // o aberto agora: o arquivo ou o resultado de uma consulta
+  ms: string; // tempo de abertura, para o painel
+  visao?: Modo; // visão pedida ao abrir; vale quando a aba for preparada
+  total: number;
+  registros: number;
+  sel: number;
+  modo: Modo;
+  noPainel: boolean;
+  resumo: Resumo | null; // null: aberta no Rust, mas ainda não preparada na tela
+  atual: Linha | undefined;
+  alvo: number;
+  rolagem: [number, number];
+  status: string;
+}
+const listaEl = $("arquivos-lista");
+const semArquivo = $("sem-arquivo");
+const area = $("area");
+const soltar = $("soltar");
+let chaves = 0;
+let lista: Aba[] = [];
+let ativa = -1;
+const abaAtiva = (): Aba | undefined => lista[ativa];
+const abaVazia = (): Aba => ({
+  chave: ++chaves, doc: null, arquivo: null, caminho: null, ms: "", total: 0, registros: 0, sel: 0, modo: "arvore",
+  noPainel: false, resumo: null, atual: undefined, alvo: 0, rolagem: [0, 0], status: "",
+});
+/** Acima desta soma de registros nas abas, abrir mais um avisa (o Rust guarda índice e árvore de cada). */
+const AVISO_REGISTROS = 50_000_000;
+
+function guardar(a: Aba): void {
+  Object.assign(a, {
+    total, registros, sel, modo, noPainel, resumo, atual, alvo,
+    rolagem: [arvore.scrollTop, textoEl.scrollTop], status: status.textContent ?? "",
+  });
+}
+
+function nomesDasAbas(): string[] {
+  const base = nomes(lista.map((a) => a.arquivo), t.abasArquivos.vazia);
+  return lista.map((a, i) => (a.arquivo && nomeExemplo(a.arquivo)) || base[i]);
+}
+
+function desenharAbas(): void {
+  const n = nomesDasAbas();
+  listaEl.innerHTML = lista
+    .map((a, i) => {
+      const s = i === ativa;
+      const atalho = i < 8 ? ` aria-keyshortcuts="Meta+${i + 1} Control+${i + 1}"` : "";
+      // Só a ativa aponta para o painel: no WebKit, aba cujo painel tem o foco conta como selecionada.
+      const painel = s ? ` aria-controls="${a.doc === null ? "sem-arquivo" : "area"}"` : "";
+      return `<div class="arq" role="presentation"><button role="tab" type="button" id="arq-${a.chave}" data-i="${i}"
+        aria-selected="${s}"${painel} tabindex="${s ? 0 : -1}"
+        title="${esc(a.arquivo ?? n[i])}"${atalho}>${esc(n[i])}</button><button class="ib" type="button" tabindex="-1"
+        data-fechar="${i}" aria-label="${esc(t.abasArquivos.fechar(n[i]))}">${icone("x")}</button></div>`;
+    })
+    .join("");
+  const a = abaAtiva();
+  if (!a) return;
+  area.setAttribute("aria-labelledby", `arq-${a.chave}`);
+  semArquivo.setAttribute("aria-labelledby", `arq-${a.chave}`);
+  $("nome").textContent = a.arquivo ? n[ativa] : "";
+  document.getElementById(`arq-${a.chave}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+/** Mostra a aba `i`: guarda a que sai e traz o estado da que entra. `foco`: o foco fica na aba. */
+function ativar(i: number, foco = false): void {
+  const antes = abaAtiva();
+  if (antes && i !== ativa) guardar(antes);
+  ativa = i;
+  const a = lista[i];
+  ({ total, registros, sel, modo, noPainel, resumo, atual, alvo } = a);
+  status.textContent = a.status;
+  // Respostas em voo eram da aba que saiu.
+  versao++;
+  selecao++;
+  irN++;
+  cache = texto = null;
+  pedido = pedidoTexto = null;
+  usarDoc(a.doc);
+  busca.usar(a.doc);
+  consulta.usar(a.doc);
+  desenharAbas();
+  const vazia = a.doc === null;
+  semArquivo.hidden = !vazia;
+  area.hidden = vazia;
+  inicioBtn.disabled = vazia;
+  faixa.textContent = "";
+  if (vazia) regua.abrir(0, false);
+  else if (!resumo) void preparar(a, a.visao);
+  else {
+    prepararRegua();
+    $("painel-nome").textContent = nomesDasAbas()[i];
+    $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], a.ms);
+    desenharPainel();
+    if (noPainel) mostrarPainel();
+    else trocarModo(modo, a.rolagem);
+  }
+  if (foco) document.getElementById(`arq-${a.chave}`)?.focus();
+  else if (vazia && !a.arquivo) $("sem-arquivo-abrir").focus();
+}
+
+/** Régua do documento ativo, com a contagem e as cores que a varredura já trouxe. */
+function prepararRegua(): void {
+  if (!resumo) return;
+  // Sem régua para JSON único ou vazio (decisão 2 do micronavegador).
+  regua.abrir(registros, ["objetos", "valores", "misto"].includes(resumo.conteudo));
+  regua.andamento(resumo);
+  regua.busca(busca.ativa());
+}
+
+/** Abre `caminho` no documento da aba `a` (cria o documento se a aba ainda não tiver); diz se abriu. */
+async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<boolean> {
+  if (a.doc !== null) consulta.abriu(caminho, a.doc);
+  a.status = t.abrindo;
+  if (a === abaAtiva()) status.textContent = t.abrindo;
   try {
     const inicio = performance.now();
-    total = registros = await invoke<number>("abrir", { caminho });
-    exemplos.aberto(caminho);
+    const r = await chamar<{ id: number; total: number }>("abrir", { caminho, id: a.doc });
+    if (!lista.includes(a)) {
+      void chamar("fechar", { id: r.id }).catch(() => {}); // aba fechada no meio
+      return false;
+    }
     const ms = fmt(Math.round(performance.now() - inicio));
-    sel = 0;
-    atual = undefined;
-    texto = null;
-    arvore.scrollTop = textoEl.scrollTop = 0;
-    resumo = await invoke<Resumo>("resumo");
-    // Sem régua para JSON único ou vazio (decisão 2 do micronavegador).
-    regua.abrir(registros, ["objetos", "valores", "misto"].includes(resumo.conteudo));
-    regua.andamento(resumo);
-    status.textContent = t.aberto(plural(registros, t.registros), ms);
-    $("painel-nome").textContent = nome;
-    $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], ms);
+    Object.assign(a, {
+      doc: r.id, caminho, ms, visao, total: r.total, registros: r.total, sel: 0, atual: undefined, alvo: 0,
+      resumo: null, rolagem: [0, 0], status: t.aberto(plural(r.total, t.registros), ms),
+    });
+    const soma = lista.reduce((n, x) => n + x.registros, 0);
+    if (soma > AVISO_REGISTROS) a.status += ` · ${t.abasArquivos.memoria(fmt(soma))}`;
+    if (a === abaAtiva()) ativar(ativa);
+    else desenharAbas();
+    return true;
+  } catch (erro) {
+    const msg = `${t.erro}: ${erro}`;
+    if (a.doc === null) {
+      // Não abriu: a aba sai em vez de ficar quebrada; o erro aparece na aba que ficar ativa.
+      const i = lista.indexOf(a);
+      if (i >= 0) fecharAba(i);
+      abaAtiva()!.status = status.textContent = msg;
+    } else {
+      a.status = msg;
+      if (a === abaAtiva()) status.textContent = msg;
+    }
+    return false;
+  }
+}
+
+/** Primeira vez na tela de um documento já aberto no Rust: resumo, régua e visão inicial. */
+async function preparar(a: Aba, visao?: Modo): Promise<void> {
+  const v = versao;
+  try {
+    const r = await chamar<Resumo>("resumo");
+    if (v !== versao) return; // trocou de aba: prepara quando voltar
+    resumo = r;
+    prepararRegua();
+    $("painel-nome").textContent = nomesDasAbas()[ativa];
+    $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[r.conteudo], a.ms);
     desenharPainel();
-    inicioBtn.disabled = false;
     const destino = visao ?? destinoAoAbrir();
     if (destino === "painel") mostrarPainel();
     await recarregar();
     if (destino === "texto") await selecionar(0);
+    if (v !== versao) return;
     if (destino !== "painel") trocarModo(destino);
     busca.reabrir();
-    emExemplo = caminho.startsWith("exemplo:");
-    void recentes.atualizar();
-    return true;
   } catch (erro) {
-    status.textContent = `${t.erro}: ${erro}`;
-    return false;
+    if (v === versao) status.textContent = `${t.erro}: ${erro}`;
   }
 }
+
+/** Abre o arquivo numa aba: a dele, se já estiver aberto; a ativa, se vazia; senão uma nova. */
+async function abrirEmAba(caminho: string): Promise<boolean> {
+  const j = lista.findIndex((a) => a.arquivo === caminho);
+  if (j >= 0) {
+    ativar(j);
+    return true;
+  }
+  if (abaAtiva()?.arquivo !== null) novaAba();
+  const a = abaAtiva()!;
+  a.arquivo = caminho;
+  desenharAbas();
+  return mostrar(caminho, a);
+}
+
+/** Recente ou pedido do sistema: se não abriu porque o arquivo sumiu, sai dos recentes com aviso. */
+async function abrirPedido(caminho: string): Promise<void> {
+  if (await abrirEmAba(caminho)) return;
+  if (await invoke<boolean>("recente_ausente", { caminho })) {
+    status.textContent = t.recentes.sumiu(caminho.split(/[\\/]/).pop() ?? caminho);
+  }
+}
+
+function novaAba(): void {
+  const i = posicaoNova(lista.length, ativa);
+  lista.splice(i, 0, abaVazia());
+  if (i <= ativa) ativa++;
+  ativar(i);
+}
+
+/** Fecha a aba `i` e libera o documento dela; fechar a última deixa uma aba vazia. */
+function fecharAba(i: number): void {
+  const a = lista[i];
+  if (!a) return;
+  if (a.doc !== null) {
+    void chamar("fechar", { id: a.doc }).catch(() => {}); // já fechado: nada a liberar
+    busca.fechar(a.doc);
+    consulta.fechar(a.doc);
+  }
+  const eraAtiva = i === ativa;
+  const nova = aposFechar(lista.length, i, ativa);
+  lista.splice(i, 1);
+  if (!lista.length) lista.push(abaVazia());
+  if (eraAtiva || nova < 0) {
+    ativa = -1;
+    ativar(Math.max(0, nova));
+  } else {
+    ativa = nova;
+    desenharAbas();
+  }
+}
+
+listaEl.addEventListener("click", (e) => {
+  const alvo = e.target as HTMLElement;
+  const f = alvo.closest<HTMLElement>("[data-fechar]");
+  if (f) return fecharAba(Number(f.dataset.fechar));
+  const tab = alvo.closest<HTMLElement>("[data-i]");
+  if (tab) ativar(Number(tab.dataset.i), true);
+});
+listaEl.addEventListener("auxclick", (e) => {
+  const tab = (e.target as HTMLElement).closest(".arq")?.querySelector<HTMLElement>("[data-i]");
+  if (e.button === 1 && tab) fecharAba(Number(tab.dataset.i));
+});
+listaEl.addEventListener("keydown", (e) => {
+  const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
+  if (!tab) return;
+  const i = Number(tab.dataset.i);
+  const n = lista.length;
+  const destino =
+    e.key === "ArrowRight" ? ciclo(n, i, 1)
+    : e.key === "ArrowLeft" ? ciclo(n, i, -1)
+    : e.key === "Home" ? 0
+    : e.key === "End" ? n - 1
+    : null;
+  if (destino !== null) {
+    e.preventDefault();
+    ativar(destino, true);
+  } else if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    fecharAba(i);
+    document.getElementById(`arq-${abaAtiva()!.chave}`)?.focus();
+  }
+});
+$("nova-aba").addEventListener("click", novaAba);
 
 // ---- Painel de entrada: o que é o arquivo e por onde começar. ----
 
@@ -553,7 +796,7 @@ function mostrarPainel(): void {
   painel.hidden = false;
   conteudo.hidden = true;
   for (const aba of Object.values(abas)) aba.setAttribute("aria-selected", "false");
-  painelModos.querySelector<HTMLElement>(".sugerido")?.focus();
+  focar(painelModos.querySelector<HTMLElement>(".sugerido"));
 }
 
 arvore.addEventListener("scroll", agendar, { passive: true });
@@ -653,6 +896,29 @@ document.addEventListener("keydown", (e) => {
       return;
     }
   }
+  // Abas de arquivo: ⌘T nova, ⌘W fecha, ⌘1…9 e Ctrl+Tab / Ctrl+Shift+Tab trocam.
+  if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") {
+    e.preventDefault();
+    return ativar(ciclo(lista.length, ativa, e.shiftKey ? -1 : 1));
+  }
+  if (cmd && !e.shiftKey && e.key.toLowerCase() === "t") {
+    e.preventDefault();
+    return novaAba();
+  }
+  if (cmd && !e.shiftKey && e.key.toLowerCase() === "w") {
+    e.preventDefault();
+    return fecharAba(ativa);
+  }
+  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto (`code`: com ⌥ o `key` vira outro caractere).
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && resumo) {
+    const m = ({ Digit1: "arvore", Digit2: "texto" } as const)[e.code as "Digit1" | "Digit2"];
+    if (m) {
+      e.preventDefault();
+      trocarModo(m);
+      (m === "texto" ? textoEl : arvore).focus(); // pedido explícito: o foco vai mesmo saindo da barra de abas
+    }
+    return;
+  }
   if (e.altKey || e.shiftKey) return;
   if (!(e.metaKey || e.ctrlKey)) {
     // No painel: 1, 2… abrem o cartão daquela posição; Enter fora de um botão abre o sugerido.
@@ -672,10 +938,10 @@ document.addEventListener("keydown", (e) => {
     mostrarPainel();
     return;
   }
-  const m = ({ "1": "arvore", "2": "texto" } as const)[e.key as "1" | "2"];
-  if (!m) return;
+  const i = /^[1-9]$/.test(e.key) ? porAtalho(lista.length, Number(e.key)) : null;
+  if (i === null) return;
   e.preventDefault();
-  trocarModo(m);
+  ativar(i);
 });
 painelModos.addEventListener("click", (e) => {
   const m = (e.target as HTMLElement).closest<HTMLElement>("[data-modo]")?.dataset.modo;
@@ -687,16 +953,20 @@ preferencia.addEventListener("change", () => {
     localStorage.setItem(PREFERENCIA, preferencia.value);
   } catch {} // armazenamento bloqueado: vale só nesta sessão
 });
-void listen<Andamento>("varredura", ({ payload: p }) => {
+void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
+  const a = lista.find((x) => x.doc === p.id);
+  const ativo = a === abaAtiva();
+  const r = ativo ? resumo : a?.resumo;
   // Aviso de arquivo anterior, ou mais velho que o `resumo` já recebido: ignora.
-  if (!resumo || p.geracao !== resumo.geracao || (p.varridas < resumo.varridas && !p.fim)) return;
-  Object.assign(resumo, p);
+  if (!r || p.geracao !== r.geracao || (p.varridas < r.varridas && !p.fim)) return;
+  Object.assign(r, p);
+  if (!ativo) return;
   desenharAndamento();
   regua.andamento(p);
 });
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
 async function focarRegistro(r: number): Promise<boolean> {
-  const v = await invoke<number | null>("ir_para", { registro: r });
+  const v = await chamar<number | null>("ir_para", { registro: r });
   if (v === null) return false;
   if (modo === "texto") {
     await selecionar(v);
@@ -719,6 +989,13 @@ $("abrir").textContent = t.abrir;
 abas.arvore.firstChild!.textContent = t.arvore;
 abas.texto.firstChild!.textContent = t.texto;
 $("abas").setAttribute("aria-label", t.valores);
+listaEl.setAttribute("aria-label", t.abasArquivos.rotulo);
+$("nova-aba").setAttribute("aria-label", t.abasArquivos.nova);
+$("nova-aba").title = t.abasArquivos.nova;
+$("sem-arquivo-titulo").textContent = t.abasArquivos.semArquivo;
+$("sem-arquivo-dica").textContent = t.abasArquivos.dica;
+$("sem-arquivo-abrir").textContent = t.abrir;
+soltar.textContent = t.abasArquivos.soltar;
 verFormatado.querySelector("span")!.textContent = t.verFormatado;
 $("formatado-fechar").setAttribute("aria-label", t.fechar);
 textoEl.setAttribute("aria-label", t.textoDoArquivo);
@@ -742,31 +1019,41 @@ $("tema").addEventListener("click", () => {
 });
 if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.dataset.theme = "dark";
 
-$("abrir").addEventListener("click", async () => {
-  const caminho = await open({ multiple: false, filters: [{ name: "JSON Lines", extensions: ["jsonl", "ndjson", "json"] }] });
-  if (typeof caminho === "string") await mostrar(caminho);
-});
-
-const exemplos = criarExemplos(mostrar, () => $("abrir").click());
-
-// Recentes: aparecem junto da barra dos exemplos, ou seja, quando não há arquivo do usuário aberto.
-let emExemplo = false;
-let recentesEl: HTMLElement = document.createElement("nav");
-document.querySelector(".exemplos")!.after(recentesEl);
-const recentes = criarRecentes(mostrar, (texto) => (status.textContent = texto), () => {
-  const novo = recentes.lista();
-  if (!emExemplo) novo.hidden = true;
-  recentesEl.replaceWith(novo);
-  recentesEl = novo;
-});
-
-// shortcut: sem abas, vários arquivos abrem um depois do outro e fica o último; com abas, um por aba.
-async function abrirTodos(caminhos: string[]): Promise<void> {
-  for (const c of caminhos) await mostrar(c);
+async function abrirDialogo(): Promise<void> {
+  const caminhos = await open({ multiple: true, filters: [{ name: "JSON, JSON Lines", extensions: EXTENSOES }] });
+  for (const c of caminhos ?? []) await abrirEmAba(c);
 }
-// Pedidos do sistema com o app aberto (Finder, "Abrir com", 2ª instância). Escuta antes de pedir os
-// iniciais: o que chegar no meio sai da fila uma vez só, por um dos dois.
-void listen("abrir-arquivos", async () => abrirTodos(await invoke<string[]>("arquivos_pedidos"))).then(() =>
-  // Sem arquivo pedido pelo sistema, o Rust devolve o primeiro exemplo embutido.
-  invoke<string[]>("arquivos_iniciais").then(abrirTodos),
-);
+$("abrir").addEventListener("click", () => void abrirDialogo());
+$("sem-arquivo-abrir").addEventListener("click", () => void abrirDialogo());
+
+// Arrastar arquivos para a janela: cada aceito numa aba; o resto vira aviso no status, sem aba.
+void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {
+  soltar.hidden = p.type !== "enter" && p.type !== "over";
+  if (p.type !== "drop" || !p.paths.length) return;
+  const { abrir, recusados, pastas } = triar(p.paths, await invoke<boolean[]>("pastas", { caminhos: p.paths }));
+  const nome = (c: string) => c.split(/[\\/]/).pop() ?? c;
+  for (const c of abrir) await abrirEmAba(c);
+  const avisos = [
+    recusados.length ? t.abasArquivos.recusados(recusados.map(nome).join(", ")) : "",
+    pastas.length ? t.abasArquivos.pastas(pastas.map(nome).join(", ")) : "",
+  ].filter(Boolean);
+  if (avisos.length) status.textContent = [abrir.length ? abaAtiva()?.status : "", ...avisos].filter(Boolean).join(" · ");
+});
+
+criarRecentes($("recentes"), (c) => void abrirPedido(c));
+
+// Pedidos do sistema com o app aberto (Finder, "Abrir com", menu Arquivo › Abrir recente,
+// 2ª instância): o aviso não leva caminho; cada um sai da fila uma vez, numa aba.
+void listen("abrir-arquivos", async () => {
+  for (const c of await invoke<string[]>("arquivos_pedidos")) await abrirPedido(c);
+});
+
+// Na abertura: os arquivos pedidos pelo sistema, cada um numa aba; sem nenhum, os exemplos embutidos.
+lista = [abaVazia()];
+ativar(0);
+invoke<string[]>("arquivos_iniciais").then(async (pedidos) => {
+  const iniciais = pedidos.length ? pedidos : EXEMPLOS;
+  for (const c of iniciais) await (pedidos.length ? abrirPedido(c) : abrirEmAba(c));
+  const j = lista.findIndex((a) => a.arquivo === iniciais[0]);
+  if (j >= 0 && j !== ativa) ativar(j);
+});
