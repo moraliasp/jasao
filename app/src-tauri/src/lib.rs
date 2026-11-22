@@ -1,8 +1,8 @@
 //! Casca do app: guarda os documentos abertos (um por aba) e entrega janelas da árvore à
 //! interface. Todo comando recebe o `id` do documento; os eventos o devolvem.
 
-use std::io::{BufWriter, Write};
 use std::collections::HashMap;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -574,11 +574,7 @@ fn consultar<R: Runtime>(
     estado: State<'_, Estado>,
 ) -> Result<u64, ErroConsulta> {
     let doc = estado.doc(id)?;
-    let (geracao, cancelar) = doc
-        .consulta
-        .lock()
-        .map_err(|e| e.to_string())?
-        .reiniciar();
+    let (geracao, cancelar) = doc.consulta.lock().map_err(|e| e.to_string())?.reiniciar();
     let consulta = Consulta::nova(&filtro).map_err(|e| ErroConsulta {
         mensagem: e.to_string(),
         falhas: e
@@ -838,10 +834,61 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
         ])
 }
 
+/// Menu do macOS sem "Fechar janela": lá ⌘W fecharia a janela, e no Jasão ⌘W fecha a aba (no JS).
+#[cfg(target_os = "macos")]
+fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, PredefinedMenuItem as P, Submenu};
+    let nome = app.package_info().name.clone();
+    let app_menu = Submenu::with_items(
+        app,
+        &nome,
+        true,
+        &[
+            &P::about(app, None, None)?,
+            &P::separator(app)?,
+            &P::services(app, None)?,
+            &P::separator(app)?,
+            &P::hide(app, None)?,
+            &P::hide_others(app, None)?,
+            &P::show_all(app, None)?,
+            &P::separator(app)?,
+            &P::quit(app, None)?,
+        ],
+    )?;
+    let editar = Submenu::with_items(
+        app,
+        "Editar",
+        true,
+        &[
+            &P::undo(app, None)?,
+            &P::redo(app, None)?,
+            &P::separator(app)?,
+            &P::cut(app, None)?,
+            &P::copy(app, None)?,
+            &P::paste(app, None)?,
+            &P::select_all(app, None)?,
+        ],
+    )?;
+    let janela = Submenu::with_items(
+        app,
+        "Janela",
+        true,
+        &[
+            &P::minimize(app, None)?,
+            &P::maximize(app, None)?,
+            &P::separator(app)?,
+            &P::fullscreen(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &editar, &janela])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    comandos(tauri::Builder::default())
-        .plugin(tauri_plugin_dialog::init())
+    let b = comandos(tauri::Builder::default());
+    #[cfg(target_os = "macos")]
+    let b = b.menu(menu);
+    b.plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Título vem do productName (tauri.conf.json), onde mora o nome do produto.
             let nome = app.package_info().name.clone();
@@ -1055,8 +1102,12 @@ mod testes {
                 break a;
             }
         };
-        let erro =
-            em(2, "consultar", json!({"filtro": ".x | (", "caminho": caminho})).unwrap_err();
+        let erro = em(
+            2,
+            "consultar",
+            json!({"filtro": ".x | (", "caminho": caminho}),
+        )
+        .unwrap_err();
         assert_eq!(erro["falhas"][0]["linha"], json!(1));
         assert!(erro["falhas"][0]["coluna"].as_u64().unwrap() >= 5, "{erro}");
         assert_eq!(
@@ -1107,7 +1158,14 @@ mod testes {
         let exemplo = chamar("abrir", json!({ "caminho": "exemplo:vitrine" })).unwrap();
         let ex = exemplo["id"].as_u64().unwrap() as u32;
         assert_eq!(ex, 3);
-        assert!(em(ex, "consultar", json!({"filtro": ".", "caminho": "exemplo:vitrine"})).is_ok());
+        assert!(
+            em(
+                ex,
+                "consultar",
+                json!({"filtro": ".", "caminho": "exemplo:vitrine"})
+            )
+            .is_ok()
+        );
         let a = fim();
         assert_eq!(a["id"], json!(3));
         let resultado = a["arquivo"].as_str().unwrap().to_owned();
@@ -1116,7 +1174,10 @@ mod testes {
         // consulta é apagado e o id deixa de valer.
         let doc = Arc::downgrade(&app.state::<Estado>().doc(ex).unwrap());
         assert_eq!(em(ex, "fechar", json!({})), Ok(Value::Null));
-        assert!(doc.upgrade().is_none(), "documento fechado continua na memória");
+        assert!(
+            doc.upgrade().is_none(),
+            "documento fechado continua na memória"
+        );
         assert!(!std::path::Path::new(&resultado).exists());
         let erro = em(ex, "resumo", json!({})).unwrap_err();
         assert!(erro.as_str().unwrap().contains("documento 3"), "{erro}");

@@ -1,6 +1,6 @@
 // Copiar caminho (jq, JSONPath, JSON Pointer) e valor do nó. Os textos vêm do núcleo
 // (`caminhos`, `valor`); aqui ficam a escrita na área de transferência e o menu de contexto.
-import { invoke } from "@tauri-apps/api/core";
+import { chamar } from "./doc";
 
 export type Formato = "jq" | "jsonpath" | "pointer" | "valor";
 export const FORMATOS: Formato[] = ["jq", "jsonpath", "pointer", "valor"];
@@ -9,8 +9,8 @@ export const FORMATOS: Formato[] = ["jq", "jsonpath", "pointer", "valor"];
 async function texto(v: number, formato: Formato): Promise<string> {
   const s =
     formato === "valor"
-      ? await invoke<string | null>("valor", { v })
-      : (await invoke<Record<string, string> | null>("caminhos", { v }))?.[formato];
+      ? await chamar<string | null>("valor", { v })
+      : (await chamar<Record<string, string> | null>("caminhos", { v }))?.[formato];
   if (s == null) throw new Error(`linha ${v} fora da lista`);
   return s;
 }
