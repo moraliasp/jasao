@@ -1,17 +1,20 @@
 //! Casca do app: guarda o documento aberto e entrega janelas da árvore à interface.
 
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 mod abertura;
 mod exemplos;
 mod recentes;
 
 use nucleo::arvore::Linha;
+use nucleo::consulta::{Consulta, LoteConsulta};
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
-use nucleo::{ArquivoLinhas, Arvore};
+use nucleo::{Achado, ArquivoLinhas, Arvore, Busca};
 use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
@@ -19,11 +22,122 @@ use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 const MAX_JANELA: usize = 1_000;
 /// Teto de baldes da régua (mais que isso não cabe em pixels).
 const MAX_BALDES: usize = 4_096;
+/// Achados guardados para navegar; acima disso a busca só conta (~24 MB de achados).
+// shortcut: navegação para no milionésimo achado; guardar em disco se pedirem mais.
+const MAX_ACHADOS: usize = 1_000_000;
+/// Teto de achados por pedido de `achados` (uma janela da tela).
+const MAX_ACHADOS_JANELA: usize = 10_000;
+/// Intervalo mínimo entre avisos de progresso de busca e consulta.
+const INTERVALO: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 struct Estado {
     arvore: Mutex<Option<Arvore>>,
     varredura: Mutex<Varredura>,
+    busca: Mutex<EstadoBusca>,
+    consulta: Mutex<EstadoConsulta>,
+}
+
+/// Consulta jq em curso ou mostrada (ver `consultar`).
+#[derive(Default)]
+struct EstadoConsulta {
+    /// Sobe a cada `consultar` e `fechar_consulta`: evento de consulta anterior é descartado.
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+    /// JSONL temporário com o resultado da última consulta.
+    arquivo: Option<PathBuf>,
+}
+
+impl EstadoConsulta {
+    /// Cancela a consulta em curso e apaga o resultado anterior. Arquivo apagado continua legível
+    /// enquanto a árvore o tiver mapeado (Unix).
+    // shortcut: no Windows o arquivo mapeado não apaga e fica no temp; limpar ao abrir outro.
+    fn reiniciar(&mut self) -> (u64, Arc<AtomicBool>) {
+        self.cancelar.store(true, Relaxed);
+        self.cancelar = Arc::new(AtomicBool::new(false));
+        self.geracao += 1;
+        if let Some(a) = self.arquivo.take() {
+            let _ = std::fs::remove_file(a);
+        }
+        (self.geracao, Arc::clone(&self.cancelar))
+    }
+}
+
+/// Evento `consulta`: progresso e, no fim, o arquivo com o resultado da consulta `geracao`.
+#[derive(Clone, Serialize)]
+struct AndamentoConsulta {
+    geracao: u64,
+    resultados: u64,
+    linhas: usize,
+    total: usize,
+    erros: u64,
+    /// Primeiro erro de linha (linha a partir de 0, motivo), no fim.
+    primeiro_erro: Option<(usize, String)>,
+    fim: bool,
+    cancelado: bool,
+    /// JSONL com o resultado, no fim de uma consulta que não foi cancelada nem falhou.
+    arquivo: Option<String>,
+    /// Falha ao gravar o resultado.
+    falha: Option<String>,
+}
+
+/// Erro de `consultar`: filtro que não compila (com as falhas) ou arquivo que não abre.
+#[derive(Debug, Serialize)]
+struct ErroConsulta {
+    mensagem: String,
+    falhas: Vec<FalhaFiltro>,
+}
+
+#[derive(Debug, Serialize)]
+struct FalhaFiltro {
+    inicio: usize,
+    fim: usize,
+    linha: usize,
+    coluna: usize,
+    mensagem: String,
+}
+
+impl From<String> for ErroConsulta {
+    fn from(mensagem: String) -> Self {
+        Self {
+            mensagem,
+            falhas: Vec::new(),
+        }
+    }
+}
+
+/// Busca no arquivo aberto (roda em 2º plano, ver `buscar`).
+#[derive(Default)]
+struct EstadoBusca {
+    /// Sobe a cada `buscar` e a cada `abrir`: achado de busca anterior é descartado.
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+    /// Os primeiros `MAX_ACHADOS`, em ordem de arquivo.
+    achados: Vec<Achado>,
+}
+
+impl EstadoBusca {
+    /// Cancela a busca em curso e começa outra geração, sem achados.
+    fn reiniciar(&mut self) -> (u64, Arc<AtomicBool>) {
+        self.cancelar.store(true, Relaxed);
+        self.cancelar = Arc::new(AtomicBool::new(false));
+        self.geracao += 1;
+        self.achados = Vec::new();
+        (self.geracao, Arc::clone(&self.cancelar))
+    }
+}
+
+/// Evento `busca`: progresso e contagem da busca `geracao`.
+#[derive(Clone, Serialize)]
+struct AndamentoBusca {
+    geracao: u64,
+    /// Achados até aqui (todos, inclusive os acima de `MAX_ACHADOS`).
+    achados: u64,
+    /// Quantos dá para navegar (`achado(i)` com `i < guardados`).
+    guardados: usize,
+    varridos: usize,
+    total: usize,
+    fim: bool,
 }
 
 /// Varredura de linhas inválidas do arquivo aberto (roda em 2º plano, ver `abrir`).
@@ -118,16 +232,21 @@ fn recente_ausente<R: Runtime>(caminho: String, app: AppHandle<R>) -> Result<boo
 /// a do arquivo anterior é cancelada.
 // shortcut: aceita qualquer caminho vindo da interface (só leitura); passar a concessões por
 // diálogo/arraste como no Leve quando a interface carregar conteúdo de fora.
+/// Arquivo do disco ou exemplo embutido (`exemplo:…`), pelo mesmo caminho para `abrir` e `consultar`.
+fn abrir_linhas(caminho: &str) -> Result<ArquivoLinhas, String> {
+    match exemplos::embutido(caminho) {
+        Some(bytes) => Ok(ArquivoLinhas::estatico(bytes)),
+        None => ArquivoLinhas::abrir(caminho).map_err(|e| format!("{caminho}: {e}")),
+    }
+}
+
 #[tauri::command]
 async fn abrir<R: Runtime>(
     caminho: String,
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<usize, String> {
-    let arvore = match exemplos::embutido(&caminho) {
-        Some(bytes) => Arvore::new(ArquivoLinhas::estatico(bytes)),
-        None => Arvore::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?,
-    };
+    let arvore = Arvore::new(abrir_linhas(&caminho)?);
     let total = arvore.total();
     let arquivo = arvore.compartilhado();
     let conteudo = resumo::conteudo(&arquivo);
@@ -157,8 +276,16 @@ async fn abrir<R: Runtime>(
         v.coloriu = false;
         v.geracao
     };
+    estado.busca.lock().map_err(|e| e.to_string())?.reiniciar();
     *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
-    if exemplos::embutido(&caminho).is_none() {
+    // Recentes: só arquivo do usuário, nem exemplo embutido nem resultado de consulta jq.
+    let consulta = estado
+        .consulta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .arquivo
+        .clone();
+    if exemplos::embutido(&caminho).is_none() && consulta.is_none_or(|a| a != Path::new(&caminho)) {
         lembrar(&app, &caminho);
     }
     std::thread::spawn(move || {
@@ -338,6 +465,271 @@ fn formatado(registro: usize, estado: State<'_, Estado>) -> Result<String, Strin
     })?
 }
 
+/// Caminho do nó selecionado nos três formatos que se copiam.
+#[derive(Serialize)]
+struct Caminhos {
+    jq: String,
+    jsonpath: String,
+    pointer: String,
+}
+
+/// Caminho do nó na linha visível `v`, a partir do registro (`None` fora da lista).
+#[tauri::command]
+fn caminhos(v: usize, estado: State<'_, Estado>) -> Result<Option<Caminhos>, String> {
+    estado.com(|a| {
+        a.caminho(v).map(|c| Caminhos {
+            jq: c.jq(),
+            jsonpath: c.jsonpath(),
+            pointer: c.json_pointer(),
+        })
+    })
+}
+
+/// Valor da linha visível `v` para copiar (texto JSON decodificado; ver `Arvore::valor`).
+#[tauri::command]
+fn valor(v: usize, estado: State<'_, Estado>) -> Result<Option<String>, String> {
+    let valor = estado.com(|a| a.valor(v))?;
+    match valor {
+        Some(s) if s.len() > MAX_FORMATADO => Err(format!(
+            "valor de {} MB passa do limite de {} MB para copiar",
+            s.len() >> 20,
+            MAX_FORMATADO >> 20
+        )),
+        v => Ok(v),
+    }
+}
+
+/// Roda o filtro jq `filtro` sobre `caminho` em outra thread e grava os resultados (JSON
+/// compacto, um por linha) num JSONL temporário, avisado no evento `consulta`. JSON único ou em
+/// várias linhas vira um documento; o resto, JSONL linha a linha. Devolve a geração.
+#[tauri::command]
+fn consultar<R: Runtime>(
+    filtro: String,
+    caminho: String,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<u64, ErroConsulta> {
+    let (geracao, cancelar) = estado
+        .consulta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .reiniciar();
+    let consulta = Consulta::nova(&filtro).map_err(|e| ErroConsulta {
+        mensagem: e.to_string(),
+        falhas: e
+            .falhas
+            .into_iter()
+            .map(|f| FalhaFiltro {
+                inicio: f.faixa.start,
+                fim: f.faixa.end,
+                linha: f.linha,
+                coluna: f.coluna,
+                mensagem: f.mensagem,
+            })
+            .collect(),
+    })?;
+    let arquivo = abrir_linhas(&caminho)?;
+    let documento = matches!(
+        resumo::conteudo(&arquivo),
+        Conteudo::JsonUnico | Conteudo::JsonVariasLinhas
+    );
+    // Nome com os nanossegundos do relógio para não ser previsível; `create_new` (O_EXCL) recusa
+    // arquivo ou link que alguém tenha posto ali antes, e 0600 deixa o resultado só para o dono.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let destino = std::env::temp_dir().join(format!(
+        "jasao-consulta-{}-{geracao}-{nanos:x}.jsonl",
+        std::process::id()
+    ));
+    let mut abrir = std::fs::OpenOptions::new();
+    abrir.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut abrir, 0o600);
+    let saida = abrir
+        .open(&destino)
+        .map_err(|e| format!("{}: {e}", destino.display()))?;
+    estado.consulta.lock().map_err(|e| e.to_string())?.arquivo = Some(destino.clone());
+    std::thread::spawn(move || {
+        let avisar = |a: AndamentoConsulta| {
+            let _ = app.emit("consulta", a);
+        };
+        let mut gravado = 0u64;
+        let mut falha: Option<std::io::Error> = None;
+        let mut ultimo = Instant::now();
+        let mut out = BufWriter::new(saida);
+        let ao_lote = |lote: LoteConsulta| {
+            for r in &lote.resultados {
+                if let Err(e) = writeln!(out, "{}", r.json) {
+                    falha.get_or_insert(e);
+                    cancelar.store(true, Relaxed);
+                    return;
+                }
+            }
+            gravado += lote.resultados.len() as u64;
+            if ultimo.elapsed() >= INTERVALO {
+                ultimo = Instant::now();
+                avisar(AndamentoConsulta {
+                    geracao,
+                    resultados: gravado,
+                    linhas: lote.linhas,
+                    total: lote.total_linhas,
+                    erros: 0,
+                    primeiro_erro: None,
+                    fim: false,
+                    cancelado: false,
+                    arquivo: None,
+                    falha: None,
+                });
+            }
+        };
+        let resumo = if documento {
+            consulta.executar_documento(arquivo.bytes(), &cancelar, ao_lote)
+        } else {
+            consulta.executar_jsonl(arquivo.bytes(), &cancelar, ao_lote)
+        };
+        if let Err(e) = out.flush() {
+            falha.get_or_insert(e);
+        }
+        // Consulta mais nova ou fechada: o resultado desta não serve a ninguém.
+        let estado = app.state::<Estado>();
+        let atual = estado.consulta.lock().is_ok_and(|c| c.geracao == geracao);
+        let cancelado = resumo.cancelado;
+        if !atual || cancelado || falha.is_some() {
+            let _ = std::fs::remove_file(&destino);
+        }
+        if !atual {
+            return;
+        }
+        avisar(AndamentoConsulta {
+            geracao,
+            resultados: resumo.resultados,
+            linhas: resumo.linhas,
+            total: resumo.total_linhas,
+            erros: resumo.erros,
+            primeiro_erro: resumo
+                .primeiros_erros
+                .first()
+                .map(|e| (e.linha, e.motivo.clone())),
+            fim: true,
+            cancelado: falha.is_none() && cancelado,
+            arquivo: (falha.is_none() && !cancelado)
+                .then(|| destino.to_string_lossy().into_owned()),
+            falha: falha.map(|e| format!("{}: {e}", destino.display())),
+        });
+    });
+    Ok(geracao)
+}
+
+/// Cancela a consulta em curso e apaga o resultado (o arquivo original já foi reaberto).
+#[tauri::command]
+fn fechar_consulta(estado: State<'_, Estado>) -> Result<(), String> {
+    estado
+        .consulta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .reiniciar();
+    Ok(())
+}
+
+/// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
+/// (no máximo a cada `INTERVALO`, e no fim); a busca anterior é cancelada e seus achados somem.
+/// Padrão vazio só limpa. Devolve a geração da busca, que vem em cada evento.
+#[tauri::command]
+fn buscar<R: Runtime>(
+    padrao: String,
+    regex: bool,
+    ignorar_caixa: bool,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<u64, String> {
+    let arquivo = estado.com(|a| a.compartilhado())?;
+    let (geracao, cancelar) = estado.busca.lock().map_err(|e| e.to_string())?.reiniciar();
+    if padrao.is_empty() {
+        return Ok(geracao);
+    }
+    let busca = Busca::nova(&padrao, regex, ignorar_caixa).map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let mut aviso = Instant::now();
+        let avisar = |achados, varridos, total, fim| {
+            let estado = app.state::<Estado>();
+            let Ok(b) = estado.busca.lock() else { return };
+            if b.geracao != geracao {
+                return;
+            }
+            let guardados = b.achados.len();
+            drop(b);
+            let _ = app.emit(
+                "busca",
+                AndamentoBusca {
+                    geracao,
+                    achados,
+                    guardados,
+                    varridos,
+                    total,
+                    fim,
+                },
+            );
+        };
+        let mut contados = 0;
+        let r = busca.executar(arquivo.bytes(), &cancelar, |lote| {
+            contados += lote.achados.len() as u64;
+            if let Ok(mut b) = app.state::<Estado>().busca.lock()
+                && b.geracao == geracao
+            {
+                let cabem = MAX_ACHADOS - b.achados.len();
+                b.achados.extend(lote.achados.into_iter().take(cabem));
+            }
+            if aviso.elapsed() >= INTERVALO {
+                aviso = Instant::now();
+                avisar(contados, lote.varridos, lote.total, false);
+            }
+        });
+        if !r.cancelado {
+            avisar(r.achados, r.varridos, r.total, true);
+        }
+    });
+    Ok(geracao)
+}
+
+/// O achado `i` da busca atual como `[linha, coluna, comprimento]` (bytes na linha).
+#[tauri::command]
+fn achado(i: usize, estado: State<'_, Estado>) -> Result<Option<[usize; 3]>, String> {
+    let b = estado.busca.lock().map_err(|e| e.to_string())?;
+    Ok(b.achados.get(i).map(|a| [a.linha, a.coluna, a.comprimento]))
+}
+
+/// Achados dos registros `[inicio, inicio + quantidade)`, como em `achado`, mais o índice do
+/// primeiro deles: `[indice, [[linha, coluna, comprimento], …]]`. É o realce da tela.
+#[tauri::command]
+fn achados(
+    inicio: usize,
+    quantidade: usize,
+    estado: State<'_, Estado>,
+) -> Result<(usize, Vec<[usize; 3]>), String> {
+    let b = estado.busca.lock().map_err(|e| e.to_string())?;
+    let fim = inicio.saturating_add(quantidade.min(MAX_JANELA));
+    let i = b.achados.partition_point(|a| a.linha < inicio);
+    let lista = b.achados[i..]
+        .iter()
+        .take_while(|a| a.linha < fim)
+        .take(MAX_ACHADOS_JANELA)
+        .map(|a| [a.linha, a.coluna, a.comprimento])
+        .collect();
+    Ok((i, lista))
+}
+
+/// Baldes da régua (de `k`) que têm achado da busca atual, em ordem.
+#[tauri::command]
+fn regua_busca(k: usize, estado: State<'_, Estado>) -> Result<Vec<usize>, String> {
+    let registros = estado.com(|a| a.registros())?.max(1);
+    let k = k.clamp(1, MAX_BALDES);
+    let b = estado.busca.lock().map_err(|e| e.to_string())?;
+    let mut baldes: Vec<usize> = b.achados.iter().map(|a| a.linha * k / registros).collect();
+    baldes.dedup();
+    Ok(baldes)
+}
+
 /// Estado e comandos; separado de `run` para o teste de IPC usar o mesmo registro.
 fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
     b.manage(Estado::default())
@@ -358,7 +750,15 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             revelar,
             formatado,
             regua,
-            marcas
+            marcas,
+            buscar,
+            achado,
+            achados,
+            regua_busca,
+            caminhos,
+            valor,
+            consultar,
+            fechar_consulta
         ])
 }
 
@@ -404,6 +804,12 @@ pub fn run() {
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
                 abertura::pedir(app, caminhos);
+            }
+            // Não deixa o resultado da última consulta no diretório temporário.
+            tauri::RunEvent::Exit => {
+                if let Ok(mut c) = app.state::<Estado>().consulta.lock() {
+                    c.reiniciar();
+                }
             }
             _ => {}
         });
@@ -533,6 +939,103 @@ mod testes {
             chamar("regua", json!({"k": 2})),
             Ok(json!({"cores": [1, 1], "invalidas": [[1, 1, 3]]}))
         );
+
+        // Copiar: caminho nos três formatos e valor (texto decodificado).
+        assert_eq!(chamar("alternar", json!({"v": 0})), Ok(json!(6)));
+        assert_eq!(
+            chamar("caminhos", json!({"v": 2})),
+            Ok(json!({"jq": ".x", "jsonpath": "$.x", "pointer": "/x"}))
+        );
+        assert_eq!(chamar("valor", json!({"v": 1})), Ok(json!("x")));
+        assert_eq!(chamar("valor", json!({"v": 2})), Ok(json!("1")));
+        assert_eq!(chamar("caminhos", json!({"v": 9})), Ok(Value::Null));
+
+        // Busca: roda em outra thread; os achados aparecem no estado.
+        let buscar = |padrao: &str, regex: bool| {
+            chamar(
+                "buscar",
+                json!({"padrao": padrao, "regex": regex, "ignorarCaixa": true}),
+            )
+        };
+        assert!(buscar("(", true).is_err());
+        assert_eq!(buscar("X", false), Ok(json!(4)));
+        let achados = (0..200)
+            .map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                chamar("achados", json!({"inicio": 0, "quantidade": 9})).unwrap()
+            })
+            .find(|a| a[1].as_array().unwrap().len() == 4)
+            .expect("busca não terminou");
+        assert_eq!(
+            achados,
+            json!([0, [[0, 9, 1], [0, 13, 1], [2, 9, 1], [2, 13, 1]]])
+        );
+        assert_eq!(chamar("achado", json!({"i": 2})), Ok(json!([2, 9, 1])));
+        assert_eq!(chamar("achado", json!({"i": 4})), Ok(Value::Null));
+        assert_eq!(
+            chamar("achados", json!({"inicio": 1, "quantidade": 5})),
+            Ok(json!([2, [[2, 9, 1], [2, 13, 1]]]))
+        );
+        assert_eq!(chamar("regua_busca", json!({"k": 2})), Ok(json!([0, 1])));
+        // Termo vazio limpa; abrir outro arquivo também.
+        assert_eq!(buscar("", false), Ok(json!(5)));
+        assert_eq!(chamar("achado", json!({"i": 0})), Ok(Value::Null));
+
+        // Consulta jq: erro de sintaxe com posição; resultado num JSONL que abre como arquivo.
+        use tauri::Listener;
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        app.listen("consulta", move |e| {
+            let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+        });
+        let fim = || loop {
+            let a = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("consulta não terminou");
+            if a["fim"] == true {
+                break a;
+            }
+        };
+        let erro =
+            chamar("consultar", json!({"filtro": ".x | (", "caminho": caminho})).unwrap_err();
+        assert_eq!(erro["falhas"][0]["linha"], json!(1));
+        assert!(erro["falhas"][0]["coluna"].as_u64().unwrap() >= 5, "{erro}");
+        assert_eq!(
+            chamar("consultar", json!({"filtro": ".x", "caminho": caminho})),
+            Ok(json!(2))
+        );
+        let a = fim();
+        assert_eq!(
+            (
+                &a["geracao"],
+                &a["resultados"],
+                &a["erros"],
+                &a["primeiro_erro"][0],
+                &a["cancelado"]
+            ),
+            (&json!(2), &json!(3), &json!(1), &json!(3), &json!(false))
+        );
+        let resultado = a["arquivo"].as_str().unwrap().to_owned();
+        assert_eq!(std::fs::read_to_string(&resultado).unwrap(), "1\nnull\n2\n");
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": resultado })),
+            Ok(json!(3))
+        );
+        // Voltar ao original apaga o resultado.
+        assert_eq!(chamar("abrir", json!({ "caminho": caminho })), Ok(json!(4)));
+        assert_eq!(chamar("fechar_consulta", json!({})), Ok(Value::Null));
+        assert!(!std::path::Path::new(&resultado).exists());
+        // Exemplo embutido também é consultável.
+        assert_eq!(
+            chamar(
+                "consultar",
+                json!({"filtro": ".tipo?", "caminho": "exemplo:vitrine"})
+            ),
+            Ok(json!(4))
+        );
+        let a = fim();
+        assert!(a["resultados"].as_u64().unwrap() > 1000, "{a}");
+        assert_eq!(chamar("fechar_consulta", json!({})), Ok(Value::Null));
+        assert!(!std::path::Path::new(a["arquivo"].as_str().unwrap()).exists());
     }
 
     /// Abrir põe nos recentes; recente apagado sai da lista com `recente_ausente`.

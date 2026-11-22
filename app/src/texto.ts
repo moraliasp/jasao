@@ -27,8 +27,46 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const TOKEN = /("(?:[^"\\]|\\.)*"?)(?=\s*:)|("(?:[^"\\]|\\.)*"?)|(-?\d[\d.eE+-]*)|(true|false|null)\b|([{}[\],:])|(\s+)|(.)/gu;
 const CLASSES = ["k", "s", "n", "l", "p", "", ""];
 
-/** HTML de uma linha; trechos dentro de `faixa` (bytes) ganham realce. */
-export function linhaHtml(texto: string, tamanho: number, faixa: [number, number] | null, corte: (n: number) => string): string {
+/** Achado da busca na linha: bytes `[início, fim)` e se é o atual. */
+export type Marca = [number, number, boolean];
+
+const bytesDe = (cp: number) => (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4);
+
+/** Corta `tok`, que começa no byte `b` da linha, nos limites das marcas: `[texto, byte, marca]`,
+ * com marca 0 (fora), 1 (achado) ou 2 (achado atual). */
+export function partir(tok: string, b: number, marcas: Marca[]): [string, number, number][] {
+  const fim = b + enc.encode(tok).length;
+  if (!marcas.some(([i, f]) => i < fim && f > b)) return [[tok, b, 0]];
+  const pedacos: [string, number, number][] = [];
+  let antes: Marca | undefined | null = null; // marca do pedaço anterior (null: nenhum ainda)
+  let x = b;
+  for (const ch of tok) {
+    const m = marcas.find(([i, f]) => x >= i && x < f);
+    if (m === antes) pedacos[pedacos.length - 1][0] += ch;
+    else pedacos.push([ch, x, m ? (m[2] ? 2 : 1) : 0]);
+    antes = m;
+    x += bytesDe(ch.codePointAt(0)!);
+  }
+  return pedacos;
+}
+
+const CLASSE_MARCA = ["", "ac", "ac at"];
+
+/** `texto` (a partir do byte `b`) escapado, com os achados em `<mark>`: prévia da árvore. */
+export function marcado(texto: string, b: number, marcas: Marca[]): string {
+  return partir(texto, b, marcas)
+    .map(([s, , k]) => (k ? `<mark class="${CLASSE_MARCA[k]}">${esc(s)}</mark>` : esc(s)))
+    .join("");
+}
+
+/** HTML de uma linha; trechos dentro de `faixa` (bytes) ganham realce e os achados, marca. */
+export function linhaHtml(
+  texto: string,
+  tamanho: number,
+  faixa: [number, number] | null,
+  corte: (n: number) => string,
+  marcas: Marca[] = [],
+): string {
   let html = "";
   let b = 0;
   for (const m of texto.matchAll(TOKEN)) {
@@ -36,10 +74,30 @@ export function linhaHtml(texto: string, tamanho: number, faixa: [number, number
     const n = enc.encode(tok).length;
     const cls = CLASSES[m.slice(1).findIndex((g) => g !== undefined)];
     const hl = faixa && b >= faixa[0] && b + n <= faixa[1] && faixa[1] > faixa[0];
-    const c = [cls, hl ? "hl" : ""].filter(Boolean).join(" ");
-    html += `<span data-b="${b}"${c ? ` class="${c}"` : ""}>${esc(tok)}</span>`;
+    for (const [pedaco, x, k] of partir(tok, b, marcas)) {
+      const c = [cls, hl ? "hl" : "", CLASSE_MARCA[k]].filter(Boolean).join(" ");
+      html += `<span data-b="${x}"${c ? ` class="${c}"` : ""}>${esc(pedaco)}</span>`;
+    }
     b += n;
   }
   if (tamanho > b) html += `<span class="corte">${esc(corte(tamanho - b))}</span>`;
   return html;
+}
+
+/** Texto numa linha só, cortado em `n` caracteres (confirmação de cópia). */
+export function resumir(s: string, n = 60): string {
+  const c = [...s.slice(0, n * 4).replace(/\s+/g, " ").trim()];
+  return c.length > n ? `${c.slice(0, n - 1).join("")}…` : c.join("");
+}
+
+/** Índice (UTF-16) da linha e coluna, a partir de 1, com a coluna em caracteres (erro do filtro jq). */
+export function indiceDe(s: string, linha: number, coluna: number): number {
+  let i = 0;
+  for (let l = 1; l < linha; l++) {
+    const n = s.indexOf("\n", i);
+    if (n < 0) return s.length;
+    i = n + 1;
+  }
+  for (let c = 1; c < coluna && i < s.length && s[i] !== "\n"; c++) i += s.codePointAt(i)! > 0xffff ? 2 : 1;
+  return i;
 }

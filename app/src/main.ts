@@ -3,12 +3,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { criarBusca } from "./busca";
 import { criarExemplos } from "./exemplos";
 import { type Motivo, t } from "./i18n";
 import { criarRecentes } from "./recentes";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
-import { decodificar, type JanelaTexto, linhaHtml as textoHtml } from "./texto";
+import { criarConsulta } from "./consulta";
+import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
+import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml } from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -77,6 +80,16 @@ const regua = criarRegua($("regua"), $("legenda"), {
   fmt: (n) => fmt(n),
 });
 
+const busca = criarBusca($("busca") as HTMLFormElement, {
+  ir: irAoAchado,
+  mudou: () => {
+    regua.busca(busca.ativa());
+    agendar();
+  },
+  voltar: () => (modo === "texto" ? textoEl : arvore).focus(),
+  fmt: (n) => fmt(n),
+});
+
 /** Registros visíveis (base 0, inclusivo): retângulo da régua e "linhas X–Y de N". */
 function mostrarFaixa(a: number | undefined, b: number | undefined): void {
   if (a === undefined || b === undefined) return;
@@ -114,17 +127,20 @@ function cobre(primeira: number, cabem: number): boolean {
 
 const plural = (n: number, [um, varios]: string[]) => `${fmt(n)} ${n === 1 ? um : varios}`;
 
+/** Prévia com os achados da busca marcados (a prévia começa em `faixa[0]` do registro). */
+const previa = (l: Linha) => marcado(l.previa, l.faixa[0], busca.marcas(l.registro));
+
 function valor(l: Linha): string {
   if (l.erro) {
     const msg = `${t.byte(fmt(l.erro.byte))}: ${t.motivos[l.erro.motivo] ?? t.motivos.outro}`;
-    return `<span class="err">${icone("alert")}<span>${esc(msg)}</span></span><span class="val dim">${esc(l.previa)}</span>`;
+    return `<span class="err">${icone("alert")}<span>${esc(msg)}</span></span><span class="val dim">${previa(l)}</span>`;
   }
   if (l.tipo === "objeto" || l.tipo === "lista") {
     const n = plural(l.filhos, l.tipo === "objeto" ? t.campos : t.itens);
-    const cru = l.prof === 0 && !l.aberto ? ` ${esc(l.previa)}` : "";
+    const cru = l.prof === 0 && !l.aberto ? ` ${previa(l)}` : "";
     return `<span class="val dim">${n}${cru}</span>`;
   }
-  return `<span class="val${l.tipo === "nulo" ? " dim" : ""}">${esc(l.previa)}</span>`;
+  return `<span class="val${l.tipo === "nulo" ? " dim" : ""}">${previa(l)}</span>`;
 }
 
 function chave(l: Linha): string {
@@ -221,7 +237,9 @@ function desenharTexto(): void {
     const linha = texto && i >= 0 ? texto.linhas[i] : undefined;
     const marcado = atual?.registro === r;
     const p = regua.ponto(r);
-    const corpo = linha === undefined ? "" : textoHtml(linha, texto!.tamanhos[i], marcado ? atual!.faixa : null, (n) => t.maisBytes(fmt(n)));
+    const corpo =
+      linha === undefined ? ""
+      : textoHtml(linha, texto!.tamanhos[i], marcado ? atual!.faixa : null, (n) => t.maisBytes(fmt(n)), busca.marcas(r));
     html += `<div class="tl" id="t${r}" data-r="${r}" role="option" aria-selected="${marcado}"
       aria-label="${esc(t.linha(fmt(r + 1)))}"><span class="nl" style="width:${digitos + (p === null ? 2 : 4)}ch">${ponto(p)}${r + 1}</span><span class="tx">${corpo}</span></div>`;
   }
@@ -257,6 +275,24 @@ async function revelar(registro: number, byte: number): Promise<void> {
   versao++; // a lista da árvore mudou
   cache = null;
   await selecionar(r[0]);
+}
+
+/** Achado da busca: abre a árvore até o byte e seleciona, nas duas visões. */
+async function irAoAchado(registro: number, byte: number): Promise<void> {
+  const r = await invoke<[number, number] | null>("revelar", { registro, byte });
+  if (!r) return;
+  total = r[1];
+  if (modo === "texto") {
+    versao++;
+    cache = null;
+    await selecionar(r[0]);
+    // Linha longa: traz o achado atual para a vista na horizontal também.
+    document.querySelector(`#t${registro} .ac.at`)?.scrollIntoView({ block: "nearest", inline: "center" });
+  } else {
+    sel = r[0];
+    mostrarLinha(sel);
+    await recarregar();
+  }
 }
 
 async function teclaTexto(e: KeyboardEvent): Promise<void> {
@@ -364,14 +400,42 @@ async function abrirFormatado(): Promise<void> {
   }
 }
 
-async function copiarCaminho(l: Linha, botao: HTMLElement): Promise<void> {
-  await navigator.clipboard.writeText(l.caminho);
-  const antes = botao.innerHTML;
-  botao.innerHTML = botao === copiar ? `${icone("check")}<span>${t.copiado}</span>` : icone("check");
-  setTimeout(() => (botao.innerHTML = antes), 1500);
+let antesDaCopia: { msg: string; texto: string } | null = null;
+/** Copia o nó `v` (chamar dentro do clique ou da tecla) e confirma no status e no botão. */
+function copiarComo(v: number, f: Formato, botao?: HTMLElement): void {
+  copiarNo(v, f).then(
+    (s) => {
+      const msg = t.copiar.feito(t.copiar[f], resumir(s));
+      // Volta o status de antes, se nada mais o trocou nesse meio-tempo.
+      antesDaCopia = { msg, texto: antesDaCopia?.texto ?? status.textContent ?? "" };
+      status.textContent = msg;
+      setTimeout(() => {
+        if (antesDaCopia?.msg !== msg) return;
+        if (status.textContent === msg) status.textContent = antesDaCopia.texto;
+        antesDaCopia = null;
+      }, 2500);
+      if (!botao) return;
+      const antes = botao.innerHTML;
+      botao.innerHTML = botao === copiar ? `${icone("check")}<span>${t.copiado}</span>` : icone("check");
+      setTimeout(() => (botao.innerHTML = antes), 1500);
+    },
+    (erro) => (status.textContent = `${t.erro}: ${erro}`),
+  );
 }
+const menu = criarMenu($("menu"), (f) => copiarComo(sel, f));
 
-async function mostrar(caminho: string): Promise<boolean> {
+let aberto: string | null = null;
+const consulta = criarConsulta($("consulta"), {
+  aberto: () => aberto,
+  // Resultado e volta abrem na visão em uso, sem passar pelo painel de entrada.
+  abrir: (c) => mostrar(c, noPainel ? undefined : modo),
+  voltar: () => (modo === "texto" ? textoEl : arvore).focus(),
+  fmt,
+});
+
+async function mostrar(caminho: string, visao?: Modo): Promise<boolean> {
+  consulta.abriu(caminho);
+  aberto = caminho;
   status.textContent = t.abrindo;
   const nome = exemplos.nome(caminho);
   $("nome").textContent = nome;
@@ -393,11 +457,12 @@ async function mostrar(caminho: string): Promise<boolean> {
     $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], ms);
     desenharPainel();
     inicioBtn.disabled = false;
-    const destino = destinoAoAbrir();
+    const destino = visao ?? destinoAoAbrir();
     if (destino === "painel") mostrarPainel();
     await recarregar();
     if (destino === "texto") await selecionar(0);
     if (destino !== "painel") trocarModo(destino);
+    busca.reabrir();
     emExemplo = caminho.startsWith("exemplo:");
     void recentes.atualizar();
     return true;
@@ -501,7 +566,7 @@ linhasEl.addEventListener("click", (e) => {
   const v = Number(row.dataset.v);
   const l = linhaEm(v);
   sel = v;
-  if (alvo.closest("[data-cp]") && l) void copiarCaminho(l, alvo.closest("[data-cp]")!);
+  if (alvo.closest("[data-cp]") && l) copiarComo(v, "jq", alvo.closest<HTMLElement>("[data-cp]")!);
   else if (alvo.closest("[data-tg]")) void alternar(v);
   else desenhar();
   arvore.focus({ preventScroll: true });
@@ -511,8 +576,16 @@ linhasEl.addEventListener("dblclick", (e) => {
   if (row && !(e.target as HTMLElement).closest("[data-tg],[data-cp]") && linhaEm(Number(row.dataset.v))?.expansivel)
     void alternar(Number(row.dataset.v));
 });
+linhasEl.addEventListener("contextmenu", (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>(".row[data-v]");
+  if (!row) return;
+  e.preventDefault();
+  sel = Number(row.dataset.v);
+  desenhar();
+  menu.abrir(e.clientX, e.clientY, arvore);
+});
 copiar.addEventListener("click", () => {
-  if (atual) void copiarCaminho(atual, copiar);
+  if (atual) copiarComo(sel, "jq", copiar);
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
@@ -527,6 +600,17 @@ textoLinhas.addEventListener("click", (e) => {
   void revelar(Number(tl.dataset.r), b === undefined ? 0 : Number(b)).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
   textoEl.focus({ preventScroll: true });
 });
+textoLinhas.addEventListener("contextmenu", (e) => {
+  const alvo = e.target as HTMLElement;
+  const tl = alvo.closest<HTMLElement>(".tl[data-r]");
+  if (!tl) return;
+  e.preventDefault();
+  const b = alvo.closest<HTMLElement>("[data-b]")?.dataset.b;
+  revelar(Number(tl.dataset.r), b === undefined ? 0 : Number(b)).then(
+    () => menu.abrir(e.clientX, e.clientY, textoEl),
+    (erro) => (status.textContent = `${t.erro}: ${erro}`),
+  );
+});
 for (const [k, aba] of Object.entries(abas)) aba.addEventListener("click", () => trocarModo(k as Modo));
 $("abas").addEventListener("keydown", (e) => {
   if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -535,6 +619,40 @@ $("abas").addEventListener("keydown", (e) => {
   abas[m].focus();
 });
 document.addEventListener("keydown", (e) => {
+  const cmd = (e.metaKey || e.ctrlKey) && !e.altKey;
+  if (cmd && e.key.toLowerCase() === "g" && resumo) {
+    e.preventDefault();
+    void (e.shiftKey ? busca.anterior() : busca.proximo()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+    return;
+  }
+  if (cmd && !e.shiftKey && e.key.toLowerCase() === "j" && resumo) {
+    e.preventDefault();
+    if (noPainel) trocarModo(sugerido);
+    consulta.focar();
+    return;
+  }
+  if (cmd && !e.shiftKey && e.key.toLowerCase() === "f" && resumo) {
+    e.preventDefault();
+    if (noPainel) trocarModo(sugerido);
+    busca.focar();
+    return;
+  }
+  // Copiar: menu pela tecla de contexto ou ⇧F10; ⇧⌘C copia o caminho jq; ⌘C, o valor (sem texto selecionado).
+  const visao = (e.target as HTMLElement).closest<HTMLElement>("#arvore, #texto");
+  if (visao && atual && !noPainel && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
+    e.preventDefault();
+    const r = (document.getElementById(modo === "texto" ? `t${atual.registro}` : `l${sel}`) ?? visao).getBoundingClientRect();
+    menu.abrir(r.left + 24, r.bottom, visao);
+    return;
+  }
+  if (cmd && e.key.toLowerCase() === "c" && atual && !noPainel) {
+    const vale = e.shiftKey ? !(e.target as HTMLElement).closest("input, textarea") : visao && getSelection()?.isCollapsed !== false;
+    if (vale) {
+      e.preventDefault();
+      copiarComo(sel, e.shiftKey ? "jq" : "valor");
+      return;
+    }
+  }
   if (e.altKey || e.shiftKey) return;
   if (!(e.metaKey || e.ctrlKey)) {
     // No painel: 1, 2… abrem o cartão daquela posição; Enter fora de um botão abre o sugerido.
@@ -606,6 +724,8 @@ $("formatado-fechar").setAttribute("aria-label", t.fechar);
 textoEl.setAttribute("aria-label", t.textoDoArquivo);
 $("rotulo-linha").textContent = t.irParaLinha;
 copiar.querySelector("span")!.textContent = t.copiarCaminho;
+$("menu").setAttribute("aria-label", t.copiar.menu);
+for (const f of FORMATOS) document.querySelector(`[data-formato="${f}"] span`)!.textContent = t.copiar[f];
 migalhas.setAttribute("aria-label", t.caminhoSelecionado);
 $("tema").setAttribute("aria-label", t.tema);
 arvore.setAttribute("aria-label", t.valoresDoArquivo);

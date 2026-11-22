@@ -55,6 +55,30 @@
       .crumbs li + li::before { content: "›"; margin: 0 6px; }
       .crumbs li:last-child { color: var(--bar-fg); }
       .tools .acts { margin-left: auto; }
+      /* Barra de busca (mockup: .busca). */
+      .barra { gap: 8px; }
+      .busca { display: flex; align-items: center; gap: 4px; }
+      .busca .campo { display: flex; align-items: center; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); }
+      .busca .campo:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .busca input { width: 240px; height: 26px; padding: 0 10px; border: 0; background: none; font-variant-numeric: normal; }
+      .busca input:focus-visible { outline: 0; }
+      .busca .alt { width: 26px; height: 22px; margin-right: 2px; font: 12px/1 var(--mono); }
+      .busca .alt[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+      .consulta { flex: 1; min-width: 0; }
+      .consulta .campo { flex: 1; min-width: 160px; max-width: 520px; }
+      .consulta input { width: 100%; font-family: var(--mono); font-size: 12.5px; }
+      .consulta .campo:has(input[aria-invalid="true"]) { border-color: var(--del); }
+      .busca .ib:disabled { opacity: .4; cursor: default; }
+      .busca .info { min-width: 9ch; color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .busca .info.err { color: var(--del); white-space: normal; }
+      .rot180 { transform: rotate(180deg); }
+      .ac { background: color-mix(in srgb, var(--change) 28%, transparent); color: inherit; border-radius: 2px; }
+      .menu { position: fixed; z-index: 20; min-width: 210px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+      .menu[hidden] { display: none; }
+      .menu button { display: flex; justify-content: space-between; gap: 16px; width: 100%; height: 28px; padding: 0 10px; border: 0; border-radius: 4px; background: none; font-size: 13px; text-align: left; cursor: pointer; }
+      .menu button:hover, .menu button:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); outline: 0; }
+      .menu kbd { color: var(--bar-muted); font: inherit; }
+      .ac.at { background: color-mix(in srgb, var(--change) 60%, transparent); box-shadow: 0 0 0 1px var(--change); }
       .status { color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
       /* Árvore virtualizada: só as linhas visíveis existem no DOM. */
@@ -217,6 +241,26 @@
         </div>
       </section>
       <div class="pane" id="conteudo">
+        <div class="tools barra">
+          <form class="busca" id="busca" role="search">
+            <div class="campo">
+              <input type="search" autocomplete="off" spellcheck="false" aria-keyshortcuts="Meta+F Control+F" />
+              <button class="ib alt" type="button" data-caixa aria-pressed="false">Aa</button>
+              <button class="ib alt" type="button" data-regex aria-pressed="false">.*</button>
+            </div>
+            <span class="info" role="status" aria-live="polite"></span>
+            <button class="ib" type="button" data-anterior aria-keyshortcuts="Meta+Shift+G Control+Shift+G" disabled><svg class="i rot180"><use href="#chev"/></svg></button>
+            <button class="ib" type="button" data-proximo aria-keyshortcuts="Meta+G Control+G" disabled><svg class="i"><use href="#chev"/></svg></button>
+          </form>
+          <form class="busca consulta" id="consulta">
+            <div class="campo">
+              <input type="text" autocomplete="off" spellcheck="false" aria-keyshortcuts="Meta+J Control+J" />
+            </div>
+            <span class="info" role="status" aria-live="polite"></span>
+            <button class="btn" type="button" data-cancelar hidden></button>
+            <button class="btn" type="button" data-voltar hidden></button>
+          </form>
+        </div>
         <div class="tools">
           <form id="ir">
             <label for="linha" id="rotulo-linha">Ir para linha</label>
@@ -226,7 +270,7 @@
           <div class="legenda" id="legenda" hidden></div>
           <div class="acts">
             <button class="btn" id="ver-formatado" type="button" disabled><svg class="i"><use href="#braces"/></svg><span>Ver formatado</span></button>
-            <button class="btn" id="copiar" type="button" disabled><svg class="i"><use href="#copy"/></svg><span>Copiar caminho</span></button>
+            <button class="btn" id="copiar" type="button" aria-keyshortcuts="Meta+Shift+C Control+Shift+C" disabled><svg class="i"><use href="#copy"/></svg><span>Copiar caminho</span></button>
           </div>
         </div>
         <div class="vista">
@@ -242,6 +286,12 @@
         </div>
       </div>
     </main>
+    <div class="menu" id="menu" role="menu" hidden>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="jq"><span></span><kbd>⇧⌘C</kbd></button>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="jsonpath"><span></span></button>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="pointer"><span></span></button>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="valor"><span></span><kbd>⌘C</kbd></button>
+    </div>
     <dialog id="formatado" aria-labelledby="formatado-titulo">
       <header><h2 id="formatado-titulo"></h2><button class="ib" id="formatado-fechar" type="button" aria-label="Fechar"><svg class="i"><use href="#x"/></svg></button></header>
       <pre id="formatado-texto" tabindex="0"></pre>
