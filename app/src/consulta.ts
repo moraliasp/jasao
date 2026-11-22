@@ -97,6 +97,14 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     o.voltar();
   }
 
+  /** Cancelar não recebe `fim` (a geração já mudou); o resultado anterior, se aberto, foi apagado. */
+  async function cancelar(): Promise<void> {
+    rodando = false;
+    if (resultado) await voltar();
+    else void invoke("fechar_consulta");
+    mostrar(t.consulta.cancelada);
+  }
+
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     void rodar();
@@ -104,13 +112,13 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   campo.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
-    if (rodando) void invoke("fechar_consulta");
+    if (rodando) void cancelar();
     else o.voltar();
   });
   campo.addEventListener("input", () => {
     if (campo.getAttribute("aria-invalid") === "true") mostrar("");
   });
-  cancelarBtn.addEventListener("click", () => void invoke("fechar_consulta"));
+  cancelarBtn.addEventListener("click", () => void cancelar());
   voltarBtn.addEventListener("click", () => void voltar());
 
   void listen<Andamento>("consulta", ({ payload: p }) => {
