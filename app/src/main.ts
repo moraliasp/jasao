@@ -513,9 +513,9 @@ async function abrirFormatado(): Promise<void> {
   const dialogo = $<HTMLDialogElement>("formatado");
   $("formatado-titulo").textContent = `${t.registroFormatado} · ${t.linha(fmt(atual.registro + 1))}`;
   try {
-    const f = await chamar<{ texto: string; truncado: boolean }>("formatado", { registro: atual.registro });
+    const f = await chamar<{ texto: string; truncado: boolean; teto: number }>("formatado", { registro: atual.registro });
     $("formatado-texto").textContent = f.texto;
-    if (f.truncado) $("formatado-titulo").textContent += ` · ${t.formatadoTruncado}`;
+    if (f.truncado) $("formatado-titulo").textContent += ` · ${t.formatadoTruncado(fmt(f.teto / 2 ** 20))}`;
     dialogo.showModal();
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;

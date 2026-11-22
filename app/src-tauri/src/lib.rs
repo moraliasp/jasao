@@ -1392,7 +1392,9 @@ mod testes {
         );
         assert_eq!(
             em(1, "formatado", json!({"registro": 0})),
-            Ok(json!({"texto": "{\n  \"a\": [\n    1,\n    2\n  ]\n}", "truncado": false}))
+            Ok(
+                json!({"texto": "{\n  \"a\": [\n    1,\n    2\n  ]\n}", "truncado": false, "teto": MAX_FORMATADO})
+            )
         );
         assert!(em(1, "formatado", json!({"registro": 1})).is_err());
 
@@ -1582,6 +1584,27 @@ mod testes {
             chamar("abrir", json!({ "caminho": caminho })).unwrap()["id"],
             json!(4)
         );
+
+        // Formatado com teto: registro pequeno que formatado passaria de 16 MB volta cortado e
+        // avisa; registro acima de 16 MB nem é formatado.
+        let mut grande = tempfile::NamedTempFile::new().unwrap();
+        let cadeia = format!("{}0{}", "[".repeat(999), "]".repeat(999));
+        let fundo = format!("[{}]\n", vec![cadeia; 100].join(","));
+        let longo = format!("\"{}\"\n", "a".repeat(MAX_FORMATADO));
+        std::io::Write::write_all(&mut grande, (fundo + &longo).as_bytes()).unwrap();
+        let caminho_grande = grande.path().to_str().unwrap();
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": caminho_grande })).unwrap()["id"],
+            json!(5)
+        );
+        let f = em(5, "formatado", json!({"registro": 0})).unwrap();
+        assert_eq!(
+            (&f["truncado"], &f["teto"]),
+            (&json!(true), &json!(MAX_FORMATADO))
+        );
+        assert!(f["texto"].as_str().unwrap().len() <= MAX_FORMATADO);
+        let erro = em(5, "formatado", json!({"registro": 1})).unwrap_err();
+        assert!(erro.as_str().unwrap().contains("passa do teto"), "{erro}");
 
         // Pasta: `pastas` avisa e `abrir` recusa com mensagem clara.
         let dir = tempfile::tempdir().unwrap();
