@@ -1,7 +1,11 @@
 //! Casca do app: guarda o documento aberto e entrega janelas da árvore à interface.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
+
+mod abertura;
+mod recentes;
 
 use nucleo::Arvore;
 use nucleo::arvore::Linha;
@@ -68,10 +72,43 @@ impl Estado {
     }
 }
 
-/// Caminho passado na linha de comando (`app <arquivo>`), se houver.
+/// Onde mora `recentes.json`. Só o `run` gerencia: nos testes de IPC não há recentes em disco.
+struct Recentes(PathBuf);
+
+fn com_recentes<R: Runtime, T>(app: &AppHandle<R>, f: impl FnOnce(&Path) -> T) -> Option<T> {
+    app.try_state::<Recentes>().map(|r| f(&r.0))
+}
+
+/// Põe um arquivo aberto no topo dos recentes. Falha ao gravar não impede a abertura.
+fn lembrar<R: Runtime>(app: &AppHandle<R>, caminho: &str) {
+    if let Some(Err(e)) = com_recentes(app, |a| recentes::adicionar(a, caminho)) {
+        eprintln!("recentes: {e}");
+    }
+}
+
+/// Lista dos recentes, mais novo primeiro, com nome e pasta.
 #[tauri::command]
-fn arquivo_inicial() -> Option<String> {
-    std::env::args().nth(1)
+fn recentes<R: Runtime>(app: AppHandle<R>) -> Vec<recentes::Recente> {
+    recentes::descrever(com_recentes(&app, recentes::ler).unwrap_or_default())
+}
+
+#[tauri::command]
+fn limpar_recentes<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    com_recentes(&app, recentes::limpar)
+        .unwrap_or(Ok(()))
+        .map_err(|e| e.to_string())
+}
+
+/// Se o recente não existe mais: tira da lista e devolve `true` (a interface avisa).
+#[tauri::command]
+fn recente_ausente<R: Runtime>(caminho: String, app: AppHandle<R>) -> Result<bool, String> {
+    if Path::new(&caminho).exists() {
+        return Ok(false);
+    }
+    com_recentes(&app, |a| recentes::remover(a, &caminho))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Abre o arquivo, constrói o índice e devolve o número de registros (= linhas visíveis).
@@ -117,6 +154,7 @@ async fn abrir<R: Runtime>(
         v.geracao
     };
     *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
+    lembrar(&app, &caminho);
     std::thread::spawn(move || {
         // Grava no estado e emite, se o arquivo ainda for este.
         let avisar = |f: &dyn Fn(&mut Varredura)| {
@@ -297,8 +335,13 @@ fn formatado(registro: usize, estado: State<'_, Estado>) -> Result<String, Strin
 /// Estado e comandos; separado de `run` para o teste de IPC usar o mesmo registro.
 fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
     b.manage(Estado::default())
+        .manage(abertura::Abertura::default())
         .invoke_handler(tauri::generate_handler![
-            arquivo_inicial,
+            abertura::arquivos_iniciais,
+            abertura::arquivos_pedidos,
+            recentes,
+            limpar_recentes,
+            recente_ausente,
             abrir,
             resumo,
             linhas,
@@ -315,7 +358,15 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    comandos(tauri::Builder::default())
+    let mut builder = tauri::Builder::default();
+    // Primeiro plugin, como pede o single-instance: a 2ª instância repassa o argv e sai.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            abertura::pedir(app, abertura::caminhos_argv(&argv, Path::new(&cwd)));
+        }));
+    }
+    comandos(builder)
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Título vem do productName (tauri.conf.json), onde mora o nome do produto.
@@ -323,10 +374,33 @@ pub fn run() {
             if let Some(janela) = app.get_webview_window("main") {
                 janela.set_title(&nome)?;
             }
+            if let Ok(dir) = app.path().app_data_dir() {
+                app.manage(Recentes(dir.join("recentes.json")));
+            }
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let argv: Vec<String> = std::env::args().collect();
+            let abertura = app.state::<abertura::Abertura>();
+            for c in abertura::caminhos_argv(&argv, &cwd) {
+                abertura.enfileirar(c);
+            }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("falha ao iniciar o app");
+        .build(tauri::generate_context!())
+        .expect("falha ao iniciar o app")
+        .run(|app, evento| match evento {
+            tauri::RunEvent::Ready => app.state::<abertura::Abertura>().pronto(),
+            // macOS: Finder, "Abrir com" e `open -a` chegam como Apple Event, um por pedido.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                let caminhos = urls
+                    .iter()
+                    .filter_map(|u| u.to_file_path().ok())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                abertura::pedir(app, caminhos);
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]
@@ -453,5 +527,56 @@ mod testes {
             chamar("regua", json!({"k": 2})),
             Ok(json!({"cores": [1, 1], "invalidas": [[1, 1, 3]]}))
         );
+    }
+
+    /// Abrir põe nos recentes; recente apagado sai da lista com `recente_ausente`.
+    #[test]
+    fn recentes_pelo_ipc() {
+        let pasta = tempfile::tempdir().unwrap();
+        let arq = pasta.path().join("a.jsonl");
+        std::fs::write(&arq, b"{\"a\":1}\n").unwrap();
+        let lista = pasta.path().join("dados").join("recentes.json");
+        let app = comandos(mock_builder())
+            .manage(Recentes(lista.clone()))
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let chamar = |cmd: &str, args: Value| -> Value {
+            let pedido = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            };
+            get_ipc_response(&janela, pedido)
+                .unwrap()
+                .deserialize::<Value>()
+                .unwrap()
+        };
+        let caminho = arq.to_str().unwrap();
+        assert_eq!(chamar("recentes", json!({})), json!([]));
+        chamar("abrir", json!({ "caminho": caminho }));
+        let pasta_txt = pasta.path().to_str().unwrap();
+        assert_eq!(
+            chamar("recentes", json!({})),
+            json!([{"caminho": caminho, "nome": "a.jsonl", "pasta": pasta_txt}])
+        );
+        assert_eq!(
+            chamar("recente_ausente", json!({ "caminho": caminho })),
+            json!(false)
+        );
+        std::fs::remove_file(&arq).unwrap();
+        assert_eq!(
+            chamar("recente_ausente", json!({ "caminho": caminho })),
+            json!(true)
+        );
+        assert_eq!(chamar("recentes", json!({})), json!([]));
+        chamar("limpar_recentes", json!({}));
+        assert!(!lista.exists());
     }
 }

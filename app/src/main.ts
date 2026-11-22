@@ -620,6 +620,6 @@ $("abrir").addEventListener("click", async () => {
   if (typeof caminho === "string") await mostrar(caminho);
 });
 
-invoke<string | null>("arquivo_inicial").then((caminho) => {
+invoke<string[]>("arquivos_iniciais").then(([caminho]) => {
   if (caminho) void mostrar(caminho);
 });
