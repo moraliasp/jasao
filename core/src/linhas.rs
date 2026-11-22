@@ -73,6 +73,8 @@ pub struct ArquivoLinhas {
     // shortcut: se outro processo truncar o arquivo enquanto ele está mapeado, o acesso pode
     // gerar SIGBUS; tratar junto com "arquivo que muda por baixo" (plano, seção 4).
     mapa: Option<Mmap>,
+    /// Bytes embutidos no binário (`estatico`); vazio quando há `mapa`.
+    estatico: &'static [u8],
     indice: IndiceLinhas,
 }
 
@@ -100,11 +102,25 @@ impl ArquivoLinhas {
             Some(unsafe { Mmap::map(&arquivo)? })
         };
         let indice = IndiceLinhas::construir(mapa.as_deref().unwrap_or_default());
-        Ok(Self { mapa, indice })
+        Ok(Self {
+            mapa,
+            estatico: &[],
+            indice,
+        })
+    }
+
+    /// Bytes que já estão na memória do programa (os exemplos embutidos no app): sem disco nem
+    /// `mmap`, mesmo índice e mesmas janelas de um arquivo aberto.
+    pub fn estatico(dados: &'static [u8]) -> Self {
+        Self {
+            mapa: None,
+            estatico: dados,
+            indice: IndiceLinhas::construir(dados),
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
-        self.mapa.as_deref().unwrap_or_default()
+        self.mapa.as_deref().unwrap_or(self.estatico)
     }
 
     pub fn linhas(&self) -> usize {

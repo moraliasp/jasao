@@ -5,12 +5,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 mod abertura;
+mod exemplos;
 mod recentes;
 
-use nucleo::Arvore;
 use nucleo::arvore::Linha;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
+use nucleo::{ArquivoLinhas, Arvore};
 use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
@@ -123,7 +124,10 @@ async fn abrir<R: Runtime>(
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<usize, String> {
-    let arvore = Arvore::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?;
+    let arvore = match exemplos::embutido(&caminho) {
+        Some(bytes) => Arvore::new(ArquivoLinhas::estatico(bytes)),
+        None => Arvore::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?,
+    };
     let total = arvore.total();
     let arquivo = arvore.compartilhado();
     let conteudo = resumo::conteudo(&arquivo);
@@ -154,7 +158,9 @@ async fn abrir<R: Runtime>(
         v.geracao
     };
     *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
-    lembrar(&app, &caminho);
+    if exemplos::embutido(&caminho).is_none() {
+        lembrar(&app, &caminho);
+    }
     std::thread::spawn(move || {
         // Grava no estado e emite, se o arquivo ainda for este.
         let avisar = |f: &dyn Fn(&mut Varredura)| {

@@ -92,13 +92,15 @@ pub fn pedir<R: Runtime>(app: &AppHandle<R>, caminhos: Vec<String>) {
     }
 }
 
-/// Arquivos pedidos pelo sistema na abertura, em ordem, depois de ela assentar. Vazio = aberto
-/// sem arquivo (ícone, Dock) ou recarga da página: a interface mostra os exemplos.
+/// Arquivos pedidos pelo sistema na abertura, em ordem, depois de ela assentar. Sem nenhum
+/// (aberto pelo ícone ou Dock, ou recarga da página), o primeiro exemplo embutido.
 #[tauri::command]
 pub async fn arquivos_iniciais<R: Runtime>(app: AppHandle<R>) -> Vec<String> {
     tauri::async_runtime::spawn_blocking(move || app.state::<Abertura>().esperar(FOLGA, ESPERA_MAX))
         .await
-        .unwrap_or_default()
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![crate::exemplos::inicial(None)])
 }
 
 /// Arquivos que chegaram desde a última entrega (o aviso `abrir-arquivos` não leva caminho).
