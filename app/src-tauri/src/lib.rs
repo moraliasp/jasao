@@ -2,7 +2,6 @@
 //! interface. Todo comando recebe o `id` do documento; os eventos o devolvem.
 
 use std::collections::HashMap;
-use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -10,14 +9,17 @@ use std::time::{Duration, Instant};
 
 mod abertura;
 mod exemplos;
+mod filho;
 mod recentes;
 
+pub use filho::filho as consulta_filho;
+
 use nucleo::arvore::{Formatado, Linha, MAX_FORMATADO};
-use nucleo::consulta::{Consulta, LoteConsulta};
+use nucleo::consulta::Consulta;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
 use nucleo::{Achado, ArquivoLinhas, Arvore, Busca};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
 /// Teto de linhas por pedido: a interface pede janelas, nunca o arquivo.
@@ -86,7 +88,8 @@ impl EstadoConsulta {
 }
 
 /// Evento `consulta`: progresso e, no fim, o arquivo com o resultado da consulta `geracao`.
-#[derive(Clone, Serialize)]
+/// Também é o que o processo filho manda ao pai (ver `filho`).
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct AndamentoConsulta {
     geracao: u64,
     resultados: u64,
@@ -99,8 +102,10 @@ struct AndamentoConsulta {
     cancelado: bool,
     /// JSONL com o resultado, no fim de uma consulta que não foi cancelada nem falhou.
     arquivo: Option<String>,
-    /// Falha ao gravar o resultado.
+    /// Falha ao gravar o resultado, ou a consulta abortou.
     falha: Option<String>,
+    /// A saída passou de `filho::TETO_SAIDA`: o resultado é parcial e a consulta parou.
+    cortado: bool,
 }
 
 /// Erro de `consultar`: filtro que não compila (com as falhas) ou arquivo que não abre.
@@ -747,11 +752,12 @@ fn valor(id: u32, v: usize, estado: State<'_, Estado>) -> Result<Option<String>,
     }
 }
 
-/// Roda o filtro jq `filtro` sobre `caminho` em outra thread e grava os resultados (JSON
-/// compacto, um por linha) num JSONL temporário, avisado no evento `consulta`. JSON único ou em
-/// várias linhas vira um documento; o resto, JSONL linha a linha. Devolve a geração.
+/// Roda o filtro jq `filtro` sobre `caminho` num processo filho (ver `filho`) e grava os
+/// resultados (JSON compacto, um por linha) num JSONL temporário, avisado no evento `consulta`.
+/// JSON único ou em várias linhas vira um documento; o resto, JSONL linha a linha. Assíncrono e
+/// sem abrir o arquivo aqui: nada bloqueia a thread da interface. Devolve a geração.
 #[tauri::command]
-fn consultar<R: Runtime>(
+async fn consultar<R: Runtime>(
     id: u32,
     filtro: String,
     caminho: String,
@@ -760,7 +766,8 @@ fn consultar<R: Runtime>(
 ) -> Result<u64, ErroConsulta> {
     let doc = estado.doc(id)?;
     let (geracao, cancelar) = doc.consulta.lock().map_err(|e| e.to_string())?.reiniciar();
-    let consulta = Consulta::nova(&filtro).map_err(|e| ErroConsulta {
+    // Compila aqui só para devolver o erro de sintaxe com posição; quem roda é o filho.
+    Consulta::nova(&filtro).map_err(|e| ErroConsulta {
         mensagem: e.to_string(),
         falhas: e
             .falhas
@@ -774,11 +781,7 @@ fn consultar<R: Runtime>(
             })
             .collect(),
     })?;
-    let arquivo = abrir_linhas(&caminho)?;
-    let documento = matches!(
-        resumo::conteudo(&arquivo),
-        Conteudo::JsonUnico | Conteudo::JsonVariasLinhas
-    );
+    filho::arquivo_comum(&caminho)?;
     // Nome com os nanossegundos do relógio para não ser previsível; `create_new` (O_EXCL) recusa
     // arquivo ou link que alguém tenha posto ali antes, e 0600 deixa o resultado só para o dono.
     let nanos = std::time::SystemTime::now()
@@ -792,77 +795,30 @@ fn consultar<R: Runtime>(
     abrir.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut abrir, 0o600);
-    let saida = abrir
+    abrir
         .open(&destino)
         .map_err(|e| format!("{}: {e}", destino.display()))?;
     doc.consulta.lock().map_err(|e| e.to_string())?.arquivo = Some(destino.clone());
     let doc = Arc::downgrade(&doc);
     std::thread::spawn(move || {
         let avisar = |a: AndamentoConsulta| emitir(&app, "consulta", id, a);
-        let mut gravado = 0u64;
-        let mut falha: Option<std::io::Error> = None;
-        let mut ultimo = Instant::now();
-        let mut out = BufWriter::new(saida);
-        let ao_lote = |lote: LoteConsulta| {
-            for r in &lote.resultados {
-                if let Err(e) = writeln!(out, "{}", r.json) {
-                    falha.get_or_insert(e);
-                    cancelar.store(true, Relaxed);
-                    return;
-                }
-            }
-            gravado += lote.resultados.len() as u64;
-            if ultimo.elapsed() >= INTERVALO {
-                ultimo = Instant::now();
-                avisar(AndamentoConsulta {
-                    geracao,
-                    resultados: gravado,
-                    linhas: lote.linhas,
-                    total: lote.total_linhas,
-                    erros: 0,
-                    primeiro_erro: None,
-                    fim: false,
-                    cancelado: false,
-                    arquivo: None,
-                    falha: None,
-                });
-            }
-        };
-        let resumo = if documento {
-            consulta.executar_documento(arquivo.bytes(), &cancelar, ao_lote)
-        } else {
-            consulta.executar_jsonl(arquivo.bytes(), &cancelar, ao_lote)
-        };
-        if let Err(e) = out.flush() {
-            falha.get_or_insert(e);
-        }
+        let mut fim = filho::rodar(&filtro, &caminho, &destino, &cancelar, |a| {
+            avisar(AndamentoConsulta { geracao, ..a })
+        });
         // Consulta mais nova, fechada ou documento fechado: o resultado não serve a ninguém.
         let atual = doc
             .upgrade()
             .is_some_and(|d| d.consulta.lock().is_ok_and(|c| c.geracao == geracao));
-        let cancelado = resumo.cancelado;
-        if !atual || cancelado || falha.is_some() {
+        let serve = fim.falha.is_none() && !fim.cancelado;
+        if !atual || !serve {
             let _ = std::fs::remove_file(&destino);
         }
         if !atual {
             return;
         }
-        avisar(AndamentoConsulta {
-            geracao,
-            resultados: resumo.resultados,
-            linhas: resumo.linhas,
-            total: resumo.total_linhas,
-            erros: resumo.erros,
-            primeiro_erro: resumo
-                .primeiros_erros
-                .first()
-                .map(|e| (e.linha, e.motivo.clone())),
-            fim: true,
-            cancelado: falha.is_none() && cancelado,
-            arquivo: (falha.is_none() && !cancelado)
-                .then(|| destino.to_string_lossy().into_owned()),
-            falha: falha.map(|e| format!("{}: {e}", destino.display())),
-        });
+        fim.geracao = geracao;
+        fim.arquivo = serve.then(|| destino.to_string_lossy().into_owned());
+        avisar(fim);
     });
     Ok(geracao)
 }
@@ -1448,6 +1404,58 @@ mod testes {
         assert_eq!(em(2, "fechar_consulta", json!({})), Ok(Value::Null));
         assert!(!std::path::Path::new(&resultado).exists());
         assert_eq!(a["id"], json!(2), "evento leva o id do documento");
+
+        // Achado 8: recursão sem fundo roda no processo filho e volta como falha; este processo
+        // (o app) segue de pé.
+        assert!(
+            em(
+                2,
+                "consultar",
+                json!({"filtro": "def f: 1 + f; f", "caminho": caminho})
+            )
+            .is_ok()
+        );
+        let a = fim();
+        assert!(
+            a["falha"].as_str().unwrap().contains("parou sem terminar"),
+            "{a}"
+        );
+        assert_eq!(a["arquivo"], Value::Null);
+
+        // Achado 9: FIFO é recusado na hora, sem abrir (abrir bloquearia até alguém escrever).
+        #[cfg(unix)]
+        {
+            let pasta = tempfile::tempdir().unwrap();
+            let fifo = pasta.path().join("fifo");
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(&fifo)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            // Sem a recusa, a leitura destrava quando este escritor abre (e o teste falha).
+            let f = fifo.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let _ = std::fs::write(f, "1\n");
+            });
+            let t = Instant::now();
+            let erro = em(
+                2,
+                "consultar",
+                json!({"filtro": ".", "caminho": fifo.to_str().unwrap()}),
+            )
+            .unwrap_err();
+            assert!(
+                erro["mensagem"]
+                    .as_str()
+                    .unwrap()
+                    .contains("não é um arquivo comum"),
+                "{erro}"
+            );
+            assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        }
 
         // Isolamento: o documento 1 segue com o seu arquivo, expansão e busca (nenhuma).
         assert_eq!(

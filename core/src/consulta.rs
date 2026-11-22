@@ -8,9 +8,12 @@
 //! - Linha vazia (só espaço) é pulada; linha que não é JSON, aninhada demais ou em que o filtro
 //!   falha conta como erro, guarda os primeiros `MAX_ERROS_GUARDADOS` e a varredura segue.
 //! - Cancelamento por `AtomicBool` e teto de tempo opcional, conferidos entre linhas e entre
-//!   resultados: `range(1e12)` para. Limite conhecido: filtro que não entrega nada enquanto
+//!   resultados: `range(1e12)` para. Limite deste módulo: filtro que não entrega nada enquanto
 //!   gira (`last(range(1e12))`, `def f: f; f`) só é visto parar no fim, e recursão sem fundo
-//!   estoura a pilha e aborta o processo; ver `docs/decisoes.md` (rodar em processo filho).
+//!   estoura a pilha e aborta o processo. Quem chama isola: o app roda a consulta num processo
+//!   filho e o mata ao cancelar (`app/src-tauri/src/filho.rs`); a CLI tem um vigia que encerra
+//!   o processo depois do `--tempo-max`, e em recursão sem fundo ela aborta (código de sinal).
+//!   Ver `docs/decisoes.md`.
 //! - Números: inteiro de qualquer tamanho é exato (também em soma, subtração e produto);
 //!   decimal sai como veio enquanto não entra em conta, e numa conta vira `f64`.
 
