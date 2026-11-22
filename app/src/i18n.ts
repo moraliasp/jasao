@@ -27,6 +27,14 @@ const pt = {
   itens: ["item", "itens"],
   byte: (n: string) => `byte ${n}`,
   inicio: "Início",
+  regua: {
+    rotulo: "Posição no arquivo",
+    faixa: (a: string, b: string, n: string) => `linhas ${a}–${b} de ${n}`,
+    por: "por",
+    outros: "outros",
+    invalidas: (n: number, linha: string) =>
+      n === 1 ? `1 linha inválida na linha ${linha}` : `${n} linhas inválidas a partir da linha ${linha}`,
+  },
   painel: {
     pergunta: "O que você quer fazer?",
     aberto: (tipo: string, ms: string) => `${tipo} · aberto em ${ms} ms`,
@@ -108,6 +116,13 @@ const en: Textos = {
   itens: ["item", "items"],
   byte: (n) => `byte ${n}`,
   inicio: "Home",
+  regua: {
+    rotulo: "Position in file",
+    faixa: (a, b, n) => `lines ${a}–${b} of ${n}`,
+    por: "by",
+    outros: "others",
+    invalidas: (n, linha) => (n === 1 ? `1 invalid line at line ${linha}` : `${n} invalid lines from line ${linha}`),
+  },
   painel: {
     pergunta: "What do you want to do?",
     aberto: (tipo, ms) => `${tipo} · opened in ${ms} ms`,

@@ -11,6 +11,8 @@
         --bar-bg: #f6f8fa; --bar-fg: #1f2328; --bar-muted: #656d76; --border: #d0d7de;
         --page-bg: #ffffff; --accent: #0969da; --hover: rgba(0,0,0,0.06);
         --change: #9a6700; --ok: #1a7f37; --del: #cf222e;
+        /* Régua do micronavegador: neutro, as 4 variantes mais frequentes e "outros". */
+        --rg-neutro: #eaeef2; --rg-1: #1b7c83; --rg-2: #8250df; --rg-3: #bc4c00; --rg-4: #bf3989; --rg-outros: #8c959f;
         --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
         color-scheme: light;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
@@ -19,6 +21,7 @@
         --bar-bg: #161b22; --bar-fg: #e6edf3; --bar-muted: #8d96a0; --border: #30363d;
         --page-bg: #0d1117; --accent: #2f81f7; --hover: rgba(255,255,255,0.08);
         --change: #d29922; --ok: #3fb950; --del: #f85149;
+        --rg-neutro: #21262d; --rg-1: #39c5cf; --rg-2: #a371f7; --rg-3: #f0883e; --rg-4: #db61a2; --rg-outros: #6e7681;
         color-scheme: dark;
       }
       * { box-sizing: border-box; }
@@ -99,6 +102,26 @@
       dialog pre { margin: 0; padding: 12px 16px; overflow: auto; font: 12.5px/1.5 var(--mono); }
       .vazio { margin: 24px; color: var(--bar-muted); }
 
+      /* Micronavegador: régua do arquivo inteiro ao lado das visões. */
+      .vista { flex: 1; display: flex; gap: 8px; min-height: 0; }
+      .vista > .tree { min-width: 0; }
+      .regua { position: relative; flex: none; width: 44px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--rg-neutro); cursor: pointer; touch-action: none; }
+      .regua canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+      .regua .rc { opacity: 0; }
+      .regua .rc.pronta { opacity: 1; }
+      .regua .janela { position: absolute; top: 0; left: 1px; right: 1px; border: 2px solid var(--bar-fg); border-radius: 3px; box-shadow: 0 0 0 1px var(--page-bg), inset 0 0 0 1px var(--page-bg); background: color-mix(in srgb, var(--page-bg) 35%, transparent); pointer-events: none; }
+      .balao { position: absolute; right: 3px; z-index: 1; min-width: 18px; height: 16px; padding: 0 4px; border: 0; border-radius: 8px; background: var(--del); color: var(--page-bg); font: 600 10px/16px var(--mono); cursor: pointer; }
+      @keyframes pulsar { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--del) 70%, transparent); } to { box-shadow: 0 0 0 7px transparent; } }
+      .pt { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+      .pt.c1 { background: var(--rg-1); } .pt.c2 { background: var(--rg-2); } .pt.c3 { background: var(--rg-3); }
+      .pt.c4 { background: var(--rg-4); } .pt.c5 { background: var(--rg-outros); }
+      .tl .nl .pt { position: absolute; left: 6px; top: 6px; }
+      .legenda { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; color: var(--bar-muted); }
+      .legenda code { font: 12px var(--mono); color: var(--bar-fg); }
+      .legenda ul { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; }
+      .legenda li { display: inline-flex; align-items: center; gap: 5px; font: 12px var(--mono); color: var(--bar-fg); }
+      .top .faixa { margin-left: 10px; font-weight: 400; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
+
       /* Painel de entrada: não modal, ocupa o lugar do conteúdo até escolher um modo. */
       .painel { flex: 1; overflow: auto; padding: 32px 24px; }
       .painel > div { max-width: 760px; margin: 0 auto; }
@@ -131,7 +154,11 @@
       .pf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--bar-muted); font-size: 12.5px; }
       .pf select { height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); color: var(--bar-fg); font: inherit; }
       @media (max-width: 700px) { .views, .pane, .painel { padding-left: 16px; padding-right: 16px; } }
-      @media (prefers-reduced-motion: no-preference) { .ib, .btn { transition: background-color .15s, color .15s; } }
+      @media (prefers-reduced-motion: no-preference) {
+        .ib, .btn { transition: background-color .15s, color .15s; }
+        .regua .rc { transition: opacity .4s ease-out; }
+        .balao { animation: pulsar 1.2s ease-out 3; }
+      }
     </style>
   </head>
   <body>
@@ -151,7 +178,7 @@
     </svg>
     <header class="top">
       <div class="side"><button class="btn" id="inicio" type="button" aria-keyshortcuts="Meta+0 Control+0" disabled><svg class="i"><use href="#home"/></svg><span>Início</span></button><span id="status" class="status" role="status" aria-live="polite"></span></div>
-      <div class="name" id="nome"></div>
+      <div class="name"><span id="nome"></span><span class="faixa" id="faixa"></span></div>
       <div class="side end">
         <button class="ib" id="tema" type="button" aria-label="Alternar tema claro e escuro"><svg class="i"><use href="#moon"/></svg></button>
         <button class="btn" id="abrir" type="button">Abrir…</button>
@@ -182,11 +209,13 @@
             <input id="linha" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" />
           </form>
           <ol class="crumbs" id="migalhas" aria-label="Caminho do nó selecionado"></ol>
+          <div class="legenda" id="legenda" hidden></div>
           <div class="acts">
             <button class="btn" id="ver-formatado" type="button" disabled><svg class="i"><use href="#braces"/></svg><span>Ver formatado</span></button>
             <button class="btn" id="copiar" type="button" disabled><svg class="i"><use href="#copy"/></svg><span>Copiar caminho</span></button>
           </div>
         </div>
+        <div class="vista">
         <div class="tree" id="arvore" role="tree" tabindex="0" aria-label="Valores do arquivo">
           <div class="rows" id="linhas" role="presentation"></div>
           <div class="alto" id="alto"></div>
@@ -194,6 +223,8 @@
         <div class="tree texto" id="texto" role="listbox" tabindex="0" aria-label="Texto do arquivo" hidden>
           <div class="rows" id="texto-linhas" role="presentation"></div>
           <div class="alto" id="texto-alto"></div>
+        </div>
+        <div class="regua" id="regua" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="1" hidden></div>
         </div>
       </div>
     </main>
