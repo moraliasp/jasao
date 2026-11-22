@@ -93,6 +93,13 @@
       .tl .n, .tl .l { color: var(--change); }
       .tl .p { color: var(--bar-muted); }
       .tl .hl { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+      .estr .eres { position: sticky; top: 0; margin: 0; padding: 6px 8px; background: var(--page-bg); border-bottom: 1px solid var(--border); color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
+      .estr .row { gap: 16px; }
+      .estr .ec { flex: none; width: 34%; overflow: hidden; text-overflow: ellipsis; }
+      .estr .et { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--change); }
+      .estr .ep { flex: none; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
+      .estr .ep.op { color: var(--bar-fg); }
+      .vista:has(.estr:not([hidden])) .regua { display: none; }
       .tl .corte { margin-left: 8px; color: var(--bar-muted); font-style: italic; }
       dialog { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); color: var(--bar-fg); }
       dialog::backdrop { background: rgba(0,0,0,.35); }
@@ -181,6 +188,7 @@
       <symbol id="home" viewBox="0 0 24 24"><path d="M5 12H3l9-9 9 9h-2"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/><path d="M9 21v-6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v6"/></symbol>
       <symbol id="binary-tree" viewBox="0 0 24 24"><path d="M6 20a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M16 4a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M16 20a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M11 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M21 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="m5.058 18.306 2.88-4.606"/><path d="m10.061 10.303 2.877-4.604"/><path d="m10.065 13.705 2.876 4.6"/><path d="m15.063 5.7 2.881 4.61"/></symbol>
       <symbol id="file-text" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><path d="M9 9h1"/><path d="M9 13h6"/><path d="M9 17h6"/></symbol>
+      <symbol id="list-tree" viewBox="0 0 24 24"><path d="M9 6h11"/><path d="M12 12h8"/><path d="M15 18h5"/><path d="M5 6v.01"/><path d="M8 12v.01"/><path d="M11 18v.01"/></symbol>
       <symbol id="table" viewBox="0 0 24 24"><path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5z"/><path d="M3 10h18"/><path d="M10 3v18"/></symbol>
       <symbol id="alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
     </svg>
@@ -196,6 +204,7 @@
       <div class="views" role="tablist" id="abas" aria-label="Valores">
         <button role="tab" aria-selected="true" aria-controls="arvore" type="button" id="aba-arvore" aria-keyshortcuts="Meta+1 Control+1">Árvore<kbd>⌘1</kbd></button>
         <button role="tab" aria-selected="false" aria-controls="texto" type="button" id="aba-texto" tabindex="-1" aria-keyshortcuts="Meta+2 Control+2">Texto<kbd>⌘2</kbd></button>
+        <button role="tab" aria-selected="false" aria-controls="estrutura" type="button" id="aba-estrutura" tabindex="-1" aria-keyshortcuts="Meta+3 Control+3">Estrutura<kbd>⌘3</kbd></button>
       </div>
       <section class="painel" id="painel" aria-labelledby="painel-nome" hidden>
         <div>
@@ -231,6 +240,10 @@
         <div class="tree texto" id="texto" role="listbox" tabindex="0" aria-label="Texto do arquivo" hidden>
           <div class="rows" id="texto-linhas" role="presentation"></div>
           <div class="alto" id="texto-alto"></div>
+        </div>
+        <div class="tree estr" id="estrutura" role="listbox" tabindex="0" aria-label="Estrutura inferida do arquivo" aria-describedby="estrutura-resumo" hidden>
+          <p class="eres" id="estrutura-resumo" role="status" aria-live="polite"></p>
+          <div id="estrutura-linhas" role="presentation"></div>
         </div>
         <div class="regua" id="regua" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="1" hidden></div>
         </div>

@@ -38,6 +38,8 @@ struct Varredura {
     legenda: Option<Legenda>,
     /// A 2ª passada acabou (com ou sem discriminador): a régua já tem as cores finais.
     coloriu: bool,
+    /// Estrutura inferida (modo Estrutura); chega junto com `campos`.
+    estrutura: Option<Arc<Estrutura>>,
 }
 
 /// Evento `varredura` e parte do `resumo`.
@@ -49,6 +51,8 @@ struct Andamento {
     campos: Option<usize>,
     legenda: Option<Legenda>,
     coloriu: bool,
+    /// A inferência acabou: o comando `estrutura` já tem resposta.
+    inferiu: bool,
 }
 
 impl Varredura {
@@ -59,6 +63,7 @@ impl Varredura {
             campos: self.campos,
             legenda: self.legenda.clone(),
             coloriu: self.coloriu,
+            inferiu: self.estrutura.is_some(),
         })
     }
 }
@@ -119,6 +124,7 @@ async fn abrir<R: Runtime>(
         v.marcas = Arc::clone(&marcas);
         v.legenda = None;
         v.coloriu = false;
+        v.estrutura = None;
         v.geracao
     };
     *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
@@ -149,7 +155,11 @@ async fn abrir<R: Runtime>(
             return;
         }
         let campos = resumo::campos(&inf.resumo);
-        avisar(&|v| v.campos = campos);
+        let estrutura = Arc::new(Estrutura::de(&inf));
+        avisar(&|v| {
+            v.campos = campos;
+            v.estrutura = Some(Arc::clone(&estrutura));
+        });
         let ds = inf.resumo.discriminadores();
         let escolhido = nucleo::regua::escolher(&ds).filter(|_| colorir);
         if let Some(d) = escolhido
@@ -189,6 +199,115 @@ fn resumo(estado: State<'_, Estado>) -> Result<Resumo, String> {
         registros,
         andamento,
     })
+}
+
+/// Um tipo visto num caminho: nome, quantas vezes e a primeira linha (base 0).
+type TipoVisto = (&'static str, u64, Option<u64>);
+
+/// `nucleo::estrutura` pronto para a interface (o núcleo não depende de `serde` ali).
+#[derive(Clone, Serialize)]
+struct Estrutura {
+    entrada: &'static str,
+    registros: u64,
+    invalidas: u64,
+    caminhos: Vec<CaminhoUi>,
+    discriminadores: Vec<DiscriminadorUi>,
+}
+
+#[derive(Clone, Serialize)]
+struct CaminhoUi {
+    caminho: String,
+    relacao: &'static str,
+    profundidade: usize,
+    presenca: u64,
+    de: u64,
+    tipos: Vec<TipoVisto>,
+}
+
+#[derive(Clone, Serialize)]
+struct DiscriminadorUi {
+    campo: String,
+    variantes: Vec<VarianteUi>,
+}
+
+#[derive(Clone, Serialize)]
+struct VarianteUi {
+    valor: String,
+    registros: u64,
+    linha: Option<u64>,
+    obrigatorias: Vec<String>,
+    opcionais: Vec<(String, u64)>,
+}
+
+impl Estrutura {
+    fn de(inf: &nucleo::estrutura::Inferencia) -> Self {
+        use nucleo::estrutura::{Entrada, Relacao, Tipo};
+        let r = &inf.resumo;
+        let caminhos = r
+            .caminhos()
+            .into_iter()
+            .map(|c| CaminhoUi {
+                relacao: match c.relacao {
+                    Relacao::Registro => "registro",
+                    Relacao::Campo => "campo",
+                    Relacao::Elemento => "elemento",
+                    Relacao::Entrada => "entrada",
+                },
+                tipos: Tipo::TODOS
+                    .iter()
+                    .map(|&t| (t.nome(), c.tipos[t as usize]))
+                    .filter(|(_, x)| x.n > 0)
+                    .map(|(nome, x)| (nome, x.n, x.primeira()))
+                    .collect(),
+                caminho: c.caminho,
+                profundidade: c.profundidade,
+                presenca: c.presenca,
+                de: c.de,
+            })
+            .collect();
+        let discriminadores = r
+            .discriminadores()
+            .into_iter()
+            .map(|d| DiscriminadorUi {
+                campo: d.campo,
+                variantes: d
+                    .variantes
+                    .into_iter()
+                    .map(|v| VarianteUi {
+                        valor: v.valor,
+                        registros: v.registros.n,
+                        linha: v.registros.primeira(),
+                        obrigatorias: v.obrigatorias,
+                        opcionais: v.opcionais,
+                    })
+                    .collect(),
+            })
+            .collect();
+        Estrutura {
+            entrada: match inf.entrada {
+                Entrada::Jsonl => "jsonl",
+                Entrada::JsonUnico => "json",
+            },
+            registros: r.registros(),
+            invalidas: r.invalidas.n,
+            caminhos,
+            discriminadores,
+        }
+    }
+}
+
+/// Estrutura do arquivo aberto, ou `null` enquanto a inferência roda (ela é parte da varredura
+/// de `abrir`; o evento `varredura` avisa com `inferiu`). Só lê o que já foi calculado.
+#[tauri::command]
+fn estrutura(estado: State<'_, Estado>) -> Result<Option<Estrutura>, String> {
+    let e = estado
+        .varredura
+        .lock()
+        .map_err(|e| e.to_string())?
+        .estrutura
+        .clone();
+    // Clona fora da trava: são centenas de caminhos, não o arquivo.
+    Ok(e.map(|e| (*e).clone()))
 }
 
 fn marcas_atuais(estado: &Estado) -> Result<Arc<[AtomicU8]>, String> {
@@ -314,7 +433,8 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             revelar,
             formatado,
             regua,
-            marcas
+            marcas,
+            estrutura
         ])
 }
 
@@ -373,6 +493,7 @@ mod testes {
         };
 
         assert!(chamar("linhas", json!({"inicio": 0, "quantidade": 10})).is_err());
+        assert_eq!(chamar("estrutura", json!({})), Ok(Value::Null));
         let caminho = f.path().to_str().unwrap();
         assert_eq!(chamar("abrir", json!({ "caminho": caminho })), Ok(json!(2)));
         // A varredura roda em outra thread: espera o fim pelo próprio comando.
@@ -387,7 +508,21 @@ mod testes {
             resumo,
             json!({"conteudo": "objetos", "bytes": 22, "registros": 2, "geracao": 1,
                    "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false,
-                   "campos": 1, "legenda": null, "coloriu": true})
+                   "campos": 1, "legenda": null, "coloriu": true, "inferiu": true})
+        );
+        // Estrutura: a linha inválida não vira registro; `.a[]` com a 1ª linha de cada tipo.
+        assert_eq!(
+            chamar("estrutura", json!({})),
+            Ok(
+                json!({"entrada": "jsonl", "registros": 1, "invalidas": 1, "caminhos": [
+                {"caminho": ".", "relacao": "registro", "profundidade": 0, "presenca": 1,
+                 "de": 1, "tipos": [["objeto", 1, 0]]},
+                {"caminho": ".a", "relacao": "campo", "profundidade": 1, "presenca": 1,
+                 "de": 1, "tipos": [["lista", 1, 0]]},
+                {"caminho": ".a[]", "relacao": "elemento", "profundidade": 2, "presenca": 2,
+                 "de": 1, "tipos": [["inteiro", 2, 0]]}
+            ], "discriminadores": []})
+            )
         );
         assert_eq!(
             chamar("marcas", json!({"inicio": 0, "quantidade": 9})),
@@ -457,6 +592,23 @@ mod testes {
         assert_eq!(
             chamar("regua", json!({"k": 2})),
             Ok(json!({"cores": [1, 1], "invalidas": [[1, 1, 3]]}))
+        );
+        let e = chamar("estrutura", json!({})).unwrap();
+        assert_eq!(
+            e["discriminadores"],
+            json!([{"campo": ".tipo", "variantes": [
+                {"valor": "x", "registros": 2, "linha": 0, "obrigatorias": ["tipo", "x"], "opcionais": []},
+                {"valor": "y", "registros": 1, "linha": 1, "obrigatorias": ["tipo", "y"], "opcionais": []}
+            ]}])
+        );
+        // `.x` opcional: em 2 dos 3 objetos.
+        assert_eq!(e["caminhos"][2]["caminho"], ".x");
+        assert_eq!(
+            (
+                e["caminhos"][2]["presenca"].clone(),
+                e["caminhos"][2]["de"].clone()
+            ),
+            (json!(2), json!(3))
         );
     }
 }

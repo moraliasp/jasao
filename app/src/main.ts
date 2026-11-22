@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { criarExemplos } from "./exemplos";
+import { type Estrutura, type ItemE, itens as itensEstrutura } from "./estrutura";
 import { type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
@@ -42,7 +43,7 @@ const textoEl = $("texto");
 const textoAlto = $("texto-alto");
 const textoLinhas = $("texto-linhas");
 const verFormatado = $<HTMLButtonElement>("ver-formatado");
-const abas = { arvore: $("aba-arvore"), texto: $("aba-texto") };
+const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura") };
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
@@ -62,6 +63,10 @@ let alvo = 0; // registro pedido pelo teclado no Texto, antes da resposta chegar
 let selecao = 0; // descarta resposta de seleção mais velha que a última pedida
 let noPainel = false; // painel de entrada no lugar do conteúdo
 let irN = 0; // descarta resposta de arraste na régua mais velha que a última
+const estruturaEl = $("estrutura");
+const estruturaLinhas = $("estrutura-linhas");
+let estr: ItemE[] | null = null; // null: ainda não pedida (ou a inferência não acabou)
+let selE = 0;
 
 const faixa = $("faixa");
 const regua = criarRegua($("regua"), $("legenda"), {
@@ -149,6 +154,7 @@ let quadro = 0;
 function desenhar(): void {
   quadro = 0;
   if (modo === "texto") return desenharTexto();
+  if (modo === "estrutura") return;
   alto.style.height = espaco(arvore, total, ALTURA);
   linhasEl.style.height = `${arvore.clientHeight}px`;
   const g = geometria();
@@ -170,6 +176,13 @@ const agendar = () => (quadro ||= requestAnimationFrame(desenhar));
 
 /** Migalhas e botões do rodapé da seleção, iguais nas duas visões. */
 function rodape(): void {
+  if (modo === "estrutura") {
+    const it = estr?.[selE];
+    copiar.disabled = !it;
+    verFormatado.disabled = true;
+    migalhas.innerHTML = it ? `<li>${esc(it.caminho)}</li>` : "";
+    return;
+  }
   copiar.disabled = !atual;
   verFormatado.disabled = !atual || atual.erro !== null;
   migalhas.innerHTML = atual
@@ -280,6 +293,73 @@ async function teclaTexto(e: KeyboardEvent): Promise<void> {
   }
 }
 
+// ---- Estrutura: o que o núcleo inferiu, um caminho por linha. ----
+
+/** Pede a estrutura se a inferência já acabou; senão o evento `varredura` (inferiu) chama de novo. */
+async function carregarEstrutura(): Promise<void> {
+  if (estr || !resumo?.inferiu) return desenharEstrutura();
+  const g = resumo.geracao;
+  const e = await invoke<Estrutura | null>("estrutura");
+  if (!e || g !== resumo?.geracao) return;
+  estr = itensEstrutura(e, t, fmt);
+  selE = 0;
+  registrosE = e.registros;
+  desenharEstrutura();
+}
+let registrosE = 0;
+
+// shortcut: sem rolagem virtual (são centenas de caminhos, não linhas do arquivo); virtualizar
+// como a Árvore se aparecer arquivo com dezenas de milhares de caminhos.
+function desenharEstrutura(): void {
+  const resumoEl = $("estrutura-resumo");
+  if (!estr) {
+    resumoEl.textContent = t.estrutura.inferindo;
+    estruturaLinhas.innerHTML = "";
+  } else {
+    resumoEl.textContent = registrosE ? t.estrutura.resumo(fmt(estr.length), fmt(registrosE)) : t.vazio;
+    estruturaLinhas.innerHTML = registrosE
+      ? estr.map((it, i) => `<div class="row" id="e${i}" data-i="${i}" role="option" aria-selected="${i === selE}" aria-label="${esc(it.rotulo)}">${it.html}</div>`).join("")
+      : "";
+  }
+  const el = document.getElementById(`e${selE}`);
+  if (el) {
+    estruturaEl.setAttribute("aria-activedescendant", el.id);
+    el.scrollIntoView({ block: "nearest" });
+  } else estruturaEl.removeAttribute("aria-activedescendant");
+  rodape();
+}
+
+function moverE(i: number): void {
+  if (!estr?.length) return;
+  selE = Math.max(0, Math.min(estr.length - 1, i));
+  desenharEstrutura();
+}
+
+/** Primeira ocorrência na Árvore: o registro dela (o núcleo dá a linha, não o nó). */
+async function abrirOcorrencia(): Promise<void> {
+  const linha = estr?.[selE]?.linha;
+  if (linha === null || linha === undefined) return;
+  trocarModo("arvore");
+  await focarRegistro(linha);
+}
+
+function teclaEstrutura(e: KeyboardEvent): void {
+  const pagina = Math.max(1, Math.floor(estruturaEl.clientHeight / ALTURA) - 2);
+  const acoes: Record<string, () => unknown> = {
+    ArrowDown: () => moverE(selE + 1),
+    ArrowUp: () => moverE(selE - 1),
+    PageDown: () => moverE(selE + pagina),
+    PageUp: () => moverE(selE - pagina),
+    Home: () => moverE(0),
+    End: () => moverE(Infinity),
+    Enter: () => abrirOcorrencia(),
+  };
+  const acao = acoes[e.key];
+  if (!acao) return;
+  e.preventDefault();
+  Promise.resolve(acao()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+}
+
 function trocarModo(m: Modo): void {
   modo = m;
   noPainel = false;
@@ -291,7 +371,11 @@ function trocarModo(m: Modo): void {
   }
   arvore.hidden = m !== "arvore";
   textoEl.hidden = m !== "texto";
-  if (m === "texto") {
+  estruturaEl.hidden = m !== "estrutura";
+  if (m === "estrutura") {
+    void carregarEstrutura().catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+    estruturaEl.focus();
+  } else if (m === "texto") {
     alvo = atual?.registro ?? 0;
     mostrarEm(textoEl, alvo, registros, ALTURA_TEXTO);
     desenharTexto();
@@ -363,7 +447,7 @@ async function abrirFormatado(): Promise<void> {
   }
 }
 
-async function copiarCaminho(l: Linha, botao: HTMLElement): Promise<void> {
+async function copiarCaminho(l: { caminho: string }, botao: HTMLElement): Promise<void> {
   await navigator.clipboard.writeText(l.caminho);
   const antes = botao.innerHTML;
   botao.innerHTML = botao === copiar ? `${icone("check")}<span>${t.copiado}</span>` : icone("check");
@@ -382,6 +466,7 @@ async function mostrar(caminho: string): Promise<void> {
     sel = 0;
     atual = undefined;
     texto = null;
+    estr = null;
     arvore.scrollTop = textoEl.scrollTop = 0;
     resumo = await invoke<Resumo>("resumo");
     // Sem régua para JSON único ou vazio (decisão 2 do micronavegador).
@@ -407,7 +492,7 @@ async function mostrar(caminho: string): Promise<void> {
 type Conteudo = keyof typeof t.painel.conteudo;
 interface Andamento {
   geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null;
-  legenda: Legenda | null; coloriu: boolean;
+  legenda: Legenda | null; coloriu: boolean; inferiu: boolean;
 }
 interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
 
@@ -417,6 +502,7 @@ const MODOS: { id: Modo | "tabela"; icone: string; disponivel: boolean; sempre: 
   { id: "tabela", icone: "table", disponivel: false, sempre: true },
   { id: "arvore", icone: "binary-tree", disponivel: true, sempre: true },
   { id: "texto", icone: "file-text", disponivel: true, sempre: false },
+  { id: "estrutura", icone: "list-tree", disponivel: true, sempre: false },
 ];
 const disponiveis = MODOS.filter((m) => m.disponivel) as { id: Modo; icone: string; sempre: boolean }[];
 const sugerido = disponiveis[0].id;
@@ -507,7 +593,17 @@ linhasEl.addEventListener("dblclick", (e) => {
     void alternar(Number(row.dataset.v));
 });
 copiar.addEventListener("click", () => {
-  if (atual) void copiarCaminho(atual, copiar);
+  const l = modo === "estrutura" ? estr?.[selE] : atual;
+  if (l) void copiarCaminho(l, copiar);
+});
+estruturaEl.addEventListener("keydown", teclaEstrutura);
+estruturaLinhas.addEventListener("click", (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
+  if (row) moverE(Number(row.dataset.i));
+  estruturaEl.focus({ preventScroll: true });
+});
+estruturaLinhas.addEventListener("dblclick", (e) => {
+  if ((e.target as HTMLElement).closest("[data-i]")) void abrirOcorrencia();
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
@@ -525,7 +621,8 @@ textoLinhas.addEventListener("click", (e) => {
 for (const [k, aba] of Object.entries(abas)) aba.addEventListener("click", () => trocarModo(k as Modo));
 $("abas").addEventListener("keydown", (e) => {
   if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-  const m: Modo = modo === "arvore" ? "texto" : "arvore";
+  const ordem = Object.keys(abas) as Modo[];
+  const m = ordem[(ordem.indexOf(modo) + (e.key === "ArrowRight" ? 1 : ordem.length - 1)) % ordem.length];
   trocarModo(m);
   abas[m].focus();
 });
@@ -549,7 +646,7 @@ document.addEventListener("keydown", (e) => {
     mostrarPainel();
     return;
   }
-  const m = ({ "1": "arvore", "2": "texto" } as const)[e.key as "1" | "2"];
+  const m = ({ "1": "arvore", "2": "texto", "3": "estrutura" } as const)[e.key as "1" | "2" | "3"];
   if (!m) return;
   e.preventDefault();
   trocarModo(m);
@@ -569,6 +666,7 @@ void listen<Andamento>("varredura", ({ payload: p }) => {
   if (!resumo || p.geracao !== resumo.geracao || (p.varridas < resumo.varridas && !p.fim)) return;
   Object.assign(resumo, p);
   desenharAndamento();
+  if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
   regua.andamento(p);
 });
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
@@ -595,6 +693,8 @@ document.documentElement.lang = t.lang;
 $("abrir").textContent = t.abrir;
 abas.arvore.firstChild!.textContent = t.arvore;
 abas.texto.firstChild!.textContent = t.texto;
+abas.estrutura.firstChild!.textContent = t.estrutura.aba;
+estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);
 $("abas").setAttribute("aria-label", t.valores);
 verFormatado.querySelector("span")!.textContent = t.verFormatado;
 $("formatado-fechar").setAttribute("aria-label", t.fechar);
