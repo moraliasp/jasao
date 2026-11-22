@@ -69,6 +69,11 @@
       .busca .info.err { color: var(--del); white-space: normal; }
       .rot180 { transform: rotate(180deg); }
       .ac { background: color-mix(in srgb, var(--change) 28%, transparent); color: inherit; border-radius: 2px; }
+      .menu { position: fixed; z-index: 20; min-width: 210px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+      .menu[hidden] { display: none; }
+      .menu button { display: flex; justify-content: space-between; gap: 16px; width: 100%; height: 28px; padding: 0 10px; border: 0; border-radius: 4px; background: none; font-size: 13px; text-align: left; cursor: pointer; }
+      .menu button:hover, .menu button:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); outline: 0; }
+      .menu kbd { color: var(--bar-muted); font: inherit; }
       .ac.at { background: color-mix(in srgb, var(--change) 60%, transparent); box-shadow: 0 0 0 1px var(--change); }
       .status { color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
@@ -239,7 +244,7 @@
           <div class="legenda" id="legenda" hidden></div>
           <div class="acts">
             <button class="btn" id="ver-formatado" type="button" disabled><svg class="i"><use href="#braces"/></svg><span>Ver formatado</span></button>
-            <button class="btn" id="copiar" type="button" disabled><svg class="i"><use href="#copy"/></svg><span>Copiar caminho</span></button>
+            <button class="btn" id="copiar" type="button" aria-keyshortcuts="Meta+Shift+C Control+Shift+C" disabled><svg class="i"><use href="#copy"/></svg><span>Copiar caminho</span></button>
           </div>
         </div>
         <div class="vista">
@@ -255,6 +260,12 @@
         </div>
       </div>
     </main>
+    <div class="menu" id="menu" role="menu" hidden>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="jq"><span></span><kbd>⇧⌘C</kbd></button>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="jsonpath"><span></span></button>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="pointer"><span></span></button>
+      <button type="button" role="menuitem" tabindex="-1" data-formato="valor"><span></span><kbd>⌘C</kbd></button>
+    </div>
     <dialog id="formatado" aria-labelledby="formatado-titulo">
       <header><h2 id="formatado-titulo"></h2><button class="ib" id="formatado-fechar" type="button" aria-label="Fechar"><svg class="i"><use href="#x"/></svg></button></header>
       <pre id="formatado-texto" tabindex="0"></pre>

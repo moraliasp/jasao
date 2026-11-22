@@ -7,7 +7,8 @@ import { criarBusca } from "./busca";
 import { type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
-import { decodificar, type JanelaTexto, marcado, linhaHtml as textoHtml } from "./texto";
+import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
+import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml } from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -396,12 +397,29 @@ async function abrirFormatado(): Promise<void> {
   }
 }
 
-async function copiarCaminho(l: Linha, botao: HTMLElement): Promise<void> {
-  await navigator.clipboard.writeText(l.caminho);
-  const antes = botao.innerHTML;
-  botao.innerHTML = botao === copiar ? `${icone("check")}<span>${t.copiado}</span>` : icone("check");
-  setTimeout(() => (botao.innerHTML = antes), 1500);
+let antesDaCopia: { msg: string; texto: string } | null = null;
+/** Copia o nó `v` (chamar dentro do clique ou da tecla) e confirma no status e no botão. */
+function copiarComo(v: number, f: Formato, botao?: HTMLElement): void {
+  copiarNo(v, f).then(
+    (s) => {
+      const msg = t.copiar.feito(t.copiar[f], resumir(s));
+      // Volta o status de antes, se nada mais o trocou nesse meio-tempo.
+      antesDaCopia = { msg, texto: antesDaCopia?.texto ?? status.textContent ?? "" };
+      status.textContent = msg;
+      setTimeout(() => {
+        if (antesDaCopia?.msg !== msg) return;
+        if (status.textContent === msg) status.textContent = antesDaCopia.texto;
+        antesDaCopia = null;
+      }, 2500);
+      if (!botao) return;
+      const antes = botao.innerHTML;
+      botao.innerHTML = botao === copiar ? `${icone("check")}<span>${t.copiado}</span>` : icone("check");
+      setTimeout(() => (botao.innerHTML = antes), 1500);
+    },
+    (erro) => (status.textContent = `${t.erro}: ${erro}`),
+  );
 }
+const menu = criarMenu($("menu"), (f) => copiarComo(sel, f));
 
 async function mostrar(caminho: string): Promise<void> {
   status.textContent = t.abrindo;
@@ -529,7 +547,7 @@ linhasEl.addEventListener("click", (e) => {
   const v = Number(row.dataset.v);
   const l = linhaEm(v);
   sel = v;
-  if (alvo.closest("[data-cp]") && l) void copiarCaminho(l, alvo.closest("[data-cp]")!);
+  if (alvo.closest("[data-cp]") && l) copiarComo(v, "jq", alvo.closest<HTMLElement>("[data-cp]")!);
   else if (alvo.closest("[data-tg]")) void alternar(v);
   else desenhar();
   arvore.focus({ preventScroll: true });
@@ -539,8 +557,16 @@ linhasEl.addEventListener("dblclick", (e) => {
   if (row && !(e.target as HTMLElement).closest("[data-tg],[data-cp]") && linhaEm(Number(row.dataset.v))?.expansivel)
     void alternar(Number(row.dataset.v));
 });
+linhasEl.addEventListener("contextmenu", (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>(".row[data-v]");
+  if (!row) return;
+  e.preventDefault();
+  sel = Number(row.dataset.v);
+  desenhar();
+  menu.abrir(e.clientX, e.clientY, arvore);
+});
 copiar.addEventListener("click", () => {
-  if (atual) void copiarCaminho(atual, copiar);
+  if (atual) copiarComo(sel, "jq", copiar);
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
@@ -554,6 +580,17 @@ textoLinhas.addEventListener("click", (e) => {
   const b = alvo.closest<HTMLElement>("[data-b]")?.dataset.b;
   void revelar(Number(tl.dataset.r), b === undefined ? 0 : Number(b)).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
   textoEl.focus({ preventScroll: true });
+});
+textoLinhas.addEventListener("contextmenu", (e) => {
+  const alvo = e.target as HTMLElement;
+  const tl = alvo.closest<HTMLElement>(".tl[data-r]");
+  if (!tl) return;
+  e.preventDefault();
+  const b = alvo.closest<HTMLElement>("[data-b]")?.dataset.b;
+  revelar(Number(tl.dataset.r), b === undefined ? 0 : Number(b)).then(
+    () => menu.abrir(e.clientX, e.clientY, textoEl),
+    (erro) => (status.textContent = `${t.erro}: ${erro}`),
+  );
 });
 for (const [k, aba] of Object.entries(abas)) aba.addEventListener("click", () => trocarModo(k as Modo));
 $("abas").addEventListener("keydown", (e) => {
@@ -574,6 +611,22 @@ document.addEventListener("keydown", (e) => {
     if (noPainel) trocarModo(sugerido);
     busca.focar();
     return;
+  }
+  // Copiar: menu pela tecla de contexto ou ⇧F10; ⇧⌘C copia o caminho jq; ⌘C, o valor (sem texto selecionado).
+  const visao = (e.target as HTMLElement).closest<HTMLElement>("#arvore, #texto");
+  if (visao && atual && !noPainel && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
+    e.preventDefault();
+    const r = (document.getElementById(modo === "texto" ? `t${atual.registro}` : `l${sel}`) ?? visao).getBoundingClientRect();
+    menu.abrir(r.left + 24, r.bottom, visao);
+    return;
+  }
+  if (cmd && e.key.toLowerCase() === "c" && atual && !noPainel) {
+    const vale = e.shiftKey ? !(e.target as HTMLElement).closest("input, textarea") : visao && getSelection()?.isCollapsed !== false;
+    if (vale) {
+      e.preventDefault();
+      copiarComo(sel, e.shiftKey ? "jq" : "valor");
+      return;
+    }
   }
   if (e.altKey || e.shiftKey) return;
   if (!(e.metaKey || e.ctrlKey)) {
@@ -646,6 +699,8 @@ $("formatado-fechar").setAttribute("aria-label", t.fechar);
 textoEl.setAttribute("aria-label", t.textoDoArquivo);
 $("rotulo-linha").textContent = t.irParaLinha;
 copiar.querySelector("span")!.textContent = t.copiarCaminho;
+$("menu").setAttribute("aria-label", t.copiar.menu);
+for (const f of FORMATOS) document.querySelector(`[data-formato="${f}"] span`)!.textContent = t.copiar[f];
 migalhas.setAttribute("aria-label", t.caminhoSelecionado);
 $("tema").setAttribute("aria-label", t.tema);
 arvore.setAttribute("aria-label", t.valoresDoArquivo);

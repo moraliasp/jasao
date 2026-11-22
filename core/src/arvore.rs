@@ -16,6 +16,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::ArquivoLinhas;
+use crate::caminho::{Caminho, Segmento};
 
 /// Aninhamento máximo de um registro. Acima disso o registro vira linha de erro: protege a pilha
 /// (a análise é recursiva) e mantém a interface legível.
@@ -368,6 +369,46 @@ impl Arvore {
     /// O mesmo arquivo, para ler fora da trava do estado (varredura em 2º plano).
     pub fn compartilhado(&self) -> Arc<ArquivoLinhas> {
         Arc::clone(&self.arquivo)
+    }
+
+    /// Caminho do nó da linha visível `v`, a partir do registro (linha de registro: a raiz).
+    pub fn caminho(&self, v: usize) -> Option<Caminho> {
+        let (r, Some(p)) = self.localizar(v)? else {
+            return Some(Caminho::raiz());
+        };
+        let a = &self.abertos[&r];
+        let mut segmentos = Vec::with_capacity(a.nos[a.visiveis[p]].prof);
+        let mut n = a.visiveis[p];
+        while a.nos[n].pai != SEM_PAI {
+            segmentos.push(match &a.nos[n].chave {
+                Some(k) => Segmento::Chave(k.to_string()),
+                None => Segmento::Indice(a.nos[n].pos),
+            });
+            n = a.nos[n].pai;
+        }
+        segmentos.reverse();
+        Some(Caminho(segmentos))
+    }
+
+    /// Texto do valor da linha visível `v`, para copiar: texto JSON sai decodificado (sem aspas
+    /// nem escapes); o resto, cru como no arquivo. Registro inválido: a linha inteira.
+    pub fn valor(&self, v: usize) -> Option<String> {
+        let (r, p) = self.localizar(v)?;
+        let bytes = self.bytes(r);
+        let faixa = match p {
+            Some(p) => {
+                let a = &self.abertos[&r];
+                a.nos[a.visiveis[p]].faixa.clone()
+            }
+            None => 0..bytes.len(),
+        };
+        let cru = String::from_utf8_lossy(bytes.get(faixa).unwrap_or_default());
+        if cru.starts_with('"')
+            && let Ok(texto) = sonic_rs::from_str::<String>(&cru)
+        {
+            return Some(texto);
+        }
+        Some(cru.into_owned())
     }
 
     /// Linha visível do pai de `v` (seta para a esquerda); `None` para linha de registro.
@@ -949,6 +990,27 @@ mod testes {
         let mut inv = arvore("{x\n[]\n");
         assert_eq!(inv.revelar(0, 1), Some(0));
         assert_eq!(inv.revelar(1, 0), Some(1), "registro sem filhos fica nele");
+    }
+
+    #[test]
+    fn caminho_e_valor_para_copiar() {
+        let mut a = arvore("{\"a b\":[\"x\\ny\",{\"if\":1.50}]}\n\"só\"\n{\"c\":tru}\n");
+        a.alternar(0);
+        a.alternar(1);
+        // 0 registro, 1 ."a b", 2 [0], 3 [1]
+        a.alternar(3);
+        let c = a.caminho(4).unwrap();
+        assert_eq!(c.jq(), ".[\"a b\"][1][\"if\"]");
+        assert_eq!(c.jsonpath(), "$['a b'][1].if");
+        assert_eq!(c.json_pointer(), "/a b/1/if");
+        assert_eq!(a.valor(4).as_deref(), Some("1.50"));
+        assert_eq!(a.valor(2).as_deref(), Some("x\ny"));
+        assert_eq!(a.valor(3).as_deref(), Some("{\"if\":1.50}"));
+        assert_eq!(a.caminho(0), Some(Caminho::raiz()));
+        assert_eq!(a.valor(5).as_deref(), Some("só"));
+        assert_eq!(a.valor(6).as_deref(), Some("{\"c\":tru}"));
+        assert_eq!(a.caminho(7), None);
+        assert_eq!(a.valor(7), None);
     }
 
     #[test]

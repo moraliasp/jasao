@@ -338,6 +338,40 @@ fn formatado(registro: usize, estado: State<'_, Estado>) -> Result<String, Strin
     })?
 }
 
+/// Caminho do nó selecionado nos três formatos que se copiam.
+#[derive(Serialize)]
+struct Caminhos {
+    jq: String,
+    jsonpath: String,
+    pointer: String,
+}
+
+/// Caminho do nó na linha visível `v`, a partir do registro (`None` fora da lista).
+#[tauri::command]
+fn caminhos(v: usize, estado: State<'_, Estado>) -> Result<Option<Caminhos>, String> {
+    estado.com(|a| {
+        a.caminho(v).map(|c| Caminhos {
+            jq: c.jq(),
+            jsonpath: c.jsonpath(),
+            pointer: c.json_pointer(),
+        })
+    })
+}
+
+/// Valor da linha visível `v` para copiar (texto JSON decodificado; ver `Arvore::valor`).
+#[tauri::command]
+fn valor(v: usize, estado: State<'_, Estado>) -> Result<Option<String>, String> {
+    let valor = estado.com(|a| a.valor(v))?;
+    match valor {
+        Some(s) if s.len() > MAX_FORMATADO => Err(format!(
+            "valor de {} MB passa do limite de {} MB para copiar",
+            s.len() >> 20,
+            MAX_FORMATADO >> 20
+        )),
+        v => Ok(v),
+    }
+}
+
 /// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
 /// (no máximo a cada `INTERVALO`, e no fim); a busca anterior é cancelada e seus achados somem.
 /// Padrão vazio só limpa. Devolve a geração da busca, que vem em cada evento.
@@ -455,7 +489,9 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             buscar,
             achado,
             achados,
-            regua_busca
+            regua_busca,
+            caminhos,
+            valor
         ])
 }
 
@@ -599,6 +635,16 @@ mod testes {
             chamar("regua", json!({"k": 2})),
             Ok(json!({"cores": [1, 1], "invalidas": [[1, 1, 3]]}))
         );
+
+        // Copiar: caminho nos três formatos e valor (texto decodificado).
+        assert_eq!(chamar("alternar", json!({"v": 0})), Ok(json!(6)));
+        assert_eq!(
+            chamar("caminhos", json!({"v": 2})),
+            Ok(json!({"jq": ".x", "jsonpath": "$.x", "pointer": "/x"}))
+        );
+        assert_eq!(chamar("valor", json!({"v": 1})), Ok(json!("x")));
+        assert_eq!(chamar("valor", json!({"v": 2})), Ok(json!("1")));
+        assert_eq!(chamar("caminhos", json!({"v": 9})), Ok(Value::Null));
 
         // Busca: roda em outra thread; os achados aparecem no estado.
         let buscar = |padrao: &str, regex: bool| {

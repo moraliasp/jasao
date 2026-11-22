@@ -1,7 +1,7 @@
 // Lógica pura da visão Texto (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { linhaHtml, marcado, partir } from "../src/texto.ts";
+import { linhaHtml, marcado, partir, resumir } from "../src/texto.ts";
 
 test("partir sem marca devolve o token inteiro", () => {
   assert.deepEqual(partir('"abc"', 5, [[0, 2, false]]), [['"abc"', 5, 0]]);
@@ -30,4 +30,11 @@ test("linhaHtml marca o achado e mantém o byte de cada pedaço", () => {
 
 test("marcado escapa e envolve só o trecho", () => {
   assert.equal(marcado('"<a>"', 3, [[5, 6, false]]), '"&lt;<mark class="ac">a</mark>>"');
+});
+
+test("resumir junta espaços e corta em n caracteres sem partir emoji", () => {
+  assert.equal(resumir("a\n  b"), "a b");
+  assert.equal(resumir("abcdef", 4), "abc…");
+  assert.equal(resumir("😀😀😀😀😀", 3), "😀😀…");
+  assert.equal(resumir("x".repeat(60)), "x".repeat(60));
 });

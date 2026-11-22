@@ -83,3 +83,9 @@ export function linhaHtml(
   if (tamanho > b) html += `<span class="corte">${esc(corte(tamanho - b))}</span>`;
   return html;
 }
+
+/** Texto numa linha só, cortado em `n` caracteres (confirmação de cópia). */
+export function resumir(s: string, n = 60): string {
+  const c = [...s.slice(0, n * 4).replace(/\s+/g, " ").trim()];
+  return c.length > n ? `${c.slice(0, n - 1).join("")}…` : c.join("");
+}
