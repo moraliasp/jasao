@@ -3,10 +3,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { criarBusca } from "./busca";
 import { type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
-import { decodificar, type JanelaTexto, linhaHtml as textoHtml } from "./texto";
+import { decodificar, type JanelaTexto, marcado, linhaHtml as textoHtml } from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -75,6 +76,16 @@ const regua = criarRegua($("regua"), $("legenda"), {
   fmt: (n) => fmt(n),
 });
 
+const busca = criarBusca($("busca") as HTMLFormElement, {
+  ir: irAoAchado,
+  mudou: () => {
+    regua.busca(busca.ativa());
+    agendar();
+  },
+  voltar: () => (modo === "texto" ? textoEl : arvore).focus(),
+  fmt: (n) => fmt(n),
+});
+
 /** Registros visíveis (base 0, inclusivo): retângulo da régua e "linhas X–Y de N". */
 function mostrarFaixa(a: number | undefined, b: number | undefined): void {
   if (a === undefined || b === undefined) return;
@@ -112,17 +123,20 @@ function cobre(primeira: number, cabem: number): boolean {
 
 const plural = (n: number, [um, varios]: string[]) => `${fmt(n)} ${n === 1 ? um : varios}`;
 
+/** Prévia com os achados da busca marcados (a prévia começa em `faixa[0]` do registro). */
+const previa = (l: Linha) => marcado(l.previa, l.faixa[0], busca.marcas(l.registro));
+
 function valor(l: Linha): string {
   if (l.erro) {
     const msg = `${t.byte(fmt(l.erro.byte))}: ${t.motivos[l.erro.motivo] ?? t.motivos.outro}`;
-    return `<span class="err">${icone("alert")}<span>${esc(msg)}</span></span><span class="val dim">${esc(l.previa)}</span>`;
+    return `<span class="err">${icone("alert")}<span>${esc(msg)}</span></span><span class="val dim">${previa(l)}</span>`;
   }
   if (l.tipo === "objeto" || l.tipo === "lista") {
     const n = plural(l.filhos, l.tipo === "objeto" ? t.campos : t.itens);
-    const cru = l.prof === 0 && !l.aberto ? ` ${esc(l.previa)}` : "";
+    const cru = l.prof === 0 && !l.aberto ? ` ${previa(l)}` : "";
     return `<span class="val dim">${n}${cru}</span>`;
   }
-  return `<span class="val${l.tipo === "nulo" ? " dim" : ""}">${esc(l.previa)}</span>`;
+  return `<span class="val${l.tipo === "nulo" ? " dim" : ""}">${previa(l)}</span>`;
 }
 
 function chave(l: Linha): string {
@@ -219,7 +233,9 @@ function desenharTexto(): void {
     const linha = texto && i >= 0 ? texto.linhas[i] : undefined;
     const marcado = atual?.registro === r;
     const p = regua.ponto(r);
-    const corpo = linha === undefined ? "" : textoHtml(linha, texto!.tamanhos[i], marcado ? atual!.faixa : null, (n) => t.maisBytes(fmt(n)));
+    const corpo =
+      linha === undefined ? ""
+      : textoHtml(linha, texto!.tamanhos[i], marcado ? atual!.faixa : null, (n) => t.maisBytes(fmt(n)), busca.marcas(r));
     html += `<div class="tl" id="t${r}" data-r="${r}" role="option" aria-selected="${marcado}"
       aria-label="${esc(t.linha(fmt(r + 1)))}"><span class="nl" style="width:${digitos + (p === null ? 2 : 4)}ch">${ponto(p)}${r + 1}</span><span class="tx">${corpo}</span></div>`;
   }
@@ -255,6 +271,24 @@ async function revelar(registro: number, byte: number): Promise<void> {
   versao++; // a lista da árvore mudou
   cache = null;
   await selecionar(r[0]);
+}
+
+/** Achado da busca: abre a árvore até o byte e seleciona, nas duas visões. */
+async function irAoAchado(registro: number, byte: number): Promise<void> {
+  const r = await invoke<[number, number] | null>("revelar", { registro, byte });
+  if (!r) return;
+  total = r[1];
+  if (modo === "texto") {
+    versao++;
+    cache = null;
+    await selecionar(r[0]);
+    // Linha longa: traz o achado atual para a vista na horizontal também.
+    document.querySelector(`#t${registro} .ac.at`)?.scrollIntoView({ block: "nearest", inline: "center" });
+  } else {
+    sel = r[0];
+    mostrarLinha(sel);
+    await recarregar();
+  }
 }
 
 async function teclaTexto(e: KeyboardEvent): Promise<void> {
@@ -395,6 +429,7 @@ async function mostrar(caminho: string): Promise<void> {
     await recarregar();
     if (destino === "texto") await selecionar(0);
     if (destino !== "painel") trocarModo(destino);
+    busca.reabrir();
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
   }
@@ -528,6 +563,18 @@ $("abas").addEventListener("keydown", (e) => {
   abas[m].focus();
 });
 document.addEventListener("keydown", (e) => {
+  const cmd = (e.metaKey || e.ctrlKey) && !e.altKey;
+  if (cmd && e.key.toLowerCase() === "g" && resumo) {
+    e.preventDefault();
+    void (e.shiftKey ? busca.anterior() : busca.proximo()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+    return;
+  }
+  if (cmd && !e.shiftKey && e.key.toLowerCase() === "f" && resumo) {
+    e.preventDefault();
+    if (noPainel) trocarModo(sugerido);
+    busca.focar();
+    return;
+  }
   if (e.altKey || e.shiftKey) return;
   if (!(e.metaKey || e.ctrlKey)) {
     // No painel: 1, 2… abrem o cartão daquela posição; Enter fora de um botão abre o sugerido.

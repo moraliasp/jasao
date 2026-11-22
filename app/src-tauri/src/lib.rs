@@ -2,11 +2,12 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use nucleo::Arvore;
 use nucleo::arvore::Linha;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
+use nucleo::{Achado, Arvore, Busca};
 use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
@@ -14,11 +15,53 @@ use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 const MAX_JANELA: usize = 1_000;
 /// Teto de baldes da régua (mais que isso não cabe em pixels).
 const MAX_BALDES: usize = 4_096;
+/// Achados guardados para navegar; acima disso a busca só conta (~24 MB de achados).
+// shortcut: navegação para no milionésimo achado; guardar em disco se pedirem mais.
+const MAX_ACHADOS: usize = 1_000_000;
+/// Teto de achados por pedido de `achados` (uma janela da tela).
+const MAX_ACHADOS_JANELA: usize = 10_000;
+/// Intervalo mínimo entre avisos de progresso de busca e consulta.
+const INTERVALO: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 struct Estado {
     arvore: Mutex<Option<Arvore>>,
     varredura: Mutex<Varredura>,
+    busca: Mutex<EstadoBusca>,
+}
+
+/// Busca no arquivo aberto (roda em 2º plano, ver `buscar`).
+#[derive(Default)]
+struct EstadoBusca {
+    /// Sobe a cada `buscar` e a cada `abrir`: achado de busca anterior é descartado.
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+    /// Os primeiros `MAX_ACHADOS`, em ordem de arquivo.
+    achados: Vec<Achado>,
+}
+
+impl EstadoBusca {
+    /// Cancela a busca em curso e começa outra geração, sem achados.
+    fn reiniciar(&mut self) -> (u64, Arc<AtomicBool>) {
+        self.cancelar.store(true, Relaxed);
+        self.cancelar = Arc::new(AtomicBool::new(false));
+        self.geracao += 1;
+        self.achados = Vec::new();
+        (self.geracao, Arc::clone(&self.cancelar))
+    }
+}
+
+/// Evento `busca`: progresso e contagem da busca `geracao`.
+#[derive(Clone, Serialize)]
+struct AndamentoBusca {
+    geracao: u64,
+    /// Achados até aqui (todos, inclusive os acima de `MAX_ACHADOS`).
+    achados: u64,
+    /// Quantos dá para navegar (`achado(i)` com `i < guardados`).
+    guardados: usize,
+    varridos: usize,
+    total: usize,
+    fim: bool,
 }
 
 /// Varredura de linhas inválidas do arquivo aberto (roda em 2º plano, ver `abrir`).
@@ -116,6 +159,7 @@ async fn abrir<R: Runtime>(
         v.coloriu = false;
         v.geracao
     };
+    estado.busca.lock().map_err(|e| e.to_string())?.reiniciar();
     *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
     std::thread::spawn(move || {
         // Grava no estado e emite, se o arquivo ainda for este.
@@ -294,6 +338,104 @@ fn formatado(registro: usize, estado: State<'_, Estado>) -> Result<String, Strin
     })?
 }
 
+/// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
+/// (no máximo a cada `INTERVALO`, e no fim); a busca anterior é cancelada e seus achados somem.
+/// Padrão vazio só limpa. Devolve a geração da busca, que vem em cada evento.
+#[tauri::command]
+fn buscar<R: Runtime>(
+    padrao: String,
+    regex: bool,
+    ignorar_caixa: bool,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<u64, String> {
+    let arquivo = estado.com(|a| a.compartilhado())?;
+    let (geracao, cancelar) = estado.busca.lock().map_err(|e| e.to_string())?.reiniciar();
+    if padrao.is_empty() {
+        return Ok(geracao);
+    }
+    let busca = Busca::nova(&padrao, regex, ignorar_caixa).map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let mut aviso = Instant::now();
+        let avisar = |achados, varridos, total, fim| {
+            let estado = app.state::<Estado>();
+            let Ok(b) = estado.busca.lock() else { return };
+            if b.geracao != geracao {
+                return;
+            }
+            let guardados = b.achados.len();
+            drop(b);
+            let _ = app.emit(
+                "busca",
+                AndamentoBusca {
+                    geracao,
+                    achados,
+                    guardados,
+                    varridos,
+                    total,
+                    fim,
+                },
+            );
+        };
+        let mut contados = 0;
+        let r = busca.executar(arquivo.bytes(), &cancelar, |lote| {
+            contados += lote.achados.len() as u64;
+            if let Ok(mut b) = app.state::<Estado>().busca.lock()
+                && b.geracao == geracao
+            {
+                let cabem = MAX_ACHADOS - b.achados.len();
+                b.achados.extend(lote.achados.into_iter().take(cabem));
+            }
+            if aviso.elapsed() >= INTERVALO {
+                aviso = Instant::now();
+                avisar(contados, lote.varridos, lote.total, false);
+            }
+        });
+        if !r.cancelado {
+            avisar(r.achados, r.varridos, r.total, true);
+        }
+    });
+    Ok(geracao)
+}
+
+/// O achado `i` da busca atual como `[linha, coluna, comprimento]` (bytes na linha).
+#[tauri::command]
+fn achado(i: usize, estado: State<'_, Estado>) -> Result<Option<[usize; 3]>, String> {
+    let b = estado.busca.lock().map_err(|e| e.to_string())?;
+    Ok(b.achados.get(i).map(|a| [a.linha, a.coluna, a.comprimento]))
+}
+
+/// Achados dos registros `[inicio, inicio + quantidade)`, como em `achado`, mais o índice do
+/// primeiro deles: `[indice, [[linha, coluna, comprimento], …]]`. É o realce da tela.
+#[tauri::command]
+fn achados(
+    inicio: usize,
+    quantidade: usize,
+    estado: State<'_, Estado>,
+) -> Result<(usize, Vec<[usize; 3]>), String> {
+    let b = estado.busca.lock().map_err(|e| e.to_string())?;
+    let fim = inicio.saturating_add(quantidade.min(MAX_JANELA));
+    let i = b.achados.partition_point(|a| a.linha < inicio);
+    let lista = b.achados[i..]
+        .iter()
+        .take_while(|a| a.linha < fim)
+        .take(MAX_ACHADOS_JANELA)
+        .map(|a| [a.linha, a.coluna, a.comprimento])
+        .collect();
+    Ok((i, lista))
+}
+
+/// Baldes da régua (de `k`) que têm achado da busca atual, em ordem.
+#[tauri::command]
+fn regua_busca(k: usize, estado: State<'_, Estado>) -> Result<Vec<usize>, String> {
+    let registros = estado.com(|a| a.registros())?.max(1);
+    let k = k.clamp(1, MAX_BALDES);
+    let b = estado.busca.lock().map_err(|e| e.to_string())?;
+    let mut baldes: Vec<usize> = b.achados.iter().map(|a| a.linha * k / registros).collect();
+    baldes.dedup();
+    Ok(baldes)
+}
+
 /// Estado e comandos; separado de `run` para o teste de IPC usar o mesmo registro.
 fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
     b.manage(Estado::default())
@@ -309,7 +451,11 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             revelar,
             formatado,
             regua,
-            marcas
+            marcas,
+            buscar,
+            achado,
+            achados,
+            regua_busca
         ])
 }
 
@@ -453,5 +599,36 @@ mod testes {
             chamar("regua", json!({"k": 2})),
             Ok(json!({"cores": [1, 1], "invalidas": [[1, 1, 3]]}))
         );
+
+        // Busca: roda em outra thread; os achados aparecem no estado.
+        let buscar = |padrao: &str, regex: bool| {
+            chamar(
+                "buscar",
+                json!({"padrao": padrao, "regex": regex, "ignorarCaixa": true}),
+            )
+        };
+        assert!(buscar("(", true).is_err());
+        assert_eq!(buscar("X", false), Ok(json!(4)));
+        let achados = (0..200)
+            .map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                chamar("achados", json!({"inicio": 0, "quantidade": 9})).unwrap()
+            })
+            .find(|a| a[1].as_array().unwrap().len() == 4)
+            .expect("busca não terminou");
+        assert_eq!(
+            achados,
+            json!([0, [[0, 9, 1], [0, 13, 1], [2, 9, 1], [2, 13, 1]]])
+        );
+        assert_eq!(chamar("achado", json!({"i": 2})), Ok(json!([2, 9, 1])));
+        assert_eq!(chamar("achado", json!({"i": 4})), Ok(Value::Null));
+        assert_eq!(
+            chamar("achados", json!({"inicio": 1, "quantidade": 5})),
+            Ok(json!([2, [[2, 9, 1], [2, 13, 1]]]))
+        );
+        assert_eq!(chamar("regua_busca", json!({"k": 2})), Ok(json!([0, 1])));
+        // Termo vazio limpa; abrir outro arquivo também.
+        assert_eq!(buscar("", false), Ok(json!(5)));
+        assert_eq!(chamar("achado", json!({"i": 0})), Ok(Value::Null));
     }
 }
