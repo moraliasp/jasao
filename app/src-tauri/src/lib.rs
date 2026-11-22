@@ -12,7 +12,7 @@ mod abertura;
 mod exemplos;
 mod recentes;
 
-use nucleo::arvore::Linha;
+use nucleo::arvore::{Formatado, Linha, MAX_FORMATADO};
 use nucleo::consulta::{Consulta, LoteConsulta};
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
@@ -687,12 +687,10 @@ fn revelar(
     estado.com(id, |a| a.revelar(registro, byte).map(|v| [v, a.total()]))
 }
 
-/// Teto do registro formatado: acima disso a resposta travaria a interface.
-const MAX_FORMATADO: usize = 16 << 20;
-
-/// O registro com um campo por linha, para o painel "Ver formatado".
+/// O registro com um campo por linha, para o painel "Ver formatado" (com `truncado` se passou
+/// de `MAX_FORMATADO`).
 #[tauri::command]
-fn formatado(id: u32, registro: usize, estado: State<'_, Estado>) -> Result<String, String> {
+fn formatado(id: u32, registro: usize, estado: State<'_, Estado>) -> Result<Formatado, String> {
     estado.com(id, |a| {
         let tamanho = a
             .arquivo()
@@ -727,6 +725,12 @@ fn caminhos(id: u32, v: usize, estado: State<'_, Estado>) -> Result<Option<Camin
             pointer: c.json_pointer(),
         })
     })
+}
+
+/// Rótulos das migalhas da linha visível `v` (a selecionada); ver `Arvore::migalhas`.
+#[tauri::command]
+fn migalhas(id: u32, v: usize, estado: State<'_, Estado>) -> Result<Option<Vec<String>>, String> {
+    estado.com(id, |a| a.migalhas(v))
 }
 
 /// Valor da linha visível `v` para copiar (texto JSON decodificado; ver `Arvore::valor`).
@@ -1007,6 +1011,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             texto,
             revelar,
             formatado,
+            migalhas,
             regua,
             marcas,
             estrutura,
@@ -1259,7 +1264,9 @@ mod testes {
         );
         assert_eq!(em(1, "alternar", json!({"v": 0})), Ok(json!(3)));
         let linhas = em(1, "linhas", json!({"inicio": 0, "quantidade": 10})).unwrap();
-        assert_eq!(linhas[1]["caminho"], ".a");
+        assert_eq!(linhas[1]["chave"], "a");
+        assert_eq!(linhas[1].get("caminho"), None, "caminho sai sob demanda");
+        assert_eq!(em(1, "migalhas", json!({"v": 1})), Ok(json!(["a"])));
         assert_eq!(linhas[2]["erro"], json!({"byte": 8, "motivo": "literal"}));
         assert_eq!(em(1, "pai", json!({"v": 1})), Ok(json!(0)));
         assert_eq!(em(1, "ir_para", json!({"registro": 1})), Ok(json!(2)));
@@ -1296,7 +1303,7 @@ mod testes {
         );
         assert_eq!(
             em(1, "formatado", json!({"registro": 0})),
-            Ok(json!("{\n  \"a\": [\n    1,\n    2\n  ]\n}"))
+            Ok(json!({"texto": "{\n  \"a\": [\n    1,\n    2\n  ]\n}", "truncado": false}))
         );
         assert!(em(1, "formatado", json!({"registro": 1})).is_err());
 

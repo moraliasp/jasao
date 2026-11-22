@@ -176,7 +176,10 @@ mod testes {
         let v = arvore.revelar(i, byte).unwrap();
         let l = &arvore.janela(v, 1)[0];
         assert_eq!(l.prof, 13);
-        assert_eq!(l.caminho, ".valor.n1.n2.n3.n4.n5.n6.n7.n8.n9.n10.n11.fundo");
+        assert_eq!(
+            arvore.caminho(v).unwrap().jq(),
+            ".valor.n1.n2.n3.n4.n5.n6.n7.n8.n9.n10.n11.fundo"
+        );
     }
 
     fn linha_de(a: &ArquivoLinhas, i: usize) -> String {
