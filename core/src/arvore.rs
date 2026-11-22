@@ -487,6 +487,8 @@ pub struct Formatado {
     pub texto: String,
     /// Passou de `MAX_FORMATADO` e `texto` é só o começo.
     pub truncado: bool,
+    /// Teto aplicado, em bytes (a interface mostra no aviso de corte).
+    pub teto: usize,
 }
 
 /// Reindenta `raw` (JSON já validado) numa passada só, sem montar nós, e para em `max` bytes.
@@ -564,6 +566,7 @@ fn formatar(raw: &str, max: usize) -> Formatado {
     Formatado {
         texto: saida,
         truncado,
+        teto: max,
     }
 }
 
@@ -1119,6 +1122,13 @@ mod testes {
         // O corte respeita UTF-8 e o teto vale para qualquer `max`.
         let f = formatar(r#"{"ação":"ééé"}"#, 12);
         assert!(f.truncado && f.texto.len() <= 12, "{f:?}");
+        // `{\n  "ação"…`: o byte 7 cai no meio do `ç` (bytes 6–7) e o 9 no meio do `ã` (8–9);
+        // o corte recua para a fronteira anterior em vez de partir o caractere.
+        for (max, esperado) in [(7, "{\n  \"a"), (9, "{\n  \"aç")] {
+            let f = formatar(r#"{"ação":"ééé"}"#, max);
+            assert_eq!((f.texto.as_str(), f.truncado), (esperado, true));
+            assert!(std::str::from_utf8(f.texto.as_bytes()).is_ok() && f.texto.len() <= max);
+        }
         assert!(!formatar("[1]", 7).truncado);
     }
 
@@ -1200,5 +1210,22 @@ mod testes {
             1,
             "a lista acaba no último nó"
         );
+    }
+
+    #[test]
+    fn teto_de_nos_vale_para_o_registro_todo() {
+        // Dois filhos de 600 mil itens: o 1º cabe inteiro, o 2º só no que sobra de `MAX_NOS`.
+        let k = 600_000;
+        let filho = format!("[{}0]", "0,".repeat(k - 1));
+        let mut a = arvore(&format!("[{filho},{filho}]\n"));
+        assert!(a.alternar(0));
+        assert!(a.alternar(1));
+        assert_eq!(a.abertos[&0].nos.len(), 3 + k);
+        let segundo = 2 + k;
+        assert!(a.alternar(segundo));
+        assert_eq!(a.abertos[&0].nos.len(), MAX_NOS);
+        let l = &a.janela(segundo, 1)[0];
+        assert_eq!((l.filhos, l.omitidos), (k, k - (MAX_NOS - 3 - k)));
+        assert_eq!(a.janela(1, 1)[0].omitidos, 0);
     }
 }
