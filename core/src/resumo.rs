@@ -6,7 +6,7 @@
 //!   bate com o que a árvore mostra (linha vazia conta como inválida).
 //! - `campos` conta as chaves do topo dos registros pela inferência (`estrutura::inferir`).
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::Relaxed};
 use std::thread;
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::ArquivoLinhas;
 use crate::arvore::validar;
-use crate::estrutura;
+use crate::{estrutura, regua};
 
 /// Linhas olhadas por `conteudo` para dizer de que é feito um JSONL.
 const AMOSTRA: usize = 1_000;
@@ -86,11 +86,13 @@ pub struct Progresso {
     pub cancelado: bool,
 }
 
-/// Valida todas as linhas. `ao_progresso` roda na thread de quem chama, a cada ~50 ms e no
-/// fim. Ligar `cancelar` para a varredura antes do próximo bloco.
+/// Valida todas as linhas e marca as inválidas em `marcas` (uma por linha, ver `regua`).
+/// `ao_progresso` roda na thread de quem chama, a cada ~50 ms e no fim. Ligar `cancelar` para
+/// a varredura antes do próximo bloco.
 pub fn varrer(
     arquivo: &ArquivoLinhas,
     cancelar: &AtomicBool,
+    marcas: &[AtomicU8],
     mut ao_progresso: impl FnMut(Progresso),
 ) -> Progresso {
     let total = arquivo.linhas();
@@ -121,7 +123,13 @@ pub fn varrer(
                         break;
                     }
                     let linhas = arquivo.janela(b * BLOCO, BLOCO);
-                    let ruins = linhas.iter().filter(|l| validar(l).is_err()).count();
+                    let mut ruins = 0;
+                    for (i, l) in linhas.iter().enumerate() {
+                        if validar(l).is_err() {
+                            marcas[b * BLOCO + i].store(regua::INVALIDA, Relaxed);
+                            ruins += 1;
+                        }
+                    }
                     invalidas.fetch_add(ruins, Relaxed);
                     varridas.fetch_add(linhas.len(), Relaxed);
                 }
@@ -138,13 +146,10 @@ pub fn varrer(
     fim
 }
 
-/// Chaves distintas do topo dos registros-objeto, pela inferência do arquivo inteiro. `None`
-/// sem registro-objeto, com topo que é mapa (chaves variam demais para virar "campos") ou
-/// cancelada.
-pub fn campos(arquivo: &ArquivoLinhas, cancelar: &AtomicBool) -> Option<usize> {
-    let inf = estrutura::inferir(arquivo.bytes(), cancelar, |_| {});
-    let raiz = &inf.resumo.raiz;
-    (!inf.cancelado && raiz.mapa.is_none() && !raiz.filhos.is_empty()).then_some(raiz.filhos.len())
+/// Chaves distintas do topo dos registros-objeto, pela inferência. `None` sem registro-objeto
+/// ou com topo que é mapa (chaves variam demais para virar "campos").
+pub fn campos(r: &estrutura::Resumo) -> Option<usize> {
+    (r.raiz.mapa.is_none() && !r.raiz.filhos.is_empty()).then_some(r.raiz.filhos.len())
 }
 
 #[cfg(test)]
@@ -191,7 +196,8 @@ mod testes {
         }
         let a = arquivo(&dados);
         let mut avisos = 0;
-        let p = varrer(&a, &AtomicBool::new(false), |_| avisos += 1);
+        let m = regua::marcas(a.linhas());
+        let p = varrer(&a, &AtomicBool::new(false), &m, |_| avisos += 1);
         assert_eq!(
             p,
             Progresso {
@@ -208,7 +214,7 @@ mod testes {
     #[test]
     fn cancelada_antes_de_comecar() {
         let a = arquivo(b"1\n2\n3\n");
-        let p = varrer(&a, &AtomicBool::new(true), |_| {});
+        let p = varrer(&a, &AtomicBool::new(true), &regua::marcas(3), |_| {});
         assert_eq!((p.varridas, p.fim, p.cancelado), (0, true, true));
     }
 
@@ -225,16 +231,13 @@ mod testes {
             (b"", None),
         ];
         for (bytes, esperado) in casos {
+            let inf = estrutura::inferir(bytes, &nao, |_| {});
             assert_eq!(
-                campos(&arquivo(bytes), &nao),
+                campos(&inf.resumo),
                 *esperado,
                 "{}",
                 String::from_utf8_lossy(bytes)
             );
         }
-        assert_eq!(
-            campos(&arquivo(b"{\"a\":1}\n{\"b\":2}\n"), &AtomicBool::new(true)),
-            None
-        );
     }
 }
