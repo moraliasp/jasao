@@ -7,6 +7,7 @@ import { criarBusca } from "./busca";
 import { type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
+import { criarConsulta } from "./consulta";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
 import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml } from "./texto";
 
@@ -421,7 +422,18 @@ function copiarComo(v: number, f: Formato, botao?: HTMLElement): void {
 }
 const menu = criarMenu($("menu"), (f) => copiarComo(sel, f));
 
-async function mostrar(caminho: string): Promise<void> {
+let aberto: string | null = null;
+const consulta = criarConsulta($("consulta"), {
+  aberto: () => aberto,
+  // Resultado e volta abrem na visão em uso, sem passar pelo painel de entrada.
+  abrir: (c) => mostrar(c, noPainel ? undefined : modo),
+  voltar: () => (modo === "texto" ? textoEl : arvore).focus(),
+  fmt,
+});
+
+async function mostrar(caminho: string, visao?: Modo): Promise<void> {
+  consulta.abriu(caminho);
+  aberto = caminho;
   status.textContent = t.abrindo;
   const nome = caminho.split(/[\\/]/).pop() ?? caminho;
   $("nome").textContent = nome;
@@ -442,7 +454,7 @@ async function mostrar(caminho: string): Promise<void> {
     $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], ms);
     desenharPainel();
     inicioBtn.disabled = false;
-    const destino = destinoAoAbrir();
+    const destino = visao ?? destinoAoAbrir();
     if (destino === "painel") mostrarPainel();
     await recarregar();
     if (destino === "texto") await selecionar(0);
@@ -604,6 +616,12 @@ document.addEventListener("keydown", (e) => {
   if (cmd && e.key.toLowerCase() === "g" && resumo) {
     e.preventDefault();
     void (e.shiftKey ? busca.anterior() : busca.proximo()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+    return;
+  }
+  if (cmd && !e.shiftKey && e.key.toLowerCase() === "j" && resumo) {
+    e.preventDefault();
+    if (noPainel) trocarModo(sugerido);
+    consulta.focar();
     return;
   }
   if (cmd && !e.shiftKey && e.key.toLowerCase() === "f" && resumo) {

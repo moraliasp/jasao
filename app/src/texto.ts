@@ -89,3 +89,15 @@ export function resumir(s: string, n = 60): string {
   const c = [...s.slice(0, n * 4).replace(/\s+/g, " ").trim()];
   return c.length > n ? `${c.slice(0, n - 1).join("")}…` : c.join("");
 }
+
+/** Índice (UTF-16) da linha e coluna, a partir de 1, com a coluna em caracteres (erro do filtro jq). */
+export function indiceDe(s: string, linha: number, coluna: number): number {
+  let i = 0;
+  for (let l = 1; l < linha; l++) {
+    const n = s.indexOf("\n", i);
+    if (n < 0) return s.length;
+    i = n + 1;
+  }
+  for (let c = 1; c < coluna && i < s.length && s[i] !== "\n"; c++) i += s.codePointAt(i)! > 0xffff ? 2 : 1;
+  return i;
+}

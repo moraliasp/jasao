@@ -1,7 +1,7 @@
 // Lógica pura da visão Texto (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { linhaHtml, marcado, partir, resumir } from "../src/texto.ts";
+import { indiceDe, linhaHtml, marcado, partir, resumir } from "../src/texto.ts";
 
 test("partir sem marca devolve o token inteiro", () => {
   assert.deepEqual(partir('"abc"', 5, [[0, 2, false]]), [['"abc"', 5, 0]]);
@@ -37,4 +37,11 @@ test("resumir junta espaços e corta em n caracteres sem partir emoji", () => {
   assert.equal(resumir("abcdef", 4), "abc…");
   assert.equal(resumir("😀😀😀😀😀", 3), "😀😀…");
   assert.equal(resumir("x".repeat(60)), "x".repeat(60));
+});
+
+test("indiceDe converte linha e coluna (em caracteres) do erro do filtro", () => {
+  assert.equal(indiceDe(".a | (", 1, 6), 5);
+  assert.equal(indiceDe(".a |\n  ]", 2, 3), 7);
+  assert.equal(indiceDe("\"😀\" | (", 1, 7), 7); // emoji conta 1 coluna e 2 unidades UTF-16
+  assert.equal(indiceDe("x", 3, 1), 1);
 });

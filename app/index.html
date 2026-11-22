@@ -64,6 +64,10 @@
       .busca input:focus-visible { outline: 0; }
       .busca .alt { width: 26px; height: 22px; margin-right: 2px; font: 12px/1 var(--mono); }
       .busca .alt[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+      .consulta { flex: 1; min-width: 0; }
+      .consulta .campo { flex: 1; min-width: 160px; max-width: 520px; }
+      .consulta input { width: 100%; font-family: var(--mono); font-size: 12.5px; }
+      .consulta .campo:has(input[aria-invalid="true"]) { border-color: var(--del); }
       .busca .ib:disabled { opacity: .4; cursor: default; }
       .busca .info { min-width: 9ch; color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
       .busca .info.err { color: var(--del); white-space: normal; }
@@ -233,6 +237,14 @@
             <span class="info" role="status" aria-live="polite"></span>
             <button class="ib" type="button" data-anterior aria-keyshortcuts="Meta+Shift+G Control+Shift+G" disabled><svg class="i rot180"><use href="#chev"/></svg></button>
             <button class="ib" type="button" data-proximo aria-keyshortcuts="Meta+G Control+G" disabled><svg class="i"><use href="#chev"/></svg></button>
+          </form>
+          <form class="busca consulta" id="consulta">
+            <div class="campo">
+              <input type="text" autocomplete="off" spellcheck="false" aria-keyshortcuts="Meta+J Control+J" />
+            </div>
+            <span class="info" role="status" aria-live="polite"></span>
+            <button class="btn" type="button" data-cancelar hidden></button>
+            <button class="btn" type="button" data-voltar hidden></button>
           </form>
         </div>
         <div class="tools">

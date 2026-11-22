@@ -1,10 +1,14 @@
 //! Casca do app: guarda o documento aberto e entrega janelas da árvore à interface.
 
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nucleo::arvore::Linha;
+use nucleo::consulta::{Consulta, LoteConsulta};
+use nucleo::linhas::ArquivoLinhas;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
 use nucleo::{Achado, Arvore, Busca};
@@ -28,6 +32,75 @@ struct Estado {
     arvore: Mutex<Option<Arvore>>,
     varredura: Mutex<Varredura>,
     busca: Mutex<EstadoBusca>,
+    consulta: Mutex<EstadoConsulta>,
+}
+
+/// Consulta jq em curso ou mostrada (ver `consultar`).
+#[derive(Default)]
+struct EstadoConsulta {
+    /// Sobe a cada `consultar` e `fechar_consulta`: evento de consulta anterior é descartado.
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+    /// JSONL temporário com o resultado da última consulta.
+    arquivo: Option<PathBuf>,
+}
+
+impl EstadoConsulta {
+    /// Cancela a consulta em curso e apaga o resultado anterior. Arquivo apagado continua legível
+    /// enquanto a árvore o tiver mapeado (Unix).
+    // shortcut: no Windows o arquivo mapeado não apaga e fica no temp; limpar ao abrir outro.
+    fn reiniciar(&mut self) -> (u64, Arc<AtomicBool>) {
+        self.cancelar.store(true, Relaxed);
+        self.cancelar = Arc::new(AtomicBool::new(false));
+        self.geracao += 1;
+        if let Some(a) = self.arquivo.take() {
+            let _ = std::fs::remove_file(a);
+        }
+        (self.geracao, Arc::clone(&self.cancelar))
+    }
+}
+
+/// Evento `consulta`: progresso e, no fim, o arquivo com o resultado da consulta `geracao`.
+#[derive(Clone, Serialize)]
+struct AndamentoConsulta {
+    geracao: u64,
+    resultados: u64,
+    linhas: usize,
+    total: usize,
+    erros: u64,
+    /// Primeiro erro de linha (linha a partir de 0, motivo), no fim.
+    primeiro_erro: Option<(usize, String)>,
+    fim: bool,
+    cancelado: bool,
+    /// JSONL com o resultado, no fim de uma consulta que não foi cancelada nem falhou.
+    arquivo: Option<String>,
+    /// Falha ao gravar o resultado.
+    falha: Option<String>,
+}
+
+/// Erro de `consultar`: filtro que não compila (com as falhas) ou arquivo que não abre.
+#[derive(Debug, Serialize)]
+struct ErroConsulta {
+    mensagem: String,
+    falhas: Vec<FalhaFiltro>,
+}
+
+#[derive(Debug, Serialize)]
+struct FalhaFiltro {
+    inicio: usize,
+    fim: usize,
+    linha: usize,
+    coluna: usize,
+    mensagem: String,
+}
+
+impl From<String> for ErroConsulta {
+    fn from(mensagem: String) -> Self {
+        Self {
+            mensagem,
+            falhas: Vec::new(),
+        }
+    }
 }
 
 /// Busca no arquivo aberto (roda em 2º plano, ver `buscar`).
@@ -372,6 +445,129 @@ fn valor(v: usize, estado: State<'_, Estado>) -> Result<Option<String>, String> 
     }
 }
 
+/// Roda o filtro jq `filtro` sobre `caminho` em outra thread e grava os resultados (JSON
+/// compacto, um por linha) num JSONL temporário, avisado no evento `consulta`. JSON único ou em
+/// várias linhas vira um documento; o resto, JSONL linha a linha. Devolve a geração.
+#[tauri::command]
+fn consultar<R: Runtime>(
+    filtro: String,
+    caminho: String,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<u64, ErroConsulta> {
+    let (geracao, cancelar) = estado
+        .consulta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .reiniciar();
+    let consulta = Consulta::nova(&filtro).map_err(|e| ErroConsulta {
+        mensagem: e.to_string(),
+        falhas: e
+            .falhas
+            .into_iter()
+            .map(|f| FalhaFiltro {
+                inicio: f.faixa.start,
+                fim: f.faixa.end,
+                linha: f.linha,
+                coluna: f.coluna,
+                mensagem: f.mensagem,
+            })
+            .collect(),
+    })?;
+    let arquivo = ArquivoLinhas::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?;
+    let documento = matches!(
+        resumo::conteudo(&arquivo),
+        Conteudo::JsonUnico | Conteudo::JsonVariasLinhas
+    );
+    let destino = std::env::temp_dir().join(format!(
+        "jasao-consulta-{}-{geracao}.jsonl",
+        std::process::id()
+    ));
+    let saida =
+        std::fs::File::create(&destino).map_err(|e| format!("{}: {e}", destino.display()))?;
+    estado.consulta.lock().map_err(|e| e.to_string())?.arquivo = Some(destino.clone());
+    std::thread::spawn(move || {
+        let avisar = |a: AndamentoConsulta| {
+            let _ = app.emit("consulta", a);
+        };
+        let mut gravado = 0u64;
+        let mut falha: Option<std::io::Error> = None;
+        let mut ultimo = Instant::now();
+        let mut out = BufWriter::new(saida);
+        let ao_lote = |lote: LoteConsulta| {
+            for r in &lote.resultados {
+                if let Err(e) = writeln!(out, "{}", r.json) {
+                    falha.get_or_insert(e);
+                    cancelar.store(true, Relaxed);
+                    return;
+                }
+            }
+            gravado += lote.resultados.len() as u64;
+            if ultimo.elapsed() >= INTERVALO {
+                ultimo = Instant::now();
+                avisar(AndamentoConsulta {
+                    geracao,
+                    resultados: gravado,
+                    linhas: lote.linhas,
+                    total: lote.total_linhas,
+                    erros: 0,
+                    primeiro_erro: None,
+                    fim: false,
+                    cancelado: false,
+                    arquivo: None,
+                    falha: None,
+                });
+            }
+        };
+        let resumo = if documento {
+            consulta.executar_documento(arquivo.bytes(), &cancelar, ao_lote)
+        } else {
+            consulta.executar_jsonl(arquivo.bytes(), &cancelar, ao_lote)
+        };
+        if let Err(e) = out.flush() {
+            falha.get_or_insert(e);
+        }
+        // Consulta mais nova ou fechada: o resultado desta não serve a ninguém.
+        let estado = app.state::<Estado>();
+        let atual = estado.consulta.lock().is_ok_and(|c| c.geracao == geracao);
+        let cancelado = resumo.cancelado;
+        if !atual || cancelado || falha.is_some() {
+            let _ = std::fs::remove_file(&destino);
+        }
+        if !atual {
+            return;
+        }
+        avisar(AndamentoConsulta {
+            geracao,
+            resultados: resumo.resultados,
+            linhas: resumo.linhas,
+            total: resumo.total_linhas,
+            erros: resumo.erros,
+            primeiro_erro: resumo
+                .primeiros_erros
+                .first()
+                .map(|e| (e.linha, e.motivo.clone())),
+            fim: true,
+            cancelado: falha.is_none() && cancelado,
+            arquivo: (falha.is_none() && !cancelado)
+                .then(|| destino.to_string_lossy().into_owned()),
+            falha: falha.map(|e| format!("{}: {e}", destino.display())),
+        });
+    });
+    Ok(geracao)
+}
+
+/// Cancela a consulta em curso e apaga o resultado (o arquivo original já foi reaberto).
+#[tauri::command]
+fn fechar_consulta(estado: State<'_, Estado>) -> Result<(), String> {
+    estado
+        .consulta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .reiniciar();
+    Ok(())
+}
+
 /// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
 /// (no máximo a cada `INTERVALO`, e no fim); a busca anterior é cancelada e seus achados somem.
 /// Padrão vazio só limpa. Devolve a geração da busca, que vem em cada evento.
@@ -491,7 +687,9 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             achados,
             regua_busca,
             caminhos,
-            valor
+            valor,
+            consultar,
+            fechar_consulta
         ])
 }
 
@@ -507,8 +705,16 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("falha ao iniciar o app");
+        .build(tauri::generate_context!())
+        .expect("falha ao iniciar o app")
+        .run(|app, evento| {
+            // Não deixa o resultado da última consulta no diretório temporário.
+            if let tauri::RunEvent::Exit = evento
+                && let Ok(mut c) = app.state::<Estado>().consulta.lock()
+            {
+                c.reiniciar();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -676,5 +882,49 @@ mod testes {
         // Termo vazio limpa; abrir outro arquivo também.
         assert_eq!(buscar("", false), Ok(json!(5)));
         assert_eq!(chamar("achado", json!({"i": 0})), Ok(Value::Null));
+
+        // Consulta jq: erro de sintaxe com posição; resultado num JSONL que abre como arquivo.
+        use tauri::Listener;
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        app.listen("consulta", move |e| {
+            let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+        });
+        let fim = || loop {
+            let a = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("consulta não terminou");
+            if a["fim"] == true {
+                break a;
+            }
+        };
+        let erro =
+            chamar("consultar", json!({"filtro": ".x | (", "caminho": caminho})).unwrap_err();
+        assert_eq!(erro["falhas"][0]["linha"], json!(1));
+        assert!(erro["falhas"][0]["coluna"].as_u64().unwrap() >= 5, "{erro}");
+        assert_eq!(
+            chamar("consultar", json!({"filtro": ".x", "caminho": caminho})),
+            Ok(json!(2))
+        );
+        let a = fim();
+        assert_eq!(
+            (
+                &a["geracao"],
+                &a["resultados"],
+                &a["erros"],
+                &a["primeiro_erro"][0],
+                &a["cancelado"]
+            ),
+            (&json!(2), &json!(3), &json!(1), &json!(3), &json!(false))
+        );
+        let resultado = a["arquivo"].as_str().unwrap().to_owned();
+        assert_eq!(std::fs::read_to_string(&resultado).unwrap(), "1\nnull\n2\n");
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": resultado })),
+            Ok(json!(3))
+        );
+        // Voltar ao original apaga o resultado.
+        assert_eq!(chamar("abrir", json!({ "caminho": caminho })), Ok(json!(4)));
+        assert_eq!(chamar("fechar_consulta", json!({})), Ok(Value::Null));
+        assert!(!std::path::Path::new(&resultado).exists());
     }
 }
