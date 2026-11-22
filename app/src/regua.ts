@@ -1,7 +1,7 @@
 // Micronavegador: régua de 44 px ao lado da Árvore e do Texto com o arquivo inteiro em baldes
 // (cor da variante do discriminador, inválidas em vermelho) e o retângulo da janela visível.
 // O Rust guarda uma marca por registro (`nucleo::regua`); aqui só se pede o que cabe em pixels.
-import { invoke } from "@tauri-apps/api/core";
+import { chamar } from "./doc";
 import { t } from "./i18n";
 
 export interface Legenda { campo: string; variantes: [string, number][]; outros: number }
@@ -84,7 +84,7 @@ export function criarRegua(el: HTMLElement, legendaEl: HTMLElement, o: Opcoes) {
     const g = geracao;
     const k = baldesK();
     try {
-      const lista = visivel && busca && el.clientHeight ? await invoke<number[]>("regua_busca", { k }) : [];
+      const lista = visivel && busca && el.clientHeight ? await chamar<number[]>("regua_busca", { k }) : [];
       if (g !== geracao) return;
       const dpr = devicePixelRatio || 1;
       c.width = Math.round(el.clientWidth * dpr);
@@ -108,7 +108,7 @@ export function criarRegua(el: HTMLElement, legendaEl: HTMLElement, o: Opcoes) {
     if (!visivel || !el.clientHeight) return;
     const g = geracao;
     const k = baldesK();
-    const b = await invoke<Baldes>("regua", { k });
+    const b = await chamar<Baldes>("regua", { k });
     if (g !== geracao) return;
     baldes = b;
     desenhar();
@@ -230,7 +230,7 @@ export function criarRegua(el: HTMLElement, legendaEl: HTMLElement, o: Opcoes) {
     pedidoMarcas = inicio;
     const g = geracao;
     try {
-      const valores = await invoke<number[]>("marcas", { inicio, quantidade: MARCAS });
+      const valores = await chamar<number[]>("marcas", { inicio, quantidade: MARCAS });
       if (g === geracao) marcas = { inicio, valores };
     } finally {
       if (pedidoMarcas === inicio) pedidoMarcas = null;
