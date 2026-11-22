@@ -9,6 +9,7 @@ pub mod erros;
 pub mod estrutura;
 pub mod gerador;
 pub mod linhas;
+pub mod resumo;
 pub mod texto;
 
 pub use arvore::Arvore;

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -119,7 +120,8 @@ struct Aberto {
 
 /// Documento aberto: o arquivo e a lista plana de linhas visíveis.
 pub struct Arvore {
-    arquivo: ArquivoLinhas,
+    // Compartilhado com a varredura em 2º plano (`resumo::varrer`).
+    arquivo: Arc<ArquivoLinhas>,
     // shortcut: localizar uma linha percorre os registros abertos (O(abertos)); trocar por
     // árvore de Fenwick se surgir "expandir todos os registros".
     abertos: BTreeMap<usize, Aberto>,
@@ -134,7 +136,7 @@ impl Arvore {
     pub fn new(arquivo: ArquivoLinhas) -> Self {
         let total = arquivo.linhas();
         Self {
-            arquivo,
+            arquivo: Arc::new(arquivo),
             abertos: BTreeMap::new(),
             total,
         }
@@ -363,6 +365,11 @@ impl Arvore {
         &self.arquivo
     }
 
+    /// O mesmo arquivo, para ler fora da trava do estado (varredura em 2º plano).
+    pub fn compartilhado(&self) -> Arc<ArquivoLinhas> {
+        Arc::clone(&self.arquivo)
+    }
+
     /// Linha visível do pai de `v` (seta para a esquerda); `None` para linha de registro.
     pub fn pai(&self, v: usize) -> Option<usize> {
         let (r, Some(p)) = self.localizar(v)? else {
@@ -454,7 +461,7 @@ fn previa(raw: &str) -> String {
 }
 
 /// Confere UTF-8, profundidade e sintaxe.
-fn validar(bytes: &[u8]) -> Result<&str, ErroLinha> {
+pub(crate) fn validar(bytes: &[u8]) -> Result<&str, ErroLinha> {
     let erro = |byte, motivo| ErroLinha { byte, motivo };
     let texto = std::str::from_utf8(bytes).map_err(|e| erro(e.valid_up_to(), Motivo::Utf8))?;
     if let Some(pos) = passa_da_profundidade(bytes) {

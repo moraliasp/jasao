@@ -164,6 +164,24 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 
 **Medido:** `jasao inferir` em JSONL gerado de 157 MB (951 mil linhas, cache quente, Apple M5 Pro): 128–168 ms; `--json` 140 ms; o mesmo arquivo em `.zst`, 128 ms depois de descompactar.
 
+## Painel de entrada (Fase 1, 21/11/2026)
+
+**O que é:** ao abrir um arquivo aparece um painel não modal no lugar do conteúdo (o arquivo já está aberto): nome, tipo detectado, tempo de abertura, Tamanho, Registros, Linhas inválidas (só se houver) e cartões dos modos com tela. "Início" no cabeçalho e ⌘0 voltam a ele; as abas continuam e ficam sem seleção enquanto ele aparece.
+
+**Tipo detectado:** `nucleo::resumo::conteudo` olha só as 1.000 primeiras linhas: vazio, JSON único, JSON em várias linhas (1ª linha inválida e o arquivo inteiro válido), JSON Lines de objetos, de valores ou misto.
+
+**Varredura de inválidas:** `nucleo::resumo::varrer` valida todas as linhas em paralelo (`thread::scope`, blocos de 4.096 linhas por `AtomicUsize`, sem rayon) com a mesma regra da árvore (`arvore::validar`), então o número bate com o que a árvore mostra, linha vazia inclusive. O PR 7 (`erros::varrer`) trata linha vazia como não erro; quando ele entrar, alinhar as duas regras. `abrir` dispara a varredura numa thread e devolve na hora; o progresso vai pelo evento `varredura` a cada ~50 ms (`{geracao, varridas, total, invalidas, fim}`) e o comando `resumo` devolve o estado atual. Abrir outro arquivo cancela a varredura anterior (`AtomicBool`) e sobe a `geracao`, que descarta avisos atrasados. JSON em várias linhas pula a varredura: cada linha dele é inválida sozinha. No JSONL fictício de 400 MB (2,4 milhões de linhas), 2,18 milhões já estavam varridas 50 ms depois de abrir.
+
+**Cartões declarativos:** `MODOS` em `main.ts`, um registro por modo com `disponivel` e `sempre` (entra no seletor "Abrir sempre em…"). Hoje Árvore e Texto; Tabela está na lista com `disponivel: false`, e o sugerido é o primeiro disponível (Árvore até a Tabela existir). Atalhos 1, 2… por posição; Enter abre o sugerido.
+
+**Preferência:** "Ao abrir um arquivo" (mostrar o painel, ir ao sugerido, sempre em Árvore) fica no `localStorage` (`jasao.aoAbrir`); sem valor mostra o painel, valor desconhecido cai no sugerido, armazenamento bloqueado fica no padrão.
+
+**Campos:** depois da varredura, a mesma thread roda a inferência do PR 8 (`estrutura::inferir`) e conta as chaves do topo dos registros (`resumo::campos`); o número chega por um último evento `varredura`. Sem registro-objeto, ou com topo que é mapa, o indicador não aparece.
+
+**Fora desta fatia:** cartões de modos sem tela (busca, esquema, filtro).
+
+**Conferência:** interface no navegador interno contra a ponte HTTP com `resumo` e o evento simulado por consulta a cada 50 ms; JSONL fictício de 400 MB do `gerador` com 60 linhas quebradas. Vistos: parcial "Analisando N de M", 60 inválidas no fim, pt-BR e inglês, claro e escuro, atalhos 2, ⌘0 e Enter, as três preferências. A janela nativa não foi vista.
+
 ## Consulta jq (Fase 1, 21/11/2026)
 
 **Escolha:** `jaq` (jaq-core 3.1.2, jaq-std 3.0.4, jaq-json 2.0.3), em Rust, sem processo externo nem `libjq`. `nucleo::consulta`: `Consulta::nova(filtro)` compila uma vez; erro de compilação vem como `ErroFiltro { falhas: [Falha { faixa, linha, coluna, mensagem }] }` (linha e coluna a partir de 1, coluna em caracteres), nunca pânico. `executar_jsonl` roda o filtro em cada linha, no mesmo molde da busca (blocos de ~256 KiB que terminam em `\n`, `thread::scope`, no máximo 64 blocos adiante, reordenação na thread do chamador); `executar_documento` trata o arquivo inteiro como um valor JSON. Resultados chegam por callback em `LoteConsulta { resultados, linhas, total_linhas }`, em ordem de arquivo, cada um com a linha de origem (a partir de 0) e o JSON compacto. CLI: `jasao consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]`, JSONL no stdout, erros por linha e resumo no stderr; filtro que não compila sai com código 1. `.gz`/`.zst` passam pela mesma `abrir`.
