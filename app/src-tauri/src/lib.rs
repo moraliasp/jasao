@@ -16,7 +16,7 @@ use nucleo::arvore::{Formatado, Linha, MAX_FORMATADO};
 use nucleo::consulta::{Consulta, LoteConsulta};
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
-use nucleo::{Achado, ArquivoLinhas, Arvore, Busca};
+use nucleo::{Achado, ArquivoLinhas, Arvore, Busca, Opcoes};
 use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
@@ -37,6 +37,8 @@ const INTERVALO: Duration = Duration::from_millis(100);
 struct Estado {
     docs: Mutex<HashMap<u32, Arc<Doc>>>,
     proximo: AtomicU32,
+    /// Descompactações em curso, por caminho (ver `cancelar_abertura`).
+    abrindo: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 /// Um arquivo aberto e o que roda sobre ele. As threads de 2º plano guardam só um `Weak`:
@@ -241,13 +243,93 @@ impl Doc {
 
 /// Abre `caminho` (ou o exemplo embutido `exemplo:<nome>`), com erro legível para pasta.
 fn abrir_linhas(caminho: &str) -> Result<ArquivoLinhas, String> {
+    abrir_linhas_com(caminho, &Opcoes::default())
+}
+
+/// Erros da descompactação que a interface traduz (e, na razão, pergunta se abre assim mesmo).
+const ERRO_CANCELADA: &str = "jasao:cancelada";
+const ERRO_RAZAO: &str = "jasao:razao";
+const ERRO_TETO: &str = "jasao:teto";
+
+fn abrir_linhas_com(caminho: &str, op: &Opcoes) -> Result<ArquivoLinhas, String> {
     if let Some(bytes) = exemplos::embutido(caminho) {
         return Ok(ArquivoLinhas::estatico(bytes));
     }
     if Path::new(caminho).is_dir() {
         return Err(format!("{caminho}: é uma pasta, não um arquivo"));
     }
-    ArquivoLinhas::abrir(caminho).map_err(|e| format!("{caminho}: {e}"))
+    ArquivoLinhas::abrir_com(caminho, op).map_err(|e| match e.kind() {
+        std::io::ErrorKind::Interrupted => ERRO_CANCELADA.into(),
+        _ if nucleo::compactado::razao_estourada(&e) => ERRO_RAZAO.into(),
+        std::io::ErrorKind::FileTooLarge => ERRO_TETO.into(),
+        _ => format!("{caminho}: {e}"),
+    })
+}
+
+/// Evento `descompactando`: progresso da descompactação de `caminho`, em bytes do compactado.
+#[derive(Clone, Serialize)]
+struct Descompactando<'a> {
+    caminho: &'a str,
+    lidos: u64,
+    total: u64,
+}
+
+/// Abre `caminho` descompactando com progresso e cancelável por `cancelar_abertura`.
+/// `forcar`: sem teto de razão (a interface perguntou); o teto absoluto continua.
+fn abrir_cancelavel<R: Runtime>(
+    caminho: &str,
+    forcar: bool,
+    app: &AppHandle<R>,
+    estado: &Estado,
+) -> Result<ArquivoLinhas, String> {
+    let cancelar = Arc::new(AtomicBool::new(false));
+    if let Ok(mut m) = estado.abrindo.lock() {
+        m.insert(caminho.into(), Arc::clone(&cancelar));
+    }
+    let ultimo = std::cell::Cell::new(None::<Instant>);
+    let progresso = |lidos: u64, total: u64| {
+        if lidos < total && ultimo.get().is_some_and(|t| t.elapsed() < INTERVALO) {
+            return;
+        }
+        ultimo.set(Some(Instant::now()));
+        let _ = app.emit(
+            "descompactando",
+            Descompactando {
+                caminho,
+                lidos,
+                total,
+            },
+        );
+    };
+    let mut op = Opcoes {
+        cancelar: Some(&cancelar),
+        progresso: Some(&progresso),
+        ..Opcoes::default()
+    };
+    if forcar {
+        op.max_razao = u64::MAX;
+    }
+    let r = abrir_linhas_com(caminho, &op);
+    if let Ok(mut m) = estado.abrindo.lock()
+        && m.get(caminho).is_some_and(|c| Arc::ptr_eq(c, &cancelar))
+    {
+        m.remove(caminho);
+    }
+    r
+}
+
+/// Cancela a descompactação de `caminho` em curso (o `abrir` dele falha com `jasao:cancelada`).
+#[tauri::command]
+fn cancelar_abertura(caminho: String, estado: State<'_, Estado>) -> Result<(), String> {
+    if let Some(c) = estado
+        .abrindo
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&caminho)
+    {
+        c.store(true, Relaxed);
+    }
+    Ok(())
 }
 
 /// Se cada caminho é uma pasta (o arraste avisa em vez de tentar abrir).
@@ -334,10 +416,16 @@ struct Aberto {
 async fn abrir<R: Runtime>(
     caminho: String,
     id: Option<u32>,
+    forcar: Option<bool>,
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<Aberto, String> {
-    let arvore = Arvore::new(abrir_linhas(&caminho)?);
+    let arvore = Arvore::new(abrir_cancelavel(
+        &caminho,
+        forcar.unwrap_or(false),
+        &app,
+        &estado,
+    )?);
     let total = arvore.total();
     let arquivo = arvore.compartilhado();
     let conteudo = resumo::conteudo(&arquivo);
@@ -1001,6 +1089,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             limpar_recentes,
             recente_ausente,
             abrir,
+            cancelar_abertura,
             fechar,
             pastas,
             resumo,

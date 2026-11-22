@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { aposFechar, ciclo, EXTENSOES, nomes, porAtalho, posicaoNova, triar } from "./abas";
 import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
@@ -643,6 +643,7 @@ function ativar(i: number, foco = false): void {
   const a = lista[i];
   ({ total, registros, sel, modo, noPainel, resumo, atual, alvo, estr, selE, registrosE } = a);
   status.textContent = a.status;
+  mostrarCancelar();
   // Respostas em voo eram da aba que saiu.
   versao++;
   selecao++;
@@ -681,14 +682,46 @@ function prepararRegua(): void {
   regua.busca(busca.ativa());
 }
 
-/** Abre `caminho` no documento da aba `a` (cria o documento se a aba ainda não tiver); diz se abriu. */
-async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<boolean> {
+/** Abas abrindo agora, com o caminho: a descompactação delas tem progresso e cancelamento. */
+const abrindo = new Map<Aba, string>();
+const cancelarAbertura = $<HTMLButtonElement>("cancelar-abertura");
+const mostrarCancelar = () => void (cancelarAbertura.hidden = !abrindo.has(abaAtiva()!));
+const cancelarDe = (a: Aba) => {
+  const caminho = abrindo.get(a);
+  if (caminho) void chamar("cancelar_abertura", { caminho }).catch(() => {});
+};
+cancelarAbertura.textContent = t.compactado.cancelar;
+cancelarAbertura.addEventListener("click", () => cancelarDe(abaAtiva()!));
+void listen<{ caminho: string; lidos: number; total: number }>("descompactando", ({ payload: p }) => {
+  for (const [a, caminho] of abrindo) {
+    if (caminho !== p.caminho) continue;
+    a.status = t.descompactando(Math.floor((p.lidos * 100) / Math.max(p.total, 1)));
+    if (a === abaAtiva()) status.textContent = a.status;
+  }
+});
+
+/** Erro do `abrir` no idioma da interface (os da descompactação vêm como código do Rust). */
+function erroAoAbrir(erro: unknown): string {
+  const e = String(erro);
+  if (e === "jasao:cancelada") return t.compactado.cancelada;
+  const textos: Record<string, string> = { "jasao:razao": t.compactado.recusada, "jasao:teto": t.compactado.teto };
+  return `${t.erro}: ${textos[e] ?? e}`;
+}
+
+/** Abre `caminho` no documento da aba `a` (cria o documento se a aba ainda não tiver); diz se abriu.
+ * `forcar`: abre compactado acima da razão de bomba (o usuário confirmou). */
+async function mostrar(caminho: string, a: Aba, visao?: Modo, forcar = false): Promise<boolean> {
   if (a.doc !== null) consulta.abriu(caminho, a.doc);
   a.status = t.abrindo;
   if (a === abaAtiva()) status.textContent = t.abrindo;
+  abrindo.set(a, caminho);
+  mostrarCancelar();
   try {
     const inicio = performance.now();
-    const r = await chamar<{ id: number; total: number }>("abrir", { caminho, id: a.doc });
+    const r = await chamar<{ id: number; total: number }>("abrir", { caminho, id: a.doc, forcar }).finally(() => {
+      abrindo.delete(a);
+      mostrarCancelar();
+    });
     if (!lista.includes(a)) {
       void chamar("fechar", { id: r.id }).catch(() => {}); // aba fechada no meio
       return false;
@@ -704,7 +737,14 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<boolean> 
     else desenharAbas();
     return true;
   } catch (erro) {
-    const msg = `${t.erro}: ${erro}`;
+    if (!lista.includes(a)) return false; // aba fechada no meio (fechar cancela a descompactação)
+    if (
+      String(erro) === "jasao:razao" &&
+      (await ask(t.compactado.razao, { title: t.compactado.titulo, kind: "warning" })) &&
+      lista.includes(a)
+    )
+      return mostrar(caminho, a, visao, true);
+    const msg = erroAoAbrir(erro);
     if (a.doc === null) {
       // Não abriu: a aba sai em vez de ficar quebrada; o erro aparece na aba que ficar ativa.
       const i = lista.indexOf(a);
@@ -774,6 +814,7 @@ function novaAba(): void {
 function fecharAba(i: number): void {
   const a = lista[i];
   if (!a) return;
+  cancelarDe(a);
   if (a.doc !== null) {
     void chamar("fechar", { id: a.doc }).catch(() => {}); // já fechado: nada a liberar
     busca.fechar(a.doc);
