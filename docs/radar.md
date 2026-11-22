@@ -23,6 +23,7 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 | Abrir JSONL grande sem travar | ✅ índice + varredura paralela em 2º plano (#12) | ✅ | ◐ | ❌ | — | — |
 | `.gz` / `.zst` | ✅ #4 | ? | ? | ❌ | — | — |
 | Busca no arquivo inteiro | ◐ core (#5) e interface (em PR) | ✅ | ✅ | ✅ | — | ◐ |
+| Abas e arrastar vários arquivos | ◐ em PR | ? | ? | ❌ | — | ? |
 | Árvore de valores | ✅ #6 | ✅ | ✅ | ✅ | — | ✅ |
 | Texto cru sincronizado com a árvore | ✅ #9 | ? | ? | ◐ | — | — |
 | Tabela por coluna | ❌ | ? | ✅ | ❌ | — | ✅ |
@@ -57,3 +58,4 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 - 21/11/2026: radar criado. Core com índice de linhas, `.gz`/`.zst` e busca. Em PR: árvore (#6), caminhos e linhas inválidas (#7), estrutura (#8), texto (#9) e jq (#10).
 - 22/11/2026: mergeados #6 a #10, #12 e #16. Novo: árvore, texto, painel de entrada e régua na interface; caminho, jq, estrutura e união discriminada no core e na CLI. CI passou a rodar em runner próprio (#15). Gap 1: busca, caminho e jq na interface.
 - 22/11/2026 (tarde): busca (⌘F, contagem, marcas na régua), copiar caminho (menu e atalhos) e consulta jq (⌘J, resultado no visualizador, volta ao arquivo) em PR. Sai o antigo gap 1; benchmark contra o Dadroit vira o primeiro.
+- 22/11/2026 (noite): abas de arquivo (estado por documento no Rust e no front, ⌘T/⌘W/⌘1…9/Ctrl+Tab) e arrastar vários arquivos para a janela em PR. Os exemplos embutidos viram duas abas.
