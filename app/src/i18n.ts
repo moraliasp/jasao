@@ -23,6 +23,23 @@ const pt = {
   valores: "Valores",
   arvore: "Árvore",
   texto: "Texto",
+  estrutura: {
+    aba: "Estrutura",
+    rotulo: "Estrutura inferida do arquivo",
+    inferindo: "Inferindo a estrutura…",
+    resumo: (caminhos: string, registros: string) => `${caminhos} ${caminhos === "1" ? "caminho" : "caminhos"} em ${registros} ${registros === "1" ? "registro" : "registros"} · Enter abre a primeira ocorrência na Árvore`,
+    registro: "registro",
+    registros: (n: string) => `${n} ${n === "1" ? "registro" : "registros"}`,
+    todos: "todos",
+    deN: (n: string, m: string) => `${n} de ${m}`,
+    elementos: (n: string, m: string) => `${n} ${n === "1" ? "item" : "itens"} em ${m} ${m === "1" ? "lista" : "listas"}`,
+    entradas: (n: string, m: string) => `mapa: ${n} ${n === "1" ? "entrada" : "entradas"} em ${m} ${m === "1" ? "objeto" : "objetos"}`,
+    opcional: "opcional",
+    formato: (campo: string, valor: string) => `formato ${campo} = "${valor}"`,
+    obrigatorias: "sempre",
+    opcionais: "às vezes",
+    tipos: { nulo: "nulo", booleano: "booleano", inteiro: "inteiro", decimal: "decimal", texto: "texto", objeto: "objeto", lista: "lista" } as Record<string, string>,
+  },
   textoDoArquivo: "Texto do arquivo, um registro por linha",
   verFormatado: "Ver formatado",
   registroFormatado: "Registro formatado",
@@ -105,6 +122,7 @@ const pt = {
       tabela: ["Tabela", "Comparar registros lado a lado, um campo por coluna"],
       arvore: ["Árvore", "Navegar pelos valores de cada registro"],
       texto: ["Texto", "Ver o texto cru, um registro por linha"],
+      estrutura: ["Estrutura", "Ver os campos, tipos e quantos registros têm cada um"],
     },
     conteudo: {
       vazio: "Arquivo vazio",
@@ -135,7 +153,7 @@ const pt = {
   },
 };
 
-type Textos = typeof pt;
+export type Textos = typeof pt;
 
 const en: Textos = {
   lang: "en",
@@ -161,6 +179,23 @@ const en: Textos = {
   valores: "Values",
   arvore: "Tree",
   texto: "Text",
+  estrutura: {
+    aba: "Structure",
+    rotulo: "Structure inferred from the file",
+    inferindo: "Inferring the structure…",
+    resumo: (caminhos, registros) => `${caminhos} ${caminhos === "1" ? "path" : "paths"} in ${registros} ${registros === "1" ? "record" : "records"} · Enter opens the first occurrence in the Tree`,
+    registro: "record",
+    registros: (n) => `${n} ${n === "1" ? "record" : "records"}`,
+    todos: "all",
+    deN: (n, m) => `${n} of ${m}`,
+    elementos: (n, m) => `${n} ${n === "1" ? "item" : "items"} in ${m} ${m === "1" ? "list" : "lists"}`,
+    entradas: (n, m) => `map: ${n} ${n === "1" ? "entry" : "entries"} in ${m} ${m === "1" ? "object" : "objects"}`,
+    opcional: "optional",
+    formato: (campo, valor) => `shape ${campo} = "${valor}"`,
+    obrigatorias: "always",
+    opcionais: "sometimes",
+    tipos: { nulo: "null", booleano: "boolean", inteiro: "integer", decimal: "decimal", texto: "string", objeto: "object", lista: "array" },
+  },
   textoDoArquivo: "File text, one record per line",
   verFormatado: "View formatted",
   registroFormatado: "Formatted record",
@@ -242,6 +277,7 @@ const en: Textos = {
       tabela: ["Table", "Compare records side by side, one field per column"],
       arvore: ["Tree", "Browse the values of each record"],
       texto: ["Text", "See the raw text, one record per line"],
+      estrutura: ["Structure", "See the fields, types and how many records have each"],
     },
     conteudo: {
       vazio: "Empty file",
