@@ -479,12 +479,22 @@ fn consultar<R: Runtime>(
         resumo::conteudo(&arquivo),
         Conteudo::JsonUnico | Conteudo::JsonVariasLinhas
     );
+    // Nome com os nanossegundos do relógio para não ser previsível; `create_new` (O_EXCL) recusa
+    // arquivo ou link que alguém tenha posto ali antes, e 0600 deixa o resultado só para o dono.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     let destino = std::env::temp_dir().join(format!(
-        "jasao-consulta-{}-{geracao}.jsonl",
+        "jasao-consulta-{}-{geracao}-{nanos:x}.jsonl",
         std::process::id()
     ));
-    let saida =
-        std::fs::File::create(&destino).map_err(|e| format!("{}: {e}", destino.display()))?;
+    let mut abrir = std::fs::OpenOptions::new();
+    abrir.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut abrir, 0o600);
+    let saida = abrir
+        .open(&destino)
+        .map_err(|e| format!("{}: {e}", destino.display()))?;
     estado.consulta.lock().map_err(|e| e.to_string())?.arquivo = Some(destino.clone());
     std::thread::spawn(move || {
         let avisar = |a: AndamentoConsulta| {
