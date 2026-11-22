@@ -5,7 +5,7 @@ import { t } from "./i18n";
 const PREFIXO = "exemplo:";
 const NOMES = ["historia", "vitrine"] as const;
 
-export function criarExemplos(mostrar: (caminho: string) => Promise<void>, abrirProprio: () => void) {
+export function criarExemplos(mostrar: (caminho: string) => Promise<unknown>, abrirProprio: () => void) {
   const barra = document.createElement("div");
   barra.className = "exemplos";
   barra.setAttribute("role", "region");

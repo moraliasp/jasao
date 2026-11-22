@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { criarExemplos } from "./exemplos";
 import { type Motivo, t } from "./i18n";
+import { criarRecentes } from "./recentes";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { decodificar, type JanelaTexto, linhaHtml as textoHtml } from "./texto";
@@ -370,7 +371,7 @@ async function copiarCaminho(l: Linha, botao: HTMLElement): Promise<void> {
   setTimeout(() => (botao.innerHTML = antes), 1500);
 }
 
-async function mostrar(caminho: string): Promise<void> {
+async function mostrar(caminho: string): Promise<boolean> {
   status.textContent = t.abrindo;
   const nome = exemplos.nome(caminho);
   $("nome").textContent = nome;
@@ -397,8 +398,12 @@ async function mostrar(caminho: string): Promise<void> {
     await recarregar();
     if (destino === "texto") await selecionar(0);
     if (destino !== "painel") trocarModo(destino);
+    emExemplo = caminho.startsWith("exemplo:");
+    void recentes.atualizar();
+    return true;
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
+    return false;
   }
 }
 
@@ -623,5 +628,25 @@ $("abrir").addEventListener("click", async () => {
 });
 
 const exemplos = criarExemplos(mostrar, () => $("abrir").click());
-// Sem arquivo pedido pelo sistema, o Rust devolve o primeiro exemplo embutido.
-invoke<string[]>("arquivos_iniciais").then(([caminho]) => void mostrar(caminho));
+
+// Recentes: aparecem junto da barra dos exemplos, ou seja, quando não há arquivo do usuário aberto.
+let emExemplo = false;
+let recentesEl: HTMLElement = document.createElement("nav");
+document.querySelector(".exemplos")!.after(recentesEl);
+const recentes = criarRecentes(mostrar, (texto) => (status.textContent = texto), () => {
+  const novo = recentes.lista();
+  if (!emExemplo) novo.hidden = true;
+  recentesEl.replaceWith(novo);
+  recentesEl = novo;
+});
+
+// shortcut: sem abas, vários arquivos abrem um depois do outro e fica o último; com abas, um por aba.
+async function abrirTodos(caminhos: string[]): Promise<void> {
+  for (const c of caminhos) await mostrar(c);
+}
+// Pedidos do sistema com o app aberto (Finder, "Abrir com", 2ª instância). Escuta antes de pedir os
+// iniciais: o que chegar no meio sai da fila uma vez só, por um dos dois.
+void listen("abrir-arquivos", async () => abrirTodos(await invoke<string[]>("arquivos_pedidos"))).then(() =>
+  // Sem arquivo pedido pelo sistema, o Rust devolve o primeiro exemplo embutido.
+  invoke<string[]>("arquivos_iniciais").then(abrirTodos),
+);
