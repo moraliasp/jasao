@@ -323,6 +323,11 @@ async function teclaTexto(e: KeyboardEvent): Promise<void> {
   }
 }
 
+/** Foca `el`, a menos que o usuário esteja andando pela barra de abas (aba ainda preparando não rouba o foco). */
+function focar(el: HTMLElement | null | undefined): void {
+  if (!$("arquivos-lista").contains(document.activeElement)) el?.focus();
+}
+
 /** `rolagem`: [árvore, texto] guardados na aba; sem ela, a seleção vem para a vista. */
 function trocarModo(m: Modo, rolagem?: [number, number]): void {
   modo = m;
@@ -342,7 +347,7 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
       textoEl.scrollTop = rolagem[1];
     } else mostrarEm(textoEl, alvo, registros, ALTURA_TEXTO);
     desenharTexto();
-    textoEl.focus();
+    focar(textoEl);
   } else {
     if (rolagem) {
       alto.style.height = espaco(arvore, total, ALTURA);
@@ -352,7 +357,7 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
       if (!rolagem) mostrarLinha(sel);
       desenhar();
     });
-    arvore.focus();
+    focar(arvore);
   }
 }
 
@@ -503,8 +508,10 @@ function desenharAbas(): void {
     .map((a, i) => {
       const s = i === ativa;
       const atalho = i < 8 ? ` aria-keyshortcuts="Meta+${i + 1} Control+${i + 1}"` : "";
+      // Só a ativa aponta para o painel: no WebKit, aba cujo painel tem o foco conta como selecionada.
+      const painel = s ? ` aria-controls="${a.doc === null ? "sem-arquivo" : "area"}"` : "";
       return `<div class="arq" role="presentation"><button role="tab" type="button" id="arq-${a.chave}" data-i="${i}"
-        aria-selected="${s}" aria-controls="${a.doc === null ? "sem-arquivo" : "area"}" tabindex="${s ? 0 : -1}"
+        aria-selected="${s}"${painel} tabindex="${s ? 0 : -1}"
         title="${esc(a.arquivo ?? n[i])}"${atalho}>${esc(n[i])}</button><button class="ib" type="button" tabindex="-1"
         data-fechar="${i}" aria-label="${esc(t.abasArquivos.fechar(n[i]))}">${icone("x")}</button></div>`;
     })
@@ -772,7 +779,7 @@ function mostrarPainel(): void {
   painel.hidden = false;
   conteudo.hidden = true;
   for (const aba of Object.values(abas)) aba.setAttribute("aria-selected", "false");
-  painelModos.querySelector<HTMLElement>(".sugerido")?.focus();
+  focar(painelModos.querySelector<HTMLElement>(".sugerido"));
 }
 
 arvore.addEventListener("scroll", agendar, { passive: true });
@@ -891,6 +898,7 @@ document.addEventListener("keydown", (e) => {
     if (m) {
       e.preventDefault();
       trocarModo(m);
+      (m === "texto" ? textoEl : arvore).focus(); // pedido explícito: o foco vai mesmo saindo da barra de abas
     }
     return;
   }
