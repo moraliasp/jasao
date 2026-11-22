@@ -26,6 +26,7 @@ if [ "${1:-}" = "--completo" ]; then
   passo cargo +nightly fuzz run indice_linhas --fuzz-dir . -- -max_total_time="$seg"
   passo cargo +nightly fuzz run compactado --fuzz-dir . -- -max_total_time="$seg"
   passo cargo +nightly fuzz run busca --fuzz-dir . -- -max_total_time="$seg" -max_len=4096
+  passo cargo +nightly fuzz run consulta --fuzz-dir . -- -max_total_time="$seg" -max_len=4096
   passo cargo +nightly fuzz run erros --fuzz-dir . -- -max_total_time="$seg" -max_len=4096
 fi
 
