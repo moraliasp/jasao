@@ -130,7 +130,10 @@ mod testes {
         adicionar(&a, real.to_str().unwrap()).unwrap();
         let l = adicionar(&a, link.to_str().unwrap()).unwrap();
         assert_eq!(l.len(), 1, "{l:?}");
-        assert_eq!(l[0], std::fs::canonicalize(&real).unwrap().to_string_lossy());
+        assert_eq!(
+            l[0],
+            std::fs::canonicalize(&real).unwrap().to_string_lossy()
+        );
     }
 
     #[test]
