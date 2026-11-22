@@ -21,8 +21,15 @@ use crate::caminho::{Caminho, Segmento};
 /// Aninhamento máximo de um registro. Acima disso o registro vira linha de erro: protege a pilha
 /// (a análise é recursiva) e mantém a interface legível.
 pub const MAX_PROFUNDIDADE: usize = 1_000;
-/// Bytes de texto cru na prévia de um valor.
+/// Bytes de texto cru na prévia de um valor (e no nome do campo e em cada migalha).
 pub const MAX_PREVIA: usize = 200;
+/// Nós materializados por registro aberto. Acima disso o nó que se abre mostra só os primeiros
+/// filhos e `Linha::omitidos` diz quantos ficaram de fora: um registro largo (milhões de itens)
+/// não vira centenas de MB de nós. ~100 bytes por nó: ~100 MB no pior caso.
+pub const MAX_NOS: usize = 1_000_000;
+/// Bytes do registro formatado (e do registro e do valor que o app aceita formatar ou copiar).
+/// Aninhamento fundo multiplica a indentação: 200 KB de entrada já dariam 200 MB.
+pub const MAX_FORMATADO: usize = 16 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -67,14 +74,16 @@ pub struct ErroLinha {
     pub motivo: Motivo,
 }
 
-/// Uma linha pronta para desenhar.
+/// Uma linha pronta para desenhar. Sem o caminho do nó: ele cresce com a profundidade e, numa
+/// janela de linhas fundas, a resposta ficaria quadrática (ver `Arvore::migalhas`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Linha {
     /// Linha do arquivo (base 0) a que o nó pertence.
     pub registro: usize,
     /// 0 = o registro; 1 = seus campos; e assim por diante.
     pub prof: usize,
-    /// Nome do campo; `None` no registro e em item de lista.
+    /// Nome do campo, cortado em `MAX_PREVIA` bytes (com "…"); `None` no registro e em item
+    /// de lista. O caminho completo sai de `Arvore::caminho`.
     pub chave: Option<String>,
     /// Posição do item na lista ou do campo no objeto.
     pub pos: usize,
@@ -89,10 +98,8 @@ pub struct Linha {
     pub irmaos: usize,
     pub expansivel: bool,
     pub aberto: bool,
-    /// Caminho no estilo jq, relativo ao registro: `.pedidos[0]["nome completo"]`.
-    pub caminho: String,
-    /// Rótulos do caminho para as migalhas: `["pedidos", "[0]", "nome completo"]`.
-    pub migalhas: Vec<String>,
+    /// Filhos que não entraram na árvore por causa de `MAX_NOS` (só em nó aberto).
+    pub omitidos: usize,
     /// Bytes `[início, fim)` do valor na linha do arquivo, para a visão Texto realçar o trecho.
     /// No registro inválido, a linha inteira.
     pub faixa: [usize; 2],
@@ -108,12 +115,26 @@ struct No {
     tipo: Tipo,
     /// Bytes do valor dentro da linha.
     faixa: Range<usize>,
-    filhos: Range<usize>,
+    /// Quantos campos ou itens o valor tem.
+    total_filhos: usize,
+    /// Os que já estão em `nos` (contíguos); `None` até o nó ser aberto a 1ª vez.
+    filhos: Option<Range<usize>>,
     aberto: bool,
 }
 
-/// Registro expandido: todos os nós (o `nos[0]` é o próprio registro) e, em ordem, os que
-/// aparecem abaixo dele.
+impl No {
+    fn filhos(&self) -> Range<usize> {
+        self.filhos.clone().unwrap_or_default()
+    }
+}
+
+/// Texto completo da linha de um registro que já passou por `validar`.
+fn texto_de(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).unwrap_or_default()
+}
+
+/// Registro expandido: os nós já abertos alguma vez e seus filhos (o `nos[0]` é o próprio
+/// registro) e, em ordem, os que aparecem abaixo dele. Só se analisa o que se abre.
 struct Aberto {
     nos: Vec<No>,
     visiveis: Vec<usize>,
@@ -236,8 +257,7 @@ impl Arvore {
             irmaos: 0,
             expansivel: false,
             aberto: false,
-            caminho: ".".into(),
-            migalhas: Vec::new(),
+            omitidos: 0,
             faixa: [0, bytes.len()],
         };
         match validar(bytes) {
@@ -271,7 +291,7 @@ impl Arvore {
             let Ok(nos) = construir(self.bytes(r)) else {
                 return false;
             };
-            if nos[0].filhos.is_empty() {
+            if nos[0].total_filhos == 0 {
                 return false;
             }
             let mut visiveis = Vec::new();
@@ -280,12 +300,19 @@ impl Arvore {
             self.abertos.insert(r, Aberto { nos, visiveis });
             return true;
         };
+        let texto = texto_de(
+            self.arquivo
+                .janela(r, 1)
+                .first()
+                .copied()
+                .unwrap_or_default(),
+        );
         let a = self
             .abertos
             .get_mut(&r)
             .expect("localizar só devolve pos de aberto");
         let id = a.visiveis[p];
-        if a.nos[id].filhos.is_empty() {
+        if a.nos[id].total_filhos == 0 {
             return false;
         }
         let antes = a.visiveis.len();
@@ -298,6 +325,7 @@ impl Arvore {
             a.visiveis.drain(p + 1..fim);
             a.nos[id].aberto = false;
         } else {
+            preencher(texto, &mut a.nos, id);
             a.nos[id].aberto = true;
             let mut novos = Vec::new();
             descendentes_visiveis(&a.nos, id, &mut novos);
@@ -316,14 +344,18 @@ impl Arvore {
         if !self.abertos.contains_key(&registro) && !self.alternar(linha_r) {
             return Some(linha_r);
         }
+        let texto = texto_de(
+            self.arquivo
+                .janela(registro, 1)
+                .first()
+                .copied()
+                .unwrap_or_default(),
+        );
         let a = self.abertos.get_mut(&registro)?;
         let mut id = 0;
         while byte > a.nos[id].faixa.start && byte < a.nos[id].faixa.end {
-            let Some(f) = a.nos[id]
-                .filhos
-                .clone()
-                .find(|&f| a.nos[f].faixa.end > byte)
-            else {
+            preencher(texto, &mut a.nos, id);
+            let Some(f) = a.nos[id].filhos().find(|&f| a.nos[f].faixa.end > byte) else {
                 break;
             };
             id = f;
@@ -351,14 +383,10 @@ impl Arvore {
 
     /// O registro com um campo ou item por linha e dois espaços por nível. Só o espaço entre
     /// os valores muda: chaves e escalares saem com o texto cru do arquivo (escape, número de
-    /// 400 dígitos e chave repetida intactos).
-    pub fn formatado(&self, registro: usize) -> Result<String, ErroLinha> {
-        let bytes = self.bytes(registro);
-        let nos = construir(bytes)?;
-        let texto = std::str::from_utf8(bytes).unwrap_or_default();
-        let mut saida = String::with_capacity(bytes.len() * 2);
-        escrever(texto, &nos, 0, 0, &mut saida);
-        Ok(saida)
+    /// 400 dígitos e chave repetida intactos). Corta em `MAX_FORMATADO` bytes e diz que cortou.
+    pub fn formatado(&self, registro: usize) -> Result<Formatado, ErroLinha> {
+        let texto = validar(self.bytes(registro))?;
+        Ok(formatar(texto.trim_matches(ESPACO), MAX_FORMATADO))
     }
 
     /// Arquivo por baixo da árvore (a visão Texto lê as linhas cruas dele).
@@ -388,6 +416,21 @@ impl Arvore {
         }
         segmentos.reverse();
         Some(Caminho(segmentos))
+    }
+
+    /// Rótulos do caminho de `v` para as migalhas, cada um cortado como a prévia:
+    /// `["pedidos", "[0]", "nome completo"]`. Pedido só para a linha selecionada.
+    pub fn migalhas(&self, v: usize) -> Option<Vec<String>> {
+        Some(
+            self.caminho(v)?
+                .0
+                .into_iter()
+                .map(|s| match s {
+                    Segmento::Chave(k) => previa(&k),
+                    Segmento::Indice(i) => format!("[{i}]"),
+                })
+                .collect(),
+        )
     }
 
     /// Texto do valor da linha visível `v`, para copiar: texto JSON sai decodificado (sem aspas
@@ -428,7 +471,7 @@ impl Arvore {
 
 /// Filhos de `id` que aparecem, em ordem, descendo nos que estão abertos.
 fn descendentes_visiveis(nos: &[No], id: usize, saida: &mut Vec<usize>) {
-    for f in nos[id].filhos.clone() {
+    for f in nos[id].filhos() {
         saida.push(f);
         if nos[f].aberto {
             descendentes_visiveis(nos, f, saida);
@@ -438,36 +481,90 @@ fn descendentes_visiveis(nos: &[No], id: usize, saida: &mut Vec<usize>) {
 
 const ESPACO: &[char] = &[' ', '\t', '\n', '\r'];
 
-/// Escreve o nó `id` formatado; ver `Arvore::formatado`.
-fn escrever(texto: &str, nos: &[No], id: usize, nivel: usize, saida: &mut String) {
-    let no = &nos[id];
-    if no.filhos.is_empty() {
-        saida.push_str(&texto[no.faixa.clone()]);
-        return;
-    }
-    let objeto = no.tipo == Tipo::Objeto;
-    saida.push(if objeto { '{' } else { '[' });
-    let mut anterior = no.faixa.start + 1;
-    for (i, f) in no.filhos.clone().enumerate() {
-        if i > 0 {
-            saida.push(',');
-        }
+/// Registro formatado; ver `Arvore::formatado`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Formatado {
+    pub texto: String,
+    /// Passou de `MAX_FORMATADO` e `texto` é só o começo.
+    pub truncado: bool,
+}
+
+/// Reindenta `raw` (JSON já validado) numa passada só, sem montar nós, e para em `max` bytes.
+fn formatar(raw: &str, max: usize) -> Formatado {
+    let b = raw.as_bytes();
+    let mut saida = String::with_capacity(raw.len().min(max) * 2);
+    let quebra = |saida: &mut String, nivel: usize| {
         saida.push('\n');
-        saida.extend(std::iter::repeat_n("  ", nivel + 1));
-        if objeto {
-            // A chave crua fica entre o valor anterior (ou o `{`) e o valor deste campo.
-            let chave = texto[anterior..nos[f].faixa.start]
-                .trim_start_matches(|c: char| c == ',' || ESPACO.contains(&c))
-                .trim_end_matches(|c: char| c == ':' || ESPACO.contains(&c));
-            saida.push_str(chave);
-            saida.push_str(": ");
+        saida.extend(std::iter::repeat_n("  ", nivel));
+    };
+    let (mut i, mut nivel) = (0, 0usize);
+    while i < b.len() && saida.len() <= max {
+        match b[i] {
+            b'{' | b'[' => {
+                let fecho = if b[i] == b'{' { b'}' } else { b']' };
+                let j = i
+                    + 1
+                    + b[i + 1..]
+                        .iter()
+                        .take_while(|c| ESPACO.contains(&(**c as char)))
+                        .count();
+                if b.get(j) == Some(&fecho) {
+                    // Vazio sai cru, como no arquivo (`{}`, `[ ]`).
+                    saida.push_str(&raw[i..=j]);
+                    i = j + 1;
+                } else {
+                    saida.push(b[i] as char);
+                    nivel += 1;
+                    quebra(&mut saida, nivel);
+                    i += 1;
+                }
+            }
+            b'}' | b']' => {
+                nivel = nivel.saturating_sub(1);
+                quebra(&mut saida, nivel);
+                saida.push(b[i] as char);
+                i += 1;
+            }
+            b',' => {
+                saida.push(',');
+                quebra(&mut saida, nivel);
+                i += 1;
+            }
+            b':' => {
+                saida.push_str(": ");
+                i += 1;
+            }
+            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
+            b'"' => {
+                let mut j = i + 1;
+                while b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                saida.push_str(&raw[i..=j]);
+                i = j + 1;
+            }
+            _ => {
+                let n = b[i..]
+                    .iter()
+                    .position(|c| b",:]} \t\n\r".contains(c))
+                    .unwrap_or(b.len() - i);
+                saida.push_str(&raw[i..i + n]);
+                i += n;
+            }
         }
-        escrever(texto, nos, f, nivel + 1, saida);
-        anterior = nos[f].faixa.end;
     }
-    saida.push('\n');
-    saida.extend(std::iter::repeat_n("  ", nivel));
-    saida.push(if objeto { '}' } else { ']' });
+    let truncado = i < b.len() || saida.len() > max;
+    if saida.len() > max {
+        let mut fim = max;
+        while !saida.is_char_boundary(fim) {
+            fim -= 1;
+        }
+        saida.truncate(fim);
+    }
+    Formatado {
+        texto: saida,
+        truncado,
+    }
 }
 
 fn tipo_de(raw: &str) -> Tipo {
@@ -592,7 +689,7 @@ fn passa_da_profundidade(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// Analisa um registro inteiro em nós; filhos de cada nó ficam contíguos em `nos`.
+/// Valida o registro e analisa a raiz e seus filhos; o resto fica para quando abrir.
 fn construir(bytes: &[u8]) -> Result<Vec<No>, ErroLinha> {
     let texto = validar(bytes)?;
     let raw = texto.trim_matches(ESPACO);
@@ -604,19 +701,24 @@ fn construir(bytes: &[u8]) -> Result<Vec<No>, ErroLinha> {
         pos: 0,
         tipo: tipo_de(raw),
         faixa: ini..ini + raw.len(),
-        filhos: 0..0,
+        total_filhos: contar(raw),
+        filhos: None,
         aberto: true,
     }];
-    preencher(texto, &mut nos, 0).map_err(|e| do_sonic(&e))?;
+    preencher(texto, &mut nos, 0);
     Ok(nos)
 }
 
-fn preencher(texto: &str, nos: &mut Vec<No>, id: usize) -> sonic_rs::Result<()> {
+/// Põe em `nos` os filhos de `id` (uma vez só), até `MAX_NOS` no registro.
+fn preencher(texto: &str, nos: &mut Vec<No>, id: usize) {
+    if nos[id].filhos.is_some() {
+        return;
+    }
     let raw = &texto[nos[id].faixa.clone()];
     let base = texto.as_ptr() as usize;
     let ini = nos.len();
-    let prof = nos[id].prof + 1;
-    let tipo = nos[id].tipo;
+    let cabem = MAX_NOS.saturating_sub(ini).min(nos[id].total_filhos);
+    let (prof, tipo) = (nos[id].prof + 1, nos[id].tipo);
     let mut novo = |chave: Option<Box<str>>, valor: &str| {
         let inicio = valor.as_ptr() as usize - base;
         nos.push(No {
@@ -626,101 +728,55 @@ fn preencher(texto: &str, nos: &mut Vec<No>, id: usize) -> sonic_rs::Result<()> 
             pos: nos.len() - ini,
             tipo: tipo_de(valor),
             faixa: inicio..inicio + valor.len(),
-            filhos: 0..0,
+            total_filhos: contar(valor),
+            filhos: None,
             aberto: false,
         });
     };
+    // O registro já passou por `validar`: o iterador não erra.
     match tipo {
-        Tipo::Objeto => {
-            for par in sonic_rs::to_object_iter(raw) {
-                let (k, v) = par?;
-                novo(Some(Box::from(&*k)), v.as_raw_str());
-            }
-        }
-        Tipo::Lista => {
-            for v in sonic_rs::to_array_iter(raw) {
-                novo(None, v?.as_raw_str());
-            }
-        }
-        _ => return Ok(()),
+        Tipo::Objeto => sonic_rs::to_object_iter(raw)
+            .take(cabem)
+            .flatten()
+            .for_each(|(k, v)| novo(Some(Box::from(&*k)), v.as_raw_str())),
+        Tipo::Lista => sonic_rs::to_array_iter(raw)
+            .take(cabem)
+            .flatten()
+            .for_each(|v| novo(None, v.as_raw_str())),
+        _ => {}
     }
     let fim = nos.len();
-    nos[id].filhos = ini..fim;
-    for f in ini..fim {
-        preencher(texto, nos, f)?;
-    }
-    Ok(())
+    nos[id].filhos = Some(ini..fim);
 }
 
 fn linha_no(registro: usize, bytes: &[u8], nos: &[No], id: usize) -> Linha {
-    // A linha já passou por `validar` em `construir`.
-    let texto = std::str::from_utf8(bytes).unwrap_or_default();
     let no = &nos[id];
-    let mut cadeia = Vec::with_capacity(no.prof);
-    let mut n = id;
-    while nos[n].pai != SEM_PAI {
-        cadeia.push(n);
-        n = nos[n].pai;
-    }
-    let (mut caminho, mut migalhas) = (String::new(), Vec::with_capacity(cadeia.len()));
-    for &n in cadeia.iter().rev() {
-        match &nos[n].chave {
-            Some(k) => {
-                migalhas.push(k.to_string());
-                if eh_identificador(k) {
-                    caminho.push('.');
-                    caminho.push_str(k);
-                } else {
-                    if caminho.is_empty() {
-                        caminho.push('.');
-                    }
-                    caminho.push('[');
-                    caminho.push_str(&sonic_rs::to_string(&**k).unwrap_or_default());
-                    caminho.push(']');
-                }
-            }
-            None => {
-                let seg = format!("[{}]", nos[n].pos);
-                if caminho.is_empty() {
-                    caminho.push('.');
-                }
-                caminho.push_str(&seg);
-                migalhas.push(seg);
-            }
-        }
-    }
-    if caminho.is_empty() {
-        caminho.push('.');
-    }
-    let filhos = no.filhos.len();
+    let aberto = no.total_filhos > 0 && no.aberto;
     Linha {
         registro,
         prof: no.prof,
-        chave: no.chave.as_deref().map(str::to_owned),
+        chave: no.chave.as_deref().map(previa),
         pos: no.pos,
         tipo: no.tipo,
-        previa: previa(texto.get(no.faixa.clone()).unwrap_or_default()),
+        previa: previa(texto_de(bytes).get(no.faixa.clone()).unwrap_or_default()),
         erro: None,
-        filhos,
-        irmaos: nos.get(no.pai).map_or(0, |p| p.filhos.len()),
-        expansivel: filhos > 0,
-        aberto: filhos > 0 && no.aberto,
-        caminho,
-        migalhas,
+        filhos: no.total_filhos,
+        irmaos: nos.get(no.pai).map_or(0, |p| p.total_filhos),
+        expansivel: no.total_filhos > 0,
+        aberto,
+        omitidos: if aberto {
+            no.total_filhos - no.filhos().len()
+        } else {
+            0
+        },
         faixa: [no.faixa.start, no.faixa.end],
     }
-}
-
-fn eh_identificador(k: &str) -> bool {
-    let mut c = k.bytes();
-    c.next()
-        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-        && c.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 #[cfg(test)]
 mod testes {
     use super::*;
+    use proptest::prelude::*;
     use std::io::Write;
 
     fn arvore(conteudo: &str) -> Arvore {
@@ -729,11 +785,17 @@ mod testes {
         Arvore::abrir(f.path()).unwrap()
     }
 
-    /// (prof, chave ou caminho, prévia) de toda a lista visível.
+    /// Caminho jq da linha visível `v`.
+    fn jq(a: &Arvore, v: usize) -> String {
+        a.caminho(v).unwrap().jq()
+    }
+
+    /// (prof, caminho, prévia) de toda a lista visível.
     fn tudo(a: &Arvore) -> Vec<(usize, String, String)> {
         a.janela(0, usize::MAX)
             .into_iter()
-            .map(|l| (l.prof, l.caminho, l.previa))
+            .enumerate()
+            .map(|(v, l)| (l.prof, jq(a, v), l.previa))
             .collect()
     }
 
@@ -746,7 +808,7 @@ mod testes {
         assert!(a.alternar(0));
         assert_eq!(a.total(), 5);
         let linhas = a.janela(0, 10);
-        let caminhos: Vec<_> = linhas.iter().map(|l| l.caminho.as_str()).collect();
+        let caminhos: Vec<_> = (0..5).map(|v| jq(&a, v)).collect();
         assert_eq!(caminhos, [".", ".a", ".b", ".d", "."]);
         assert_eq!(linhas[1].previa, "1");
         assert_eq!(linhas[1].tipo, Tipo::Numero);
@@ -758,8 +820,8 @@ mod testes {
         assert!(a.alternar(2));
         assert!(a.alternar(3));
         assert_eq!(a.total(), 8);
-        assert_eq!(a.janela(4, 1)[0].caminho, ".b.c[0]");
-        assert_eq!(a.janela(4, 1)[0].migalhas, ["b", "c", "[0]"]);
+        assert_eq!(jq(&a, 4), ".b.c[0]");
+        assert_eq!(a.migalhas(4).unwrap(), ["b", "c", "[0]"]);
         assert_eq!(a.pai(5), Some(3));
         assert_eq!(a.pai(3), Some(2));
         assert_eq!(a.pai(2), Some(0));
@@ -799,7 +861,7 @@ mod testes {
         assert_eq!(a.janela(4, 10).len(), 1);
         assert_eq!(a.janela(3, 2)[1].registro, 1);
         // Janela começando no meio do registro aberto.
-        assert_eq!(a.janela(2, 1)[0].caminho, ".b");
+        assert_eq!(jq(&a, 2), ".b");
         assert!(!a.alternar(99));
         assert_eq!(arvore("").janela(0, 10), vec![]);
     }
@@ -878,7 +940,8 @@ mod testes {
         let l: Vec<_> = a
             .janela(1, 10)
             .into_iter()
-            .map(|l| (l.chave.unwrap(), l.caminho, l.previa))
+            .enumerate()
+            .map(|(i, l)| (l.chave.unwrap(), jq(&a, i + 1), l.previa))
             .collect();
         let s = |a: &str, b: &str, c: &str| (a.to_owned(), b.to_owned(), c.to_owned());
         assert_eq!(
@@ -970,20 +1033,14 @@ mod testes {
         // {"a":1,"b":{"c":[true,null]},"d":"x"}: `true` em 17, `{` de .b em 11, chave a em 2.
         let mut a = arvore(DOIS);
         assert_eq!(a.revelar(0, 18), Some(4));
-        assert_eq!(a.janela(4, 1)[0].caminho, ".b.c[0]");
-        assert_eq!(
-            a.revelar(0, 2).map(|v| a.janela(v, 1)[0].caminho.clone()),
-            Some(".a".into())
-        );
-        assert_eq!(
-            a.revelar(0, 11).map(|v| a.janela(v, 1)[0].caminho.clone()),
-            Some(".b".into())
-        );
+        assert_eq!(jq(&a, 4), ".b.c[0]");
+        assert_eq!(a.revelar(0, 2).map(|v| jq(&a, v)), Some(".a".into()));
+        assert_eq!(a.revelar(0, 11).map(|v| jq(&a, v)), Some(".b".into()));
         assert_eq!(a.revelar(0, 0), Some(0));
         assert_eq!(a.revelar(0, 99), Some(0), "fora do valor fica no registro");
         // Registro 1 vem depois das 7 linhas do registro 0 aberto; byte 1 é o `1` de [1,2].
         assert_eq!(a.revelar(1, 1), Some(8));
-        assert_eq!(a.janela(8, 1)[0].caminho, ".[0]");
+        assert_eq!(jq(&a, 8), ".[0]");
         assert_eq!(a.total(), 10);
         assert_eq!(a.revelar(2, 0), None);
 
@@ -1039,8 +1096,109 @@ mod testes {
   ],
   "v": []
 }"#;
-        assert_eq!(a.formatado(0).unwrap(), esperado);
+        let f = a.formatado(0).unwrap();
+        assert_eq!((f.texto.as_str(), f.truncado), (esperado, false));
         assert!(a.formatado(1).is_err());
-        assert_eq!(arvore("7\n").formatado(0).unwrap(), "7");
+        assert_eq!(arvore("7\n").formatado(0).unwrap().texto, "7");
+        assert_eq!(arvore(" [ ] \n").formatado(0).unwrap().texto, "[ ]");
+    }
+
+    /// Lista de `n` cadeias `[[[…0…]]]` de `prof` níveis: pouca entrada, muita indentação.
+    fn cadeias(n: usize, prof: usize) -> String {
+        let cadeia = format!("{}0{}", "[".repeat(prof), "]".repeat(prof));
+        format!("[{}]\n", vec![cadeia; n].join(","))
+    }
+
+    #[test]
+    fn formatado_tem_teto_e_avisa() {
+        // 200 KB que, formatados por inteiro, dariam ~200 MB.
+        let a = arvore(&cadeias(100, MAX_PROFUNDIDADE - 1));
+        let f = a.formatado(0).unwrap();
+        assert!(f.truncado);
+        assert!(f.texto.len() <= MAX_FORMATADO && f.texto.len() > MAX_FORMATADO - 4_096);
+        // O corte respeita UTF-8 e o teto vale para qualquer `max`.
+        let f = formatar(r#"{"ação":"ééé"}"#, 12);
+        assert!(f.truncado && f.texto.len() <= 12, "{f:?}");
+        assert!(!formatar("[1]", 7).truncado);
+    }
+
+    fn valor_json() -> impl Strategy<Value = serde_json::Value> {
+        use serde_json::Value;
+        let folha = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(Value::from),
+            "[ -~é\\n\"\\\\]{0,6}".prop_map(Value::String),
+        ];
+        folha.prop_recursive(5, 48, 5, |dentro| {
+            prop_oneof![
+                prop::collection::vec(dentro.clone(), 0..5).prop_map(Value::Array),
+                prop::collection::vec(("[a-z:,{ ]{0,4}", dentro), 0..5)
+                    .prop_map(|v| Value::Object(v.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        /// Sem chave repetida nem número reescrito, o formatado é o `to_string_pretty`.
+        #[test]
+        fn formatar_igual_ao_pretty(v in valor_json()) {
+            let f = formatar(&serde_json::to_string(&v).unwrap(), MAX_FORMATADO);
+            prop_assert_eq!(f.texto, serde_json::to_string_pretty(&v).unwrap());
+            prop_assert!(!f.truncado);
+        }
+    }
+
+    #[test]
+    fn janela_funda_nao_cresce_com_a_profundidade() {
+        // 1000 níveis de objeto com chave de 990 bytes (~1 MB): cada linha levava o caminho
+        // inteiro, e a janela de 1000 linhas passava de 900 MB.
+        let k = "k".repeat(990);
+        let prof = MAX_PROFUNDIDADE - 1;
+        let reg = format!(
+            "{}0{}\n",
+            format!("{{\"{k}\":").repeat(prof),
+            "}".repeat(prof)
+        );
+        let mut a = arvore(&reg);
+        assert_eq!(a.revelar(0, reg.find('0').unwrap()), Some(prof));
+        let linhas = a.janela(0, 1_000);
+        assert_eq!(linhas.len(), prof + 1);
+        let bytes = serde_json::to_vec(&linhas).unwrap().len();
+        // Cada linha: prévia e chave de até `MAX_PREVIA` bytes e campos de tamanho fixo.
+        assert!(bytes < linhas.len() * (2 * MAX_PREVIA + 300), "{bytes} B");
+        assert_eq!(
+            linhas[1].chave.as_deref(),
+            Some(format!("{}…", &k[..MAX_PREVIA]).as_str())
+        );
+        // O caminho completo sai sob demanda, para uma linha só.
+        assert_eq!(a.caminho(prof).unwrap().0.len(), prof);
+        let m = a.migalhas(prof).unwrap();
+        assert_eq!(m.len(), prof);
+        assert!(m.iter().all(|s| s.len() <= MAX_PREVIA + 3));
+    }
+
+    #[test]
+    fn alternar_so_analisa_o_que_abre() {
+        // Abrir o registro de uma cadeia funda analisa só a raiz e o 1º nível.
+        let mut a = arvore(&cadeias(1, MAX_PROFUNDIDADE - 1));
+        assert!(a.alternar(0));
+        assert_eq!(a.abertos[&0].nos.len(), 2);
+        assert!(a.alternar(1));
+        assert_eq!(a.abertos[&0].nos.len(), 3);
+
+        // Registro largo: no máximo `MAX_NOS` nós, e a linha diz quantos ficaram de fora.
+        let n = MAX_NOS + 10;
+        let mut a = arvore(&format!("[{}0]\n", "0,".repeat(n - 1)));
+        assert!(a.alternar(0));
+        assert_eq!(a.abertos[&0].nos.len(), MAX_NOS);
+        assert_eq!(a.total(), MAX_NOS);
+        let raiz = &a.janela(0, 1)[0];
+        assert_eq!((raiz.filhos, raiz.omitidos), (n, n - (MAX_NOS - 1)));
+        assert_eq!(
+            a.janela(MAX_NOS - 1, 5).len(),
+            1,
+            "a lista acaba no último nó"
+        );
     }
 }
