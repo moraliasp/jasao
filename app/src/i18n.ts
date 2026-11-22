@@ -69,6 +69,10 @@ const pt = {
   itens: ["item", "itens"],
   byte: (n: string) => `byte ${n}`,
   inicio: "Início",
+  recentes: {
+    titulo: "Recentes",
+    sumiu: (nome: string) => `${nome} não existe mais e saiu dos recentes.`,
+  },
   busca: {
     rotulo: "Buscar no arquivo",
     dica: "Buscar campo ou valor",
@@ -225,6 +229,10 @@ const en: Textos = {
   itens: ["item", "items"],
   byte: (n) => `byte ${n}`,
   inicio: "Home",
+  recentes: {
+    titulo: "Recent",
+    sumiu: (nome: string) => `${nome} no longer exists and was removed from Recent.`,
+  },
   busca: {
     rotulo: "Search the file",
     dica: "Search field or value",

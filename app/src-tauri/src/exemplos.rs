@@ -20,11 +20,6 @@ pub fn embutido(caminho: &str) -> Option<&'static [u8]> {
     EXEMPLOS.iter().find(|(n, _)| *n == nome).map(|(_, b)| *b)
 }
 
-/// O que abrir ao iniciar: o arquivo da linha de comando ou, sem ele, o primeiro exemplo.
-pub fn inicial(argumento: Option<String>) -> String {
-    argumento.unwrap_or_else(|| format!("{PREFIXO}{}", EXEMPLOS[0].0))
-}
-
 #[cfg(test)]
 mod testes {
     use super::*;
@@ -58,15 +53,6 @@ mod testes {
             saida.extend(l.resultados.into_iter().map(|r| r.json))
         });
         (saida, r.erros)
-    }
-
-    #[test]
-    fn sem_arquivo_abre_o_exemplo_com_arquivo_nunca() {
-        assert_eq!(inicial(None), "exemplo:historia");
-        assert!(embutido(&inicial(None)).is_some());
-        let real = "/dados/eventos.jsonl".to_string();
-        assert_eq!(inicial(Some(real.clone())), real);
-        assert!(embutido(&inicial(Some(real))).is_none());
     }
 
     #[test]

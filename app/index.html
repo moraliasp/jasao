@@ -204,6 +204,12 @@
       .sem-arquivo h1 { margin: 0; font-size: 18px; color: var(--bar-fg); }
       .sem-arquivo p { margin: 0; max-width: 42ch; }
       .soltar { position: fixed; inset: 8px; z-index: 50; display: grid; place-content: center; border: 2px dashed var(--accent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 12%, color-mix(in srgb, var(--page-bg) 85%, transparent)); color: var(--accent); font-size: 16px; font-weight: 600; pointer-events: none; }
+      .sem-arquivo .recentes { display: grid; gap: 6px; margin-top: 18px; width: min(460px, 90vw); text-align: left; }
+      .sem-arquivo .recentes h2 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--bar-muted); }
+      .sem-arquivo .recentes ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+      .sem-arquivo .recentes button { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--bar-fg); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+      .sem-arquivo .recentes button:hover, .sem-arquivo .recentes button:focus-visible { background: var(--hover); }
+      .sem-arquivo .recentes .pasta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bar-muted); }
     </style>
   </head>
   <body>
@@ -240,6 +246,7 @@
       <h1 id="sem-arquivo-titulo"></h1>
       <p id="sem-arquivo-dica"></p>
       <button class="btn" id="sem-arquivo-abrir" type="button"></button>
+      <nav class="recentes" id="recentes" hidden></nav>
     </section>
     <div class="soltar" id="soltar" hidden></div>
     <main id="area" role="tabpanel">

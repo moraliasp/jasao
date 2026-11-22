@@ -66,7 +66,7 @@ Cada fase termina com algo utilizável. Fatias seguem `<app>/<tema>/<sub-tema>`.
 Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gerador de arquivos de teste grandes.
 
 ### Fase 1: visualizador
-- **Abrir:** arrastar, associação de arquivo, linha de comando, área de transferência, abas, arquivos recentes. Feitos: linha de comando, arrastar e abas (22/11/2026).
+- **Abrir:** arrastar, associação de arquivo, linha de comando, área de transferência, abas, arquivos recentes. Feitos: linha de comando, arrastar e abas (22/11/2026); associação de `.json`, `.jsonl` e `.ndjson` como visualizador alternativo, sem tomar o padrão do sistema, e recentes (os 10 últimos, gravados só na máquina; ver decisoes.md).
 - **Árvore:** virtualizada, expandir por nível, migalhas do caminho, ir para linha, marcadores.
 - **Texto cru:** com realce, sincronizado com a árvore (clicar num leva ao outro).
 - **Tabela:** JSONL e listas de objetos viram colunas por caminho; ordenar, fixar e esconder colunas.
