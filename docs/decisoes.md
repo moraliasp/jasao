@@ -254,6 +254,16 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Achado:** o `jaq` aceita `NaN` como literal (vira `null`), mas o `nucleo` o trata como inválido. A linha inválida de "NaN" virou "vírgula decimal" para a contagem bater nos dois. A divergência fica como pendência.
 
+## Busca, copiar caminho e jq na interface (Fase 1, 22/11/2026)
+
+**Busca:** barra própria abaixo da barra de modos, aberta por ⌘F; Enter / ⇧Enter / ⌘G / ⇧⌘G andam pelos achados, Esc volta o foco à visão. O comando roda `nucleo::busca` numa thread, emite lotes por evento com a geração da busca e guarda o `AtomicBool` para cancelar ao digitar de novo ou fechar; o front descarta evento de geração velha. Até 1 milhão de achados navegáveis (a contagem segue até o fim); a navegação começa no primeiro achado do arquivo, não no mais próximo da seleção. Na árvore o destaque fica na prévia do valor; no Texto, sobre a linha. Os achados viram marcas na régua. Regex inválida limpa os achados e mostra o erro no campo.
+
+**Copiar caminho:** os textos vêm do núcleo (`Arvore::caminho` e `Arvore::valor`, comandos `caminhos` e `valor`), não do front; o caminho que o front já montava fica só no rótulo acessível da linha. Menu de contexto em HTML (botão direito, tecla Menu ou ⇧F10), com setas, Home/End e Esc; ⇧⌘C copia o caminho jq e ⌘C copia o valor quando não há texto selecionado (com seleção, ⌘C fica com o navegador). A escrita usa `navigator.clipboard.write` com `ClipboardItem` de promessa, para o WebKit aceitar a escrita dentro do gesto mesmo com o texto chegando depois do `invoke`: sem plugin e sem permissão nova. Valor acima de 16 MB é recusado. A confirmação aparece na barra de status por 2,5 s.
+
+**Consulta jq:** campo na mesma faixa da busca, aberto por ⌘J. Roda sempre sobre o arquivo **original** (uma consulta nova não encadeia sobre o resultado anterior). `consultar` compila o filtro (erro de sintaxe volta com linha e coluna e o front seleciona o trecho no campo), escolhe modo documento para JSON único ou de várias linhas e JSONL para o resto, e grava os resultados numa thread num JSONL temporário (`jasao-consulta-<pid>-<geração>-<nanos>.jsonl`, criado com `create_new` e 0600). No fim, o temporário abre na visão atual como um arquivo comum, sem passar pelo painel de entrada; "Voltar ao arquivo" reabre o original. O temporário é apagado ao voltar, numa consulta nova, ao cancelar e ao sair do app; por isso cancelar uma consulta feita por cima de um resultado aberto volta ao arquivo original.
+
+**Limites conhecidos:** sem teto de tempo na interface (o usuário cancela); filtro que gira sem entregar resultado só para quando termina, e recursão sem fundo ainda aborta o processo inteiro (o processo filho recomendado na seção da consulta jq ficou para outra fatia). No Windows, um temporário aberto pela visão pode não ser apagado. O destaque do erro de sintaxe usa o comprimento em bytes da faixa, aproximado para texto fora do ASCII.
+
 ## Modo Estrutura (Fase 2, 22/11/2026)
 
 **O que é:** terceiro modo ao lado de Árvore e Texto (⌘3), com a estrutura inferida pelo `nucleo::estrutura`: uma linha por caminho (campo recuado pela profundidade | tipos vistos | presença) e, depois dos caminhos, uma linha por variante de cada discriminador (`.campo = "valor"` | sempre / às vezes | N registros). Segue a tabela do `docs/mockup-json.html`. O front não infere nada: `app/src/estrutura.ts` só formata o que o comando devolve.
@@ -263,6 +273,8 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Presença:** campo = "todos" ou "N de M" (M = objetos onde o pai apareceu), opcional em destaque; `[]` = "N itens em M listas"; mapa (`*`) = "N entradas em M objetos". Vários tipos no mesmo caminho mostram a contagem de cada um.
 
 **Ir para a ocorrência:** Enter ou duplo clique troca para a Árvore no registro da 1ª ocorrência (`Contagem::primeira()`, a linha base 0, que na Árvore é o índice do registro). Vai ao registro, não ao nó exato.
+
+**Com busca, jq e Ir para linha:** a Estrutura não tem registros. Achado da busca e Ir para linha trocam para a Árvore; o resultado do jq abre na Estrutura do arquivo de resultado; Esc na barra devolve o foco à Estrutura.
 
 **Teclado e leitor de tela:** `role=listbox` com `aria-activedescendant`, linhas `role=option` com rótulo completo (caminho, tipos, presença, opcional); setas, PgUp/PgDn, Home/End, Enter. O resumo (`role=status`) diz quantos caminhos e registros e que Enter abre a Árvore. Copiar caminho copia o caminho da linha.
 
