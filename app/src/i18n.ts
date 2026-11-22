@@ -2,6 +2,15 @@
 const pt = {
   lang: "pt-BR",
   abrir: "Abrir…",
+  exemplos: {
+    rotulo: "Exemplos embutidos",
+    aviso: "Exemplo embutido no Jasão: nenhum arquivo seu está aberto.",
+    alternar: "Escolher exemplo",
+    historia: "História do JSON",
+    vitrine: "Vitrine do Jasão",
+    nome: (n: string) => `${n} (exemplo)`,
+    abrirProprio: "Abrir arquivo próprio…",
+  },
   abrindo: "Abrindo…",
   valores: "Valores",
   arvore: "Árvore",
@@ -91,6 +100,15 @@ type Textos = typeof pt;
 const en: Textos = {
   lang: "en",
   abrir: "Open…",
+  exemplos: {
+    rotulo: "Built-in examples",
+    aviso: "Example built into Jasão: none of your files is open.",
+    alternar: "Choose example",
+    historia: "History of JSON",
+    vitrine: "Jasão showcase",
+    nome: (n: string) => `${n} (example)`,
+    abrirProprio: "Open your own file…",
+  },
   abrindo: "Opening…",
   valores: "Values",
   arvore: "Tree",
