@@ -3,10 +3,12 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
-use nucleo::Arvore;
+mod exemplos;
+
 use nucleo::arvore::Linha;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
+use nucleo::{ArquivoLinhas, Arvore};
 use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
@@ -70,8 +72,8 @@ impl Estado {
 
 /// Caminho passado na linha de comando (`app <arquivo>`), se houver.
 #[tauri::command]
-fn arquivo_inicial() -> Option<String> {
-    std::env::args().nth(1)
+fn arquivo_inicial() -> String {
+    exemplos::inicial(std::env::args().nth(1))
 }
 
 /// Abre o arquivo, constrói o índice e devolve o número de registros (= linhas visíveis).
@@ -86,7 +88,10 @@ async fn abrir<R: Runtime>(
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<usize, String> {
-    let arvore = Arvore::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?;
+    let arvore = match exemplos::embutido(&caminho) {
+        Some(bytes) => Arvore::new(ArquivoLinhas::estatico(bytes)),
+        None => Arvore::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?,
+    };
     let total = arvore.total();
     let arquivo = arvore.compartilhado();
     let conteudo = resumo::conteudo(&arquivo);
