@@ -32,8 +32,7 @@ interface Linha {
   irmaos: number;
   expansivel: boolean;
   aberto: boolean;
-  caminho: string;
-  migalhas: string[];
+  omitidos: number; // filhos fora da árvore pelo teto de nós do registro
   faixa: [number, number];
 }
 
@@ -148,7 +147,8 @@ function valor(l: Linha): string {
     return `<span class="err">${icone("alert")}<span>${esc(msg)}</span></span><span class="val dim">${previa(l)}</span>`;
   }
   if (l.tipo === "objeto" || l.tipo === "lista") {
-    const n = plural(l.filhos, l.tipo === "objeto" ? t.campos : t.itens);
+    const n = plural(l.filhos, l.tipo === "objeto" ? t.campos : t.itens) +
+      (l.omitidos ? ` · ${t.mostrando(fmt(l.filhos - l.omitidos))}` : "");
     const cru = l.prof === 0 && !l.aberto ? ` ${previa(l)}` : "";
     return `<span class="val dim">${n}${cru}</span>`;
   }
@@ -169,7 +169,7 @@ function linhaHtml(v: number, l: Linha | undefined): string {
     aria-selected="${v === sel}"${l.expansivel ? ` aria-expanded="${l.aberto}"` : ""}
     ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}" aria-setsize="${l.irmaos}"`}
     style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${esc(chave(l))}</span>${valor(l)}
-    <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(l.caminho)}">${icone("copy")}</button></div>`;
+    <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(chave(l))}">${icone("copy")}</button></div>`;
 }
 
 const ponto = (c: string | null) => (c === null ? "" : `<i class="pt ${c}" aria-hidden="true"></i>`);
@@ -198,6 +198,8 @@ function desenhar(): void {
 }
 const agendar = () => (quadro ||= requestAnimationFrame(desenhar));
 
+let migalhasDe = ""; // doc:versão:linha das migalhas mostradas (vêm do Rust só para a seleção)
+
 /** Migalhas e botões do rodapé da seleção, iguais nas duas visões. */
 function rodape(): void {
   if (modo === "estrutura") {
@@ -205,13 +207,25 @@ function rodape(): void {
     copiar.disabled = !it;
     verFormatado.disabled = true;
     migalhas.innerHTML = it ? `<li>${esc(it.caminho)}</li>` : "";
+    migalhasDe = "";
     return;
   }
   copiar.disabled = !atual;
   verFormatado.disabled = !atual || atual.erro !== null;
-  migalhas.innerHTML = atual
-    ? [t.linha(fmt(atual.registro + 1)), ...atual.migalhas].map((m) => `<li>${esc(m)}</li>`).join("")
-    : "";
+  const de = atual ? `${docAtivo()}:${versao}:${sel}` : "";
+  if (de === migalhasDe) return;
+  migalhasDe = de;
+  if (!atual) {
+    migalhas.innerHTML = "";
+    return;
+  }
+  const inicio = t.linha(fmt(atual.registro + 1));
+  migalhas.innerHTML = `<li>${esc(inicio)}</li>`;
+  chamar<string[] | null>("migalhas", { v: sel })
+    .then((m) => {
+      if (migalhasDe === de) migalhas.innerHTML = [inicio, ...(m ?? [])].map((x) => `<li>${esc(x)}</li>`).join("");
+    })
+    .catch(() => {}); // doc fechado no meio: o próximo desenho refaz
 }
 
 const mostrarLinha = (v: number) => mostrarEm(arvore, v, total, ALTURA);
@@ -499,7 +513,9 @@ async function abrirFormatado(): Promise<void> {
   const dialogo = $<HTMLDialogElement>("formatado");
   $("formatado-titulo").textContent = `${t.registroFormatado} · ${t.linha(fmt(atual.registro + 1))}`;
   try {
-    $("formatado-texto").textContent = await chamar<string>("formatado", { registro: atual.registro });
+    const f = await chamar<{ texto: string; truncado: boolean }>("formatado", { registro: atual.registro });
+    $("formatado-texto").textContent = f.texto;
+    if (f.truncado) $("formatado-titulo").textContent += ` · ${t.formatadoTruncado}`;
     dialogo.showModal();
   } catch (erro) {
     status.textContent = `${t.erro}: ${erro}`;
