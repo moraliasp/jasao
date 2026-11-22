@@ -33,8 +33,11 @@ fn gravar(arquivo: &Path, lista: &[String]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Põe `caminho` no topo (sobe se já estava) e corta no limite.
+/// Põe `caminho` no topo (sobe se já estava) e corta no limite. Guarda o caminho canônico: o
+/// mesmo arquivo pedido por `/tmp/a` e `/private/tmp/a` (ou por link) é um recente só.
 pub fn adicionar(arquivo: &Path, caminho: &str) -> std::io::Result<Vec<String>> {
+    let canonico = std::fs::canonicalize(caminho).map(|p| p.to_string_lossy().into_owned());
+    let caminho = canonico.as_deref().unwrap_or(caminho);
     let mut lista = ler(arquivo);
     lista.retain(|c| c != caminho);
     lista.insert(0, caminho.to_owned());
@@ -115,6 +118,19 @@ mod testes {
         }
         assert_eq!(adicionar(&a, "/a").unwrap(), ["/a", "/c", "/b"]);
         assert_eq!(ler(&a), ["/a", "/c", "/b"]);
+    }
+
+    #[test]
+    fn mesmo_arquivo_por_link_e_um_so() {
+        let (d, a) = arquivo();
+        let real = d.path().join("x.json");
+        std::fs::write(&real, "{}").unwrap();
+        let link = d.path().join("link.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        adicionar(&a, real.to_str().unwrap()).unwrap();
+        let l = adicionar(&a, link.to_str().unwrap()).unwrap();
+        assert_eq!(l.len(), 1, "{l:?}");
+        assert_eq!(l[0], std::fs::canonicalize(&real).unwrap().to_string_lossy());
     }
 
     #[test]

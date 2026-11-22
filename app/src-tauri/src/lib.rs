@@ -539,7 +539,9 @@ mod testes {
     #[test]
     fn recentes_pelo_ipc() {
         let pasta = tempfile::tempdir().unwrap();
-        let arq = pasta.path().join("a.jsonl");
+        // Canônica: os recentes guardam o caminho canônico (no macOS, /var é /private/var).
+        let raiz = std::fs::canonicalize(pasta.path()).unwrap();
+        let arq = raiz.join("a.jsonl");
         std::fs::write(&arq, b"{\"a\":1}\n").unwrap();
         let lista = pasta.path().join("dados").join("recentes.json");
         let app = comandos(mock_builder())
@@ -567,7 +569,7 @@ mod testes {
         let caminho = arq.to_str().unwrap();
         assert_eq!(chamar("recentes", json!({})), json!([]));
         chamar("abrir", json!({ "caminho": caminho }));
-        let pasta_txt = pasta.path().to_str().unwrap();
+        let pasta_txt = raiz.to_str().unwrap();
         assert_eq!(
             chamar("recentes", json!({})),
             json!([{"caminho": caminho, "nome": "a.jsonl", "pasta": pasta_txt}])
