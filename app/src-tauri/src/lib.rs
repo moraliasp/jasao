@@ -1,20 +1,47 @@
 //! Casca do app: guarda o documento aberto e entrega janelas da árvore à interface.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 
 use nucleo::Arvore;
 use nucleo::arvore::Linha;
-use tauri::{Builder, Manager, Runtime, State};
+use nucleo::resumo::{self, Conteudo, Progresso};
+use serde::Serialize;
+use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
 /// Teto de linhas por pedido: a interface pede janelas, nunca o arquivo.
 const MAX_JANELA: usize = 1_000;
 
 #[derive(Default)]
-struct Estado(Mutex<Option<Arvore>>);
+struct Estado {
+    arvore: Mutex<Option<Arvore>>,
+    varredura: Mutex<Varredura>,
+}
+
+/// Varredura de linhas inválidas do arquivo aberto (roda em 2º plano, ver `abrir`).
+#[derive(Default)]
+struct Varredura {
+    /// Sobe a cada `abrir`: progresso de um arquivo anterior é descartado.
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+    conteudo: Option<Conteudo>,
+    progresso: Option<Progresso>,
+    /// Chega depois do fim da varredura (ver `resumo::campos`).
+    campos: Option<usize>,
+}
+
+/// Evento `varredura` e parte do `resumo`.
+#[derive(Clone, Serialize)]
+struct Andamento {
+    geracao: u64,
+    #[serde(flatten)]
+    progresso: Progresso,
+    campos: Option<usize>,
+}
 
 impl Estado {
     fn com<T>(&self, f: impl FnOnce(&mut Arvore) -> T) -> Result<T, String> {
-        let mut guarda = self.0.lock().map_err(|e| e.to_string())?;
+        let mut guarda = self.arvore.lock().map_err(|e| e.to_string())?;
         Ok(f(guarda.as_mut().ok_or("nenhum arquivo aberto")?))
     }
 }
@@ -27,14 +54,102 @@ fn arquivo_inicial() -> Option<String> {
 
 /// Abre o arquivo, constrói o índice e devolve o número de registros (= linhas visíveis).
 /// `async` para rodar fora da thread principal: o índice de 1 GB leva ~150 ms.
+/// Dispara a varredura de inválidas numa thread própria, que emite `varredura` com o progresso;
+/// a do arquivo anterior é cancelada.
 // shortcut: aceita qualquer caminho vindo da interface (só leitura); passar a concessões por
 // diálogo/arraste como no Leve quando a interface carregar conteúdo de fora.
 #[tauri::command]
-async fn abrir(caminho: String, estado: State<'_, Estado>) -> Result<usize, String> {
+async fn abrir<R: Runtime>(
+    caminho: String,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<usize, String> {
     let arvore = Arvore::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?;
     let total = arvore.total();
-    *estado.0.lock().map_err(|e| e.to_string())? = Some(arvore);
+    let arquivo = arvore.compartilhado();
+    let conteudo = resumo::conteudo(&arquivo);
+    let linhas = arquivo.linhas();
+    // JSON em várias linhas: "linhas inválidas" não faz sentido (ver `Conteudo`).
+    let pular = conteudo == Conteudo::JsonVariasLinhas;
+    let cancelar = Arc::new(AtomicBool::new(false));
+    let geracao = {
+        let mut v = estado.varredura.lock().map_err(|e| e.to_string())?;
+        v.cancelar.store(true, Relaxed);
+        v.geracao += 1;
+        v.cancelar = Arc::clone(&cancelar);
+        v.conteudo = Some(conteudo);
+        v.progresso = Some(Progresso {
+            varridas: if pular { linhas } else { 0 },
+            total: linhas,
+            invalidas: 0,
+            fim: pular,
+            cancelado: false,
+        });
+        v.campos = None;
+        v.geracao
+    };
+    *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
+    std::thread::spawn(move || {
+        // Grava no estado e emite, se o arquivo ainda for este.
+        let avisar = |f: &dyn Fn(&mut Varredura)| {
+            let estado = app.state::<Estado>();
+            let Ok(mut v) = estado.varredura.lock() else {
+                return;
+            };
+            if v.geracao != geracao {
+                return;
+            }
+            f(&mut v);
+            let (Some(progresso), campos) = (v.progresso, v.campos) else {
+                return;
+            };
+            drop(v);
+            let _ = app.emit(
+                "varredura",
+                Andamento {
+                    geracao,
+                    progresso,
+                    campos,
+                },
+            );
+        };
+        if !pular {
+            resumo::varrer(&arquivo, &cancelar, |p| avisar(&|v| v.progresso = Some(p)));
+        }
+        if let Some(n) = resumo::campos(&arquivo, &cancelar) {
+            avisar(&|v| v.campos = Some(n));
+        }
+    });
     Ok(total)
+}
+
+#[derive(Serialize)]
+struct Resumo {
+    conteudo: Conteudo,
+    bytes: usize,
+    registros: usize,
+    #[serde(flatten)]
+    andamento: Andamento,
+}
+
+/// Números do painel de entrada; o progresso depois chega pelo evento `varredura`.
+#[tauri::command]
+fn resumo(estado: State<'_, Estado>) -> Result<Resumo, String> {
+    let (bytes, registros) = estado.com(|a| (a.arquivo().bytes().len(), a.arquivo().linhas()))?;
+    let v = estado.varredura.lock().map_err(|e| e.to_string())?;
+    let (Some(conteudo), Some(progresso)) = (v.conteudo, v.progresso) else {
+        return Err("nenhum arquivo aberto".into());
+    };
+    Ok(Resumo {
+        conteudo,
+        bytes,
+        registros,
+        andamento: Andamento {
+            geracao: v.geracao,
+            progresso,
+            campos: v.campos,
+        },
+    })
 }
 
 /// Linhas visíveis `[inicio, inicio + quantidade)`, prontas para desenhar. Vão como JSON:
@@ -126,6 +241,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
         .invoke_handler(tauri::generate_handler![
             arquivo_inicial,
             abrir,
+            resumo,
             linhas,
             alternar,
             pai,
@@ -187,6 +303,19 @@ mod testes {
         assert!(chamar("linhas", json!({"inicio": 0, "quantidade": 10})).is_err());
         let caminho = f.path().to_str().unwrap();
         assert_eq!(chamar("abrir", json!({ "caminho": caminho })), Ok(json!(2)));
+        // A varredura roda em outra thread: espera o fim pelo próprio comando.
+        let resumo = (0..200)
+            .map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                chamar("resumo", json!({})).unwrap()
+            })
+            .find(|r| r["campos"] != Value::Null)
+            .expect("varredura não terminou");
+        assert_eq!(
+            resumo,
+            json!({"conteudo": "objetos", "bytes": 22, "registros": 2, "geracao": 1,
+                   "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false, "campos": 1})
+        );
         assert_eq!(chamar("alternar", json!({"v": 0})), Ok(json!(3)));
         let linhas = chamar("linhas", json!({"inicio": 0, "quantidade": 10})).unwrap();
         assert_eq!(linhas[1]["caminho"], ".a");
