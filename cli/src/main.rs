@@ -8,8 +8,13 @@
 //!                                         resultados em JSONL no stdout, erros por linha no stderr
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
+//!
+//! Com o stdout num terminal, `janela`, `buscar` e `inferir` trocam controles (C0 menos
+//! `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON hostil
+//! não manda sequência ESC/CSI/OSC ao terminal nem inverte o texto. Redirecionada (arquivo, pipe),
+//! a saída é fiel byte a byte.
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -114,9 +119,54 @@ fn linhas(arquivo: &str) -> Resultado {
     Ok(())
 }
 
+/// Saída que, ligada, troca controles e invisíveis por `\u{..}` (ver o topo do arquivo).
+struct Terminal<W: Write> {
+    out: W,
+    neutralizar: bool,
+}
+
+/// O stdout, neutralizado se for terminal.
+fn saida() -> Terminal<io::BufWriter<io::StdoutLock<'static>>> {
+    let stdout = io::stdout();
+    Terminal {
+        neutralizar: stdout.is_terminal(),
+        out: io::BufWriter::new(stdout.lock()),
+    }
+}
+
+/// Controle que mexe no terminal, ou bidi/largura zero que engana quem lê.
+fn perigoso(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t')
+        || matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+impl<W: Write> Write for Terminal<W> {
+    // Cada chamada traz um pedaço inteiro (linha ou argumento do `write!`); UTF-8 inválido vira
+    // U+FFFD, que o terminal mostraria do mesmo jeito.
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if !self.neutralizar {
+            return self.out.write(buf);
+        }
+        let texto = String::from_utf8_lossy(buf);
+        let mut resto = &texto[..];
+        while let Some(i) = resto.find(perigoso) {
+            let c = resto[i..].chars().next().unwrap_or_default();
+            self.out.write_all(&resto.as_bytes()[..i])?;
+            write!(self.out, "\\u{{{:x}}}", c as u32)?;
+            resto = &resto[i + c.len_utf8()..];
+        }
+        self.out.write_all(resto.as_bytes())?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
 fn janela(arquivo: &str, inicio: usize, quantidade: usize) -> Resultado {
     let a = abrir(arquivo)?;
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = saida();
     for linha in a.janela(inicio, quantidade) {
         out.write_all(linha)?;
         out.write_all(b"\n")?;
@@ -163,7 +213,7 @@ fn buscar(op: OpcoesBusca) -> Resultado {
     let busca = Busca::nova(op.padrao, op.regex, op.ignorar_caixa)?;
     let a = abrir(op.arquivo)?;
     let t = Instant::now();
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = saida();
     let (mut impressos, mut erro) = (0, None);
     let resumo = busca.executar(a.bytes(), &AtomicBool::new(false), |lote| {
         for achado in lote.achados {
@@ -305,7 +355,7 @@ fn inferir(arquivo: &str, json: bool) -> Resultado {
     let caminhos = r.caminhos();
     let discriminadores = r.discriminadores();
     let linha = |c: nucleo::estrutura::Contagem| c.primeira().map(|l| l + 1);
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = saida();
     if json {
         let num = |x: Option<u64>| x.map_or("null".into(), |v| v.to_string());
         let lista = |v: Vec<String>| v.join(",");
@@ -512,4 +562,43 @@ fn erros(arquivo: &str, json: bool, max: usize) -> Result<bool, Box<dyn std::err
         r.total as f64 / 1e6,
     );
     Ok(r.invalidas > 0)
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    fn escrito(neutralizar: bool, partes: &[&[u8]]) -> Vec<u8> {
+        let mut t = Terminal {
+            out: Vec::new(),
+            neutralizar,
+        };
+        for p in partes {
+            t.write_all(p).unwrap();
+        }
+        t.out
+    }
+
+    #[test]
+    fn terminal_neutraliza_escapes_controles_e_invisiveis() {
+        // Título (OSC 0), limpar tela (CSI 2J), link OSC 8, CSI em C1, CR, DEL, RLO e ZWSP.
+        let hostil = "{\"a\":\"\x1b]0;pwned\x07\x1b[2J\x1b]8;;http://x\x1b\\\\l\u{9b}31m\r\x7f\u{202e}fdp.exe\u{200b}\"}\tok";
+        let s = String::from_utf8(escrito(true, &[hostil.as_bytes(), b"\n"])).unwrap();
+        assert_eq!(
+            s,
+            "{\"a\":\"\\u{1b}]0;pwned\\u{7}\\u{1b}[2J\\u{1b}]8;;http://x\\u{1b}\\\\l\\u{9b}31m\\u{d}\\u{7f}\\u{202e}fdp.exe\\u{200b}\"}\tok\n"
+        );
+        assert!(!s.chars().any(perigoso));
+    }
+
+    #[test]
+    fn terminal_desligado_e_fiel_ao_byte() {
+        let cru: &[u8] = b"\x1b[2J \xff \xe2\x80\xae";
+        assert_eq!(escrito(false, &[cru]), cru);
+        // Ligado, UTF-8 inválido vira U+FFFD (o terminal mostraria igual).
+        assert_eq!(
+            escrito(true, &[cru]),
+            "\\u{1b}[2J \u{fffd} \\u{202e}".as_bytes()
+        );
+    }
 }

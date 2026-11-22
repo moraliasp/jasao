@@ -59,7 +59,7 @@ test("itens: um por caminho e um por variante, com a 1ª linha para ir à Árvor
   assert.ok(!it[5].html.includes("<b>"));
   // Variante: campo = valor, sempre/às vezes.
   assert.equal(it[6].caminho, ".tipo");
-  assert.ok(it[6].html.includes(`.tipo = &quot;x&quot;`));
+  assert.ok(it[6].html.includes(`.tipo = "x"`));
   assert.ok(it[6].html.includes(`${t.estrutura.opcionais}: z (1)`));
 });
 
