@@ -15,6 +15,7 @@ import { type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { criarConsulta } from "./consulta";
+import { criarRecentes } from "./recentes";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
 import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml } from "./texto";
 
@@ -664,15 +665,18 @@ function prepararRegua(): void {
   regua.busca(busca.ativa());
 }
 
-/** Abre `caminho` no documento da aba `a` (cria o documento se a aba ainda não tiver). */
-async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<void> {
+/** Abre `caminho` no documento da aba `a` (cria o documento se a aba ainda não tiver); diz se abriu. */
+async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<boolean> {
   if (a.doc !== null) consulta.abriu(caminho, a.doc);
   a.status = t.abrindo;
   if (a === abaAtiva()) status.textContent = t.abrindo;
   try {
     const inicio = performance.now();
     const r = await chamar<{ id: number; total: number }>("abrir", { caminho, id: a.doc });
-    if (!lista.includes(a)) return void chamar("fechar", { id: r.id }).catch(() => {}); // aba fechada no meio
+    if (!lista.includes(a)) {
+      void chamar("fechar", { id: r.id }).catch(() => {}); // aba fechada no meio
+      return false;
+    }
     const ms = fmt(Math.round(performance.now() - inicio));
     Object.assign(a, {
       doc: r.id, caminho, ms, visao, total: r.total, registros: r.total, sel: 0, atual: undefined, alvo: 0,
@@ -682,6 +686,7 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<void> {
     if (soma > AVISO_REGISTROS) a.status += ` · ${t.abasArquivos.memoria(fmt(soma))}`;
     if (a === abaAtiva()) ativar(ativa);
     else desenharAbas();
+    return true;
   } catch (erro) {
     const msg = `${t.erro}: ${erro}`;
     if (a.doc === null) {
@@ -693,6 +698,7 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo): Promise<void> {
       a.status = msg;
       if (a === abaAtiva()) status.textContent = msg;
     }
+    return false;
   }
 }
 
@@ -720,14 +726,25 @@ async function preparar(a: Aba, visao?: Modo): Promise<void> {
 }
 
 /** Abre o arquivo numa aba: a dele, se já estiver aberto; a ativa, se vazia; senão uma nova. */
-async function abrirEmAba(caminho: string): Promise<void> {
+async function abrirEmAba(caminho: string): Promise<boolean> {
   const j = lista.findIndex((a) => a.arquivo === caminho);
-  if (j >= 0) return ativar(j);
+  if (j >= 0) {
+    ativar(j);
+    return true;
+  }
   if (abaAtiva()?.arquivo !== null) novaAba();
   const a = abaAtiva()!;
   a.arquivo = caminho;
   desenharAbas();
-  await mostrar(caminho, a);
+  return mostrar(caminho, a);
+}
+
+/** Recente ou pedido do sistema: se não abriu porque o arquivo sumiu, sai dos recentes com aviso. */
+async function abrirPedido(caminho: string): Promise<void> {
+  if (await abrirEmAba(caminho)) return;
+  if (await invoke<boolean>("recente_ausente", { caminho })) {
+    status.textContent = t.recentes.sumiu(caminho.split(/[\\/]/).pop() ?? caminho);
+  }
 }
 
 function novaAba(): void {
@@ -1136,12 +1153,20 @@ void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {
   if (avisos.length) status.textContent = [abrir.length ? abaAtiva()?.status : "", ...avisos].filter(Boolean).join(" · ");
 });
 
-// Sem arquivo na linha de comando, o Rust devolve um exemplo embutido: abrem os dois, cada um numa aba.
+criarRecentes($("recentes"), (c) => void abrirPedido(c));
+
+// Pedidos do sistema com o app aberto (Finder, "Abrir com", menu Arquivo › Abrir recente,
+// 2ª instância): o aviso não leva caminho; cada um sai da fila uma vez, numa aba.
+void listen("abrir-arquivos", async () => {
+  for (const c of await invoke<string[]>("arquivos_pedidos")) await abrirPedido(c);
+});
+
+// Na abertura: os arquivos pedidos pelo sistema, cada um numa aba; sem nenhum, os exemplos embutidos.
 lista = [abaVazia()];
 ativar(0);
-invoke<string>("arquivo_inicial").then(async (caminho) => {
-  const iniciais = nomeExemplo(caminho) ? EXEMPLOS : [caminho];
-  for (const c of iniciais) await abrirEmAba(c);
+invoke<string[]>("arquivos_iniciais").then(async (pedidos) => {
+  const iniciais = pedidos.length ? pedidos : EXEMPLOS;
+  for (const c of iniciais) await (pedidos.length ? abrirPedido(c) : abrirEmAba(c));
   const j = lista.findIndex((a) => a.arquivo === iniciais[0]);
   if (j >= 0 && j !== ativa) ativar(j);
 });
