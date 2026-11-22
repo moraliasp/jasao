@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { criarBusca } from "./busca";
+import { criarExemplos } from "./exemplos";
 import { type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
@@ -435,11 +436,12 @@ async function mostrar(caminho: string, visao?: Modo): Promise<void> {
   consulta.abriu(caminho);
   aberto = caminho;
   status.textContent = t.abrindo;
-  const nome = caminho.split(/[\\/]/).pop() ?? caminho;
+  const nome = exemplos.nome(caminho);
   $("nome").textContent = nome;
   try {
     const inicio = performance.now();
     total = registros = await invoke<number>("abrir", { caminho });
+    exemplos.aberto(caminho);
     const ms = fmt(Math.round(performance.now() - inicio));
     sel = 0;
     atual = undefined;
@@ -740,6 +742,6 @@ $("abrir").addEventListener("click", async () => {
   if (typeof caminho === "string") await mostrar(caminho);
 });
 
-invoke<string | null>("arquivo_inicial").then((caminho) => {
-  if (caminho) void mostrar(caminho);
-});
+const exemplos = criarExemplos(mostrar, () => $("abrir").click());
+// Sem arquivo na linha de comando, o Rust devolve o primeiro exemplo embutido.
+invoke<string>("arquivo_inicial").then((caminho) => void mostrar(caminho));

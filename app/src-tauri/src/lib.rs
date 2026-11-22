@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod exemplos;
+
 use nucleo::arvore::Linha;
 use nucleo::consulta::{Consulta, LoteConsulta};
-use nucleo::linhas::ArquivoLinhas;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
-use nucleo::{Achado, Arvore, Busca};
+use nucleo::{Achado, ArquivoLinhas, Arvore, Busca};
 use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
@@ -186,8 +187,8 @@ impl Estado {
 
 /// Caminho passado na linha de comando (`app <arquivo>`), se houver.
 #[tauri::command]
-fn arquivo_inicial() -> Option<String> {
-    std::env::args().nth(1)
+fn arquivo_inicial() -> String {
+    exemplos::inicial(std::env::args().nth(1))
 }
 
 /// Abre o arquivo, constrói o índice e devolve o número de registros (= linhas visíveis).
@@ -196,13 +197,21 @@ fn arquivo_inicial() -> Option<String> {
 /// a do arquivo anterior é cancelada.
 // shortcut: aceita qualquer caminho vindo da interface (só leitura); passar a concessões por
 // diálogo/arraste como no Leve quando a interface carregar conteúdo de fora.
+/// Arquivo do disco ou exemplo embutido (`exemplo:…`), pelo mesmo caminho para `abrir` e `consultar`.
+fn abrir_linhas(caminho: &str) -> Result<ArquivoLinhas, String> {
+    match exemplos::embutido(caminho) {
+        Some(bytes) => Ok(ArquivoLinhas::estatico(bytes)),
+        None => ArquivoLinhas::abrir(caminho).map_err(|e| format!("{caminho}: {e}")),
+    }
+}
+
 #[tauri::command]
 async fn abrir<R: Runtime>(
     caminho: String,
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<usize, String> {
-    let arvore = Arvore::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?;
+    let arvore = Arvore::new(abrir_linhas(&caminho)?);
     let total = arvore.total();
     let arquivo = arvore.compartilhado();
     let conteudo = resumo::conteudo(&arquivo);
@@ -474,7 +483,7 @@ fn consultar<R: Runtime>(
             })
             .collect(),
     })?;
-    let arquivo = ArquivoLinhas::abrir(&caminho).map_err(|e| format!("{caminho}: {e}"))?;
+    let arquivo = abrir_linhas(&caminho)?;
     let documento = matches!(
         resumo::conteudo(&arquivo),
         Conteudo::JsonUnico | Conteudo::JsonVariasLinhas
@@ -936,5 +945,17 @@ mod testes {
         assert_eq!(chamar("abrir", json!({ "caminho": caminho })), Ok(json!(4)));
         assert_eq!(chamar("fechar_consulta", json!({})), Ok(Value::Null));
         assert!(!std::path::Path::new(&resultado).exists());
+        // Exemplo embutido também é consultável.
+        assert_eq!(
+            chamar(
+                "consultar",
+                json!({"filtro": ".tipo?", "caminho": "exemplo:vitrine"})
+            ),
+            Ok(json!(4))
+        );
+        let a = fim();
+        assert!(a["resultados"].as_u64().unwrap() > 1000, "{a}");
+        assert_eq!(chamar("fechar_consulta", json!({})), Ok(Value::Null));
+        assert!(!std::path::Path::new(a["arquivo"].as_str().unwrap()).exists());
     }
 }

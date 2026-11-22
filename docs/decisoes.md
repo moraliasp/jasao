@@ -240,6 +240,20 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Conferência:** navegador interno contra a ponte HTTP (atraso artificial de 1,5 s antes da cor) com JSONL fictícios: 60 mil linhas de 3 tipos com inválidas agrupadas (18.000 ×4 e 18.200 ×3 viram um balão de 7; 45.000 ×9; 54.000 ×1) e 20 mil linhas sem discriminador. Vistos: régua neutra e depois a cor, legenda, pontos na Árvore e no Texto, faixa, arraste, PgDn, clique em balão, claro e escuro, pt-BR e inglês, JSON único sem régua. A janela nativa não foi vista.
 
+## Exemplos embutidos (Fase 1, 22/11/2026)
+
+**O que é:** o app aberto sem arquivo mostra dois exemplos que vêm dentro do binário, como o Leve faz com o `sample:`. O primeiro é a história e a gramática do JSON (`historia.json`, em pt-BR, conferido contra RFC 4627, RFC 7159, RFC 8259, ECMA-404, RFC 6901 e RFC 9535, sem fato não verificado). O segundo é uma vitrine de tudo o que o app faz (`vitrine.jsonl`, 1.416 linhas). O registro-guia da vitrine sugere buscas, regex, jq e caminhos para testar. Com arquivo na linha de comando, os exemplos nunca aparecem.
+
+**Como abre:** o Rust decide (`exemplos::inicial`): sem argumento, `arquivo_inicial` devolve `exemplo:historia`. `abrir` reconhece o caminho sintético (`exemplos::embutido`) e monta um `ArquivoLinhas::estatico` sobre os bytes do `include_bytes!`. Daí em diante o caminho é o de qualquer arquivo: índice, varredura, régua, árvore, texto, busca, jq. Não se usa arquivo temporário porque nada vai para o disco e o app continua só leitura. Atalho conhecido: um arquivo de verdade chamado literalmente `exemplo:historia`, passado por caminho relativo na linha de comando, abre o exemplo.
+
+**Tela:** não há sistema de abas de arquivos. Uma barra abaixo do topo (`role=region`) diz que é um exemplo embutido. Ela tem um alternador de dois botões com `aria-pressed` (História do JSON / Vitrine do Jasão) e "Abrir arquivo próprio…", que chama o mesmo diálogo do "Abrir…". O nome no topo ganha "(exemplo)". Abrir um arquivo real substitui o exemplo e esconde a barra. Código em `app/src/exemplos.ts`; `main.ts` ganhou só três ganchos.
+
+**Por que a história é uma linha só:** JSON em várias linhas abre como texto linha a linha, e JSON em uma linha abre como `JsonUnico` (árvore de um registro). Para ler a história na Árvore, ela precisa ser `JsonUnico`.
+
+**Vitrine:** tem todos os tipos e os vazios, 12 níveis de aninhamento, um array de 1.000 itens, unicode e escapes (incluindo U+2028), uma string acima do teto de colunas do Texto, números extremos como texto cru (`-0`, `5e-324`, `1e400`), inteiros grandes que o jq devolve exatos, chave duplicada e chaves com `/` e `~`. São 1.400 registros de 4 tipos para colorir a régua e 6 linhas inválidas de propósito, 5 com motivos diferentes e 1 vazia. Os arquivos são gerados de forma determinística por `scripts/exemplos.py`, e os testes em `app/src-tauri/src/exemplos.rs` conferem cada capacidade e cada sugestão do guia pelo `nucleo`.
+
+**Achado:** o `jaq` aceita `NaN` como literal (vira `null`), mas o `nucleo` o trata como inválido. A linha inválida de "NaN" virou "vírgula decimal" para a contagem bater nos dois. A divergência fica como pendência.
+
 ## Busca, copiar caminho e jq na interface (Fase 1, 22/11/2026)
 
 **Busca:** barra própria abaixo da barra de modos, aberta por ⌘F; Enter / ⇧Enter / ⌘G / ⇧⌘G andam pelos achados, Esc volta o foco à visão. O comando roda `nucleo::busca` numa thread, emite lotes por evento com a geração da busca e guarda o `AtomicBool` para cancelar ao digitar de novo ou fechar; o front descarta evento de geração velha. Até 1 milhão de achados navegáveis (a contagem segue até o fim); a navegação começa no primeiro achado do arquivo, não no mais próximo da seleção. Na árvore o destaque fica na prévia do valor; no Texto, sobre a linha. Os achados viram marcas na régua. Regex inválida limpa os achados e mostra o erro no campo.
