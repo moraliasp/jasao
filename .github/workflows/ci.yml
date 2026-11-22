@@ -38,6 +38,9 @@ jobs:
         working-directory: app
       - run: pnpm build
         working-directory: app
+      # Lógica de front sem navegador (node tira os tipos do .ts sozinho).
+      - run: pnpm test
+        working-directory: app
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
