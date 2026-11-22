@@ -1,16 +1,19 @@
 //! Casca do app: guarda o documento aberto e entrega janelas da árvore à interface.
 
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 use nucleo::Arvore;
 use nucleo::arvore::Linha;
+use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
 use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
 /// Teto de linhas por pedido: a interface pede janelas, nunca o arquivo.
 const MAX_JANELA: usize = 1_000;
+/// Teto de baldes da régua (mais que isso não cabe em pixels).
+const MAX_BALDES: usize = 4_096;
 
 #[derive(Default)]
 struct Estado {
@@ -28,6 +31,11 @@ struct Varredura {
     progresso: Option<Progresso>,
     /// Chega depois do fim da varredura (ver `resumo::campos`).
     campos: Option<usize>,
+    /// Uma marca por registro (ver `nucleo::regua`): inválidas na 1ª passada, cor na 2ª.
+    marcas: Arc<[AtomicU8]>,
+    legenda: Option<Legenda>,
+    /// A 2ª passada acabou (com ou sem discriminador): a régua já tem as cores finais.
+    coloriu: bool,
 }
 
 /// Evento `varredura` e parte do `resumo`.
@@ -37,6 +45,20 @@ struct Andamento {
     #[serde(flatten)]
     progresso: Progresso,
     campos: Option<usize>,
+    legenda: Option<Legenda>,
+    coloriu: bool,
+}
+
+impl Varredura {
+    fn andamento(&self) -> Option<Andamento> {
+        Some(Andamento {
+            geracao: self.geracao,
+            progresso: self.progresso?,
+            campos: self.campos,
+            legenda: self.legenda.clone(),
+            coloriu: self.coloriu,
+        })
+    }
 }
 
 impl Estado {
@@ -71,7 +93,10 @@ async fn abrir<R: Runtime>(
     let linhas = arquivo.linhas();
     // JSON em várias linhas: "linhas inválidas" não faz sentido (ver `Conteudo`).
     let pular = conteudo == Conteudo::JsonVariasLinhas;
+    // Sem régua para um JSON só (decisão 2 do micronavegador): nem 2ª passada.
+    let colorir = !pular && conteudo != Conteudo::JsonUnico;
     let cancelar = Arc::new(AtomicBool::new(false));
+    let marcas: Arc<[AtomicU8]> = nucleo::regua::marcas(linhas).into();
     let geracao = {
         let mut v = estado.varredura.lock().map_err(|e| e.to_string())?;
         v.cancelar.store(true, Relaxed);
@@ -86,6 +111,9 @@ async fn abrir<R: Runtime>(
             cancelado: false,
         });
         v.campos = None;
+        v.marcas = Arc::clone(&marcas);
+        v.legenda = None;
+        v.coloriu = false;
         v.geracao
     };
     *estado.arvore.lock().map_err(|e| e.to_string())? = Some(arvore);
@@ -100,25 +128,35 @@ async fn abrir<R: Runtime>(
                 return;
             }
             f(&mut v);
-            let (Some(progresso), campos) = (v.progresso, v.campos) else {
+            let Some(andamento) = v.andamento() else {
                 return;
             };
             drop(v);
-            let _ = app.emit(
-                "varredura",
-                Andamento {
-                    geracao,
-                    progresso,
-                    campos,
-                },
-            );
+            let _ = app.emit("varredura", andamento);
         };
         if !pular {
-            resumo::varrer(&arquivo, &cancelar, |p| avisar(&|v| v.progresso = Some(p)));
+            resumo::varrer(&arquivo, &cancelar, &marcas, |p| {
+                avisar(&|v| v.progresso = Some(p))
+            });
         }
-        if let Some(n) = resumo::campos(&arquivo, &cancelar) {
-            avisar(&|v| v.campos = Some(n));
+        let inf = nucleo::estrutura::inferir(arquivo.bytes(), &cancelar, |_| {});
+        if inf.cancelado || cancelar.load(Relaxed) {
+            return;
         }
+        let campos = resumo::campos(&inf.resumo);
+        avisar(&|v| v.campos = campos);
+        let ds = inf.resumo.discriminadores();
+        let escolhido = nucleo::regua::escolher(&ds).filter(|_| colorir);
+        if let Some(d) = escolhido
+            && !nucleo::regua::colorir(&arquivo, d, &marcas, &cancelar)
+        {
+            return;
+        }
+        let legenda = escolhido.map(nucleo::regua::legenda);
+        avisar(&|v| {
+            v.legenda = legenda.clone();
+            v.coloriu = true;
+        });
     });
     Ok(total)
 }
@@ -137,19 +175,40 @@ struct Resumo {
 fn resumo(estado: State<'_, Estado>) -> Result<Resumo, String> {
     let (bytes, registros) = estado.com(|a| (a.arquivo().bytes().len(), a.arquivo().linhas()))?;
     let v = estado.varredura.lock().map_err(|e| e.to_string())?;
-    let (Some(conteudo), Some(progresso)) = (v.conteudo, v.progresso) else {
+    let (Some(conteudo), Some(andamento)) = (v.conteudo, v.andamento()) else {
         return Err("nenhum arquivo aberto".into());
     };
     Ok(Resumo {
         conteudo,
         bytes,
         registros,
-        andamento: Andamento {
-            geracao: v.geracao,
-            progresso,
-            campos: v.campos,
-        },
+        andamento,
     })
+}
+
+fn marcas_atuais(estado: &Estado) -> Result<Arc<[AtomicU8]>, String> {
+    Ok(Arc::clone(
+        &estado.varredura.lock().map_err(|e| e.to_string())?.marcas,
+    ))
+}
+
+/// A régua do micronavegador em até `k` baldes (ver `nucleo::regua::baldes`).
+#[tauri::command]
+fn regua(k: usize, estado: State<'_, Estado>) -> Result<Baldes, String> {
+    Ok(nucleo::regua::baldes(
+        &marcas_atuais(&estado)?,
+        k.min(MAX_BALDES),
+    ))
+}
+
+/// Marca de cada registro `[inicio, inicio + quantidade)`: o ponto de cor ao lado dele.
+#[tauri::command]
+fn marcas(inicio: usize, quantidade: usize, estado: State<'_, Estado>) -> Result<Vec<u8>, String> {
+    Ok(nucleo::regua::janela(
+        &marcas_atuais(&estado)?,
+        inicio,
+        quantidade.min(MAX_JANELA),
+    ))
 }
 
 /// Linhas visíveis `[inicio, inicio + quantidade)`, prontas para desenhar. Vão como JSON:
@@ -248,7 +307,9 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             ir_para,
             texto,
             revelar,
-            formatado
+            formatado,
+            regua,
+            marcas
         ])
 }
 
@@ -281,6 +342,12 @@ mod testes {
     fn comandos_pelo_ipc() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         std::io::Write::write_all(&mut f, b"{\"a\":[1,2]}\n{\"b\":tru}\n").unwrap();
+        let mut tipos = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut tipos,
+            b"{\"tipo\":\"x\",\"x\":1}\n{\"tipo\":\"y\",\"y\":1}\n{\"tipo\":\"x\",\"x\":2}\n{\"tipo\":}\n",
+        )
+        .unwrap();
         let app = comandos(mock_builder())
             .build(mock_context(noop_assets()))
             .unwrap();
@@ -309,12 +376,17 @@ mod testes {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 chamar("resumo", json!({})).unwrap()
             })
-            .find(|r| r["campos"] != Value::Null)
+            .find(|r| r["coloriu"] == true)
             .expect("varredura não terminou");
         assert_eq!(
             resumo,
             json!({"conteudo": "objetos", "bytes": 22, "registros": 2, "geracao": 1,
-                   "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false, "campos": 1})
+                   "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false,
+                   "campos": 1, "legenda": null, "coloriu": true})
+        );
+        assert_eq!(
+            chamar("marcas", json!({"inicio": 0, "quantidade": 9})),
+            Ok(json!([0, 255]))
         );
         assert_eq!(chamar("alternar", json!({"v": 0})), Ok(json!(3)));
         let linhas = chamar("linhas", json!({"inicio": 0, "quantidade": 10})).unwrap();
@@ -358,5 +430,28 @@ mod testes {
             Ok(json!("{\n  \"a\": [\n    1,\n    2\n  ]\n}"))
         );
         assert!(chamar("formatado", json!({"registro": 1})).is_err());
+
+        // Régua: discriminador `.tipo`, cor por frequência, inválida marcada.
+        let caminho = tipos.path().to_str().unwrap();
+        assert_eq!(chamar("abrir", json!({ "caminho": caminho })), Ok(json!(4)));
+        let resumo = (0..200)
+            .map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                chamar("resumo", json!({})).unwrap()
+            })
+            .find(|r| r["coloriu"] == true)
+            .expect("2ª passada não terminou");
+        assert_eq!(
+            resumo["legenda"],
+            json!({"campo": ".tipo", "variantes": [["x", 2], ["y", 1]], "outros": 0})
+        );
+        assert_eq!(
+            chamar("marcas", json!({"inicio": 0, "quantidade": 9})),
+            Ok(json!([1, 2, 1, 255]))
+        );
+        assert_eq!(
+            chamar("regua", json!({"k": 2})),
+            Ok(json!({"cores": [1, 1], "invalidas": [[1, 1, 3]]}))
+        );
     }
 }

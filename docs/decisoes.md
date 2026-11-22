@@ -181,3 +181,21 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 **Fora desta fatia:** cartões de modos sem tela (busca, esquema, filtro).
 
 **Conferência:** interface no navegador interno contra a ponte HTTP com `resumo` e o evento simulado por consulta a cada 50 ms; JSONL fictício de 400 MB do `gerador` com 60 linhas quebradas. Vistos: parcial "Analisando N de M", 60 inválidas no fim, pt-BR e inglês, claro e escuro, atalhos 2, ⌘0 e Enter, as três preferências. A janela nativa não foi vista.
+
+## Micronavegador (Fase 1, 22/11/2026)
+
+**O que é:** régua de 44 px à direita da Árvore e do Texto com o arquivo inteiro: uma faixa por balde de registros, colorida pela variante do discriminador, inválidas em vermelho com balões numerados e o retângulo da janela visível. O cabeçalho mostra "linhas X–Y de N" (só linhas inteiras na tela). Árvore e Texto ganham um ponto de cor por registro.
+
+**Escala:** a régua anda por registro, não por byte nem por linha da árvore expandida; o retângulo vai do primeiro ao último registro visível, com no mínimo 6 px. JSON único (uma linha ou várias) não tem régua nem faixa.
+
+**Marcas:** `nucleo::regua` guarda uma marca por registro em `Box<[AtomicU8]>` (0 neutro, 1–4 variantes, 5 outros, 255 inválida), compartilhada pelas duas passadas e lida pela interface em baldes (`regua(k)`, k = altura em px, até 4.096) e em janelas de 1.000 (`marcas`). As inválidas saem da varredura do painel (`resumo::varrer`, mesma regra da árvore), não de `erros::varrer`: o painel é dono da varredura e a régua reaproveita.
+
+**Duas passadas:** a 1ª é a varredura do painel; a régua aparece neutra com as inválidas e se atualiza a cada ~200 ms. Depois da inferência (`estrutura::inferir`, a mesma do indicador de Campos), `regua::colorir` pinta as variantes em paralelo (rayon, blocos de 4.096) sem tocar nas inválidas, e o evento `varredura` traz `legenda` e `coloriu`. A cor entra com fade de 0,4 s; com `prefers-reduced-motion` entra direto e os balões não pulsam.
+
+**Discriminador:** de `Resumo::discriminadores()`, vence o que cobre mais registros (empate: o primeiro). As 4 variantes mais frequentes (empate: nome) ganham cor; o resto vira "outros". Legenda "por `campo`" na barra de ferramentas. Sem discriminador a régua fica neutra, sem legenda nem pontos.
+
+**Interação:** `role=slider` com `aria-valuetext` da faixa; arrastar centraliza a janela; setas = uma página, PgUp/PgDn = 10%, Home/End. Inválidas a menos de 16 px viram um balão só (até "99+"), que pulsa 3 vezes ao surgir e, clicado, seleciona a primeira linha do grupo.
+
+**Medido (1 GB, 6,46 milhões de linhas do `gerador`, Apple M5 Pro):** varredura 1,6–2,2 s; inferência 3,5–11,7 s (já existia, é a do indicador de Campos); `colorir` 130–270 ms. A cor chega depois de varredura + inferência; a 2ª passada em si fica bem abaixo de 2 s, então não foi otimizada. Se o tempo até a cor incomodar, o caminho é inferir só uma amostra para achar o discriminador.
+
+**Conferência:** navegador interno contra a ponte HTTP (atraso artificial de 1,5 s antes da cor) com JSONL fictícios: 60 mil linhas de 3 tipos com inválidas agrupadas (18.000 ×4 e 18.200 ×3 viram um balão de 7; 45.000 ×9; 54.000 ×1) e 20 mil linhas sem discriminador. Vistos: régua neutra e depois a cor, legenda, pontos na Árvore e no Texto, faixa, arraste, PgDn, clique em balão, claro e escuro, pt-BR e inglês, JSON único sem régua. A janela nativa não foi vista.

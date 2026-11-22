@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { type Motivo, t } from "./i18n";
-import { espaco, geometria as geo, mostrarLinha as mostrarEm } from "./rolagem";
+import { criarRegua, type Legenda } from "./regua";
+import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { decodificar, type JanelaTexto, linhaHtml as textoHtml } from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
@@ -59,6 +60,27 @@ let pedidoTexto: number | null = null;
 let alvo = 0; // registro pedido pelo teclado no Texto, antes da resposta chegar
 let selecao = 0; // descarta resposta de seleção mais velha que a última pedida
 let noPainel = false; // painel de entrada no lugar do conteúdo
+let irN = 0; // descarta resposta de arraste na régua mais velha que a última
+
+const faixa = $("faixa");
+const regua = criarRegua($("regua"), $("legenda"), {
+  ir: async (r) => {
+    if (modo === "texto") return rolarPara(textoEl, r, registros, ALTURA_TEXTO);
+    const n = ++irN;
+    const v = await invoke<number | null>("ir_para", { registro: r });
+    if (v !== null && n === irN) rolarPara(arvore, v, total, ALTURA);
+  },
+  selecionar: (r) => void focarRegistro(r),
+  marcasChegaram: () => agendar(),
+  fmt: (n) => fmt(n),
+});
+
+/** Registros visíveis (base 0, inclusivo): retângulo da régua e "linhas X–Y de N". */
+function mostrarFaixa(a: number | undefined, b: number | undefined): void {
+  if (a === undefined || b === undefined) return;
+  regua.janela(a, b);
+  faixa.textContent = registros > 1 ? t.regua.faixa(fmt(a + 1), fmt(b + 1), fmt(registros)) : "";
+}
 
 const geometria = () => geo(arvore, total, ALTURA);
 
@@ -116,9 +138,11 @@ function linhaHtml(v: number, l: Linha | undefined): string {
   return `<div class="row" id="l${v}" data-v="${v}" role="treeitem" aria-level="${l.prof + 1}"
     aria-selected="${v === sel}"${l.expansivel ? ` aria-expanded="${l.aberto}"` : ""}
     ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}" aria-setsize="${l.irmaos}"`}
-    style="padding-left:${8 + l.prof * 20}px">${exp}<span class="key">${esc(chave(l))}</span>${valor(l)}
+    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${esc(chave(l))}</span>${valor(l)}
     <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(l.caminho)}">${icone("copy")}</button></div>`;
 }
+
+const ponto = (c: string | null) => (c === null ? "" : `<i class="pt ${c}" aria-hidden="true"></i>`);
 
 let quadro = 0;
 function desenhar(): void {
@@ -126,9 +150,12 @@ function desenhar(): void {
   if (modo === "texto") return desenharTexto();
   alto.style.height = espaco(arvore, total, ALTURA);
   linhasEl.style.height = `${arvore.clientHeight}px`;
-  const { primeira, resto, cabem } = geometria();
+  const g = geometria();
+  const { primeira, resto, cabem } = g;
   if (total && !cobre(primeira, cabem)) void pedir(primeira, cabem);
   const fim = Math.min(primeira + cabem, total);
+  const [va, vb] = inteiras(g, total, ALTURA);
+  mostrarFaixa(linhaEm(va)?.registro, linhaEm(vb)?.registro);
   let html = "";
   for (let v = primeira; v < fim; v++) html += linhaHtml(v, linhaEm(v));
   linhasEl.innerHTML = html || (resumo && !registros ? `<p class="vazio">${t.vazio}</p>` : "");
@@ -180,8 +207,10 @@ async function pedirTexto(primeira: number, cabem: number): Promise<void> {
 function desenharTexto(): void {
   textoAlto.style.height = espaco(textoEl, registros, ALTURA_TEXTO);
   textoLinhas.style.height = `${textoEl.clientHeight}px`;
-  const { primeira, resto, cabem } = geoTexto();
+  const g = geoTexto();
+  const { primeira, resto, cabem } = g;
   const fim = Math.min(primeira + cabem, registros);
+  if (registros) mostrarFaixa(...inteiras(g, registros, ALTURA_TEXTO));
   if (registros && (!texto || primeira < texto.inicio || fim > texto.inicio + texto.linhas.length)) void pedirTexto(primeira, cabem);
   const digitos = String(registros).length;
   let html = "";
@@ -189,9 +218,10 @@ function desenharTexto(): void {
     const i = texto ? r - texto.inicio : -1;
     const linha = texto && i >= 0 ? texto.linhas[i] : undefined;
     const marcado = atual?.registro === r;
+    const p = regua.ponto(r);
     const corpo = linha === undefined ? "" : textoHtml(linha, texto!.tamanhos[i], marcado ? atual!.faixa : null, (n) => t.maisBytes(fmt(n)));
     html += `<div class="tl" id="t${r}" data-r="${r}" role="option" aria-selected="${marcado}"
-      aria-label="${esc(t.linha(fmt(r + 1)))}"><span class="nl" style="width:${digitos + 2}ch">${r + 1}</span><span class="tx">${corpo}</span></div>`;
+      aria-label="${esc(t.linha(fmt(r + 1)))}"><span class="nl" style="width:${digitos + (p === null ? 2 : 4)}ch">${ponto(p)}${r + 1}</span><span class="tx">${corpo}</span></div>`;
   }
   textoLinhas.innerHTML = html;
   (textoLinhas.firstElementChild as HTMLElement | null)?.style.setProperty("margin-top", `${-resto}px`);
@@ -352,6 +382,9 @@ async function mostrar(caminho: string): Promise<void> {
     texto = null;
     arvore.scrollTop = textoEl.scrollTop = 0;
     resumo = await invoke<Resumo>("resumo");
+    // Sem régua para JSON único ou vazio (decisão 2 do micronavegador).
+    regua.abrir(registros, ["objetos", "valores", "misto"].includes(resumo.conteudo));
+    regua.andamento(resumo);
     status.textContent = t.aberto(plural(registros, t.registros), ms);
     $("painel-nome").textContent = nome;
     $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], ms);
@@ -370,7 +403,10 @@ async function mostrar(caminho: string): Promise<void> {
 // ---- Painel de entrada: o que é o arquivo e por onde começar. ----
 
 type Conteudo = keyof typeof t.painel.conteudo;
-interface Andamento { geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null }
+interface Andamento {
+  geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null;
+  legenda: Legenda | null; coloriu: boolean;
+}
 interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
 
 /** Modos com cartão, na ordem dos cartões e dos atalhos 1, 2…; o sugerido é o primeiro disponível.
@@ -531,15 +567,12 @@ void listen<Andamento>("varredura", ({ payload: p }) => {
   if (!resumo || p.geracao !== resumo.geracao || (p.varridas < resumo.varridas && !p.fim)) return;
   Object.assign(resumo, p);
   desenharAndamento();
+  regua.andamento(p);
 });
-$("ir").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const n = Number(($("linha") as HTMLInputElement).value);
-  const v = Number.isInteger(n) && n >= 1 ? await invoke<number | null>("ir_para", { registro: n - 1 }) : null;
-  if (v === null) {
-    status.textContent = t.foraDoArquivo(String(n), fmt(registros));
-    return;
-  }
+/** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
+async function focarRegistro(r: number): Promise<boolean> {
+  const v = await invoke<number | null>("ir_para", { registro: r });
+  if (v === null) return false;
   if (modo === "texto") {
     await selecionar(v);
     textoEl.focus();
@@ -547,6 +580,13 @@ $("ir").addEventListener("submit", async (e) => {
     mover(v);
     arvore.focus();
   }
+  return true;
+}
+
+$("ir").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const n = Number(($("linha") as HTMLInputElement).value);
+  if (!(Number.isInteger(n) && n >= 1 && (await focarRegistro(n - 1)))) status.textContent = t.foraDoArquivo(String(n), fmt(registros));
 });
 // Textos fixos do HTML no idioma do sistema.
 document.documentElement.lang = t.lang;
@@ -571,6 +611,7 @@ preferencia.value = lerPreferencia();
 $("tema").addEventListener("click", () => {
   const raiz = document.documentElement;
   raiz.dataset.theme = raiz.dataset.theme === "dark" ? "light" : "dark";
+  regua.redesenhar();
 });
 if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.dataset.theme = "dark";
 
