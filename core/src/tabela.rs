@@ -22,6 +22,11 @@ use crate::linhas::{ArquivoLinhas, BOM};
 
 /// Colunas mostradas no máximo; as demais ficam contadas em `Tabela::omitidas`.
 pub const MAX_COLUNAS: usize = 200;
+/// Teto de registros para ordenar e para listar os elementos de um JSON único. Ordenar custa
+/// ~30 B por registro (chave de 24 B, permutação de 4 B e o buffer do `par_sort_by`): 50 M dão
+/// ~1,5 GB no pico. Listar os elementos custa 16 B por elemento (800 MB no teto).
+pub const MAX_REGISTROS: usize = 50_000_000;
+const _: () = assert!(MAX_REGISTROS <= u32::MAX as usize); // a permutação é `u32`
 /// Registros por tarefa na extração das chaves de ordenação (e por aviso de progresso).
 const BLOCO: usize = 1 << 16;
 
@@ -43,6 +48,10 @@ pub enum Indisponivel {
     SemCampos,
     /// JSON único com erro de sintaxe: os elementos não se separam.
     JsonInvalido,
+    /// JSON único com mais elementos que `max` (`MAX_REGISTROS`).
+    Grande {
+        max: u64,
+    },
     Cancelado,
 }
 
@@ -127,7 +136,7 @@ impl Ordem {
 #[serde(rename_all = "snake_case")]
 pub enum FalhaOrdem {
     Cancelada,
-    /// Mais registros que cabem em `u32`.
+    /// Mais registros que `MAX_REGISTROS`.
     Grande,
     Coluna,
 }
@@ -139,6 +148,15 @@ impl Tabela {
         arquivo: Arc<ArquivoLinhas>,
         inf: &Inferencia,
         cancelar: &AtomicBool,
+    ) -> Result<Self, Indisponivel> {
+        Self::montar_ate(arquivo, inf, cancelar, MAX_REGISTROS)
+    }
+
+    fn montar_ate(
+        arquivo: Arc<ArquivoLinhas>,
+        inf: &Inferencia,
+        cancelar: &AtomicBool,
+        teto: usize,
     ) -> Result<Self, Indisponivel> {
         if inf.cancelado {
             return Err(Indisponivel::Cancelado);
@@ -172,7 +190,7 @@ impl Tabela {
             Entrada::JsonUnico if inf.resumo.invalidas.n > 0 => {
                 return Err(Indisponivel::JsonInvalido);
             }
-            Entrada::JsonUnico => Some(elementos(dados, cancelar)?),
+            Entrada::JsonUnico => Some(elementos(dados, cancelar, teto)?),
         };
         let colunas = campos
             .iter()
@@ -308,11 +326,22 @@ impl Tabela {
 
     /// Ordena todos os registros pela coluna (crescente). `ao_progresso` recebe quantos
     /// registros já foram lidos e roda nas threads de trabalho (pode chegar fora de ordem).
+    /// Acima de `MAX_REGISTROS`, recusa (`FalhaOrdem::Grande`).
     pub fn ordenar(
         &self,
         coluna: usize,
         cancelar: &AtomicBool,
         ao_progresso: &(dyn Fn(u64) + Sync),
+    ) -> Result<Ordem, FalhaOrdem> {
+        self.ordenar_ate(coluna, cancelar, ao_progresso, MAX_REGISTROS)
+    }
+
+    fn ordenar_ate(
+        &self,
+        coluna: usize,
+        cancelar: &AtomicBool,
+        ao_progresso: &(dyn Fn(u64) + Sync),
+        teto: usize,
     ) -> Result<Ordem, FalhaOrdem> {
         let chave = self
             .colunas
@@ -321,7 +350,7 @@ impl Tabela {
             .chave
             .as_str();
         let n = self.registros();
-        if u32::try_from(n).is_err() {
+        if n > teto {
             return Err(FalhaOrdem::Grande);
         }
         let dados = self.arquivo.bytes();
@@ -352,6 +381,10 @@ impl Tabela {
         // Estável: empate fica na ordem do arquivo.
         perm.par_sort_by(|&a, &b| chaves[a as usize].comparar(&chaves[b as usize], dados));
         perm.extend((0..n as u32).filter(|&r| chaves[r as usize].classe == Classe::Ausente));
+        // O sort não para no meio: cancelado durante ele, o resultado é descartado aqui.
+        if cancelar.load(Relaxed) {
+            return Err(FalhaOrdem::Cancelada);
+        }
         Ok(Ordem {
             coluna,
             presentes,
@@ -361,13 +394,20 @@ impl Tabela {
 }
 
 /// Elementos do JSON único que é lista, em bytes do arquivo.
-fn elementos(dados: &[u8], cancelar: &AtomicBool) -> Result<Vec<Range<usize>>, Indisponivel> {
+fn elementos(
+    dados: &[u8],
+    cancelar: &AtomicBool,
+    teto: usize,
+) -> Result<Vec<Range<usize>>, Indisponivel> {
     let base = dados.as_ptr() as usize;
     let ini = if dados.starts_with(BOM) { BOM.len() } else { 0 };
     let mut v = Vec::new();
     for (i, e) in sonic_rs::to_array_iter(&dados[ini..]).enumerate() {
         if i % 4096 == 0 && cancelar.load(Relaxed) {
             return Err(Indisponivel::Cancelado);
+        }
+        if i == teto {
+            return Err(Indisponivel::Grande { max: teto as u64 });
         }
         let e = e.map_err(|_| Indisponivel::JsonInvalido)?;
         let raw = e.as_raw_str();
@@ -442,9 +482,8 @@ impl Chave {
         };
         c.classe = match arvore::tipo_de(v) {
             TipoValor::Numero => {
-                // shortcut: inteiro acima de 2^53 compara pelo f64 e, no empate, pelo texto;
-                // dois inteiros enormes diferentes podem sair fora de ordem. Comparar como
-                // decimal exato se aparecer em arquivo real.
+                // Atalho: o f64 decide quando difere (o arredondamento é monótono); no empate,
+                // `decimal` compara o valor exato (ver `comparar`).
                 c.num = v.parse().unwrap_or(f64::NAN);
                 Classe::Numero
             }
@@ -470,10 +509,15 @@ impl Chave {
 
     fn comparar(&self, o: &Chave, dados: &[u8]) -> Ordering {
         self.classe.cmp(&o.classe).then_with(|| match self.classe {
-            Classe::Numero => self
-                .num
-                .total_cmp(&o.num)
-                .then_with(|| self.cru(dados).cmp(o.cru(dados))),
+            // f64 diferente ⇒ valor diferente na mesma direção; f64 igual (acima de 2^53, -0,
+            // fora do alcance) ⇒ decimal exato e, no empate de valor, o texto cru.
+            Classe::Numero => match self.num.partial_cmp(&o.num) {
+                Some(Ordering::Equal) | None => {
+                    let (a, b) = (self.cru(dados), o.cru(dados));
+                    decimal(a).cmp(&decimal(b)).then_with(|| a.cmp(b))
+                }
+                Some(m) => m,
+            },
             Classe::Booleano => self.num.total_cmp(&o.num),
             // Ordem de code point (= ordem dos bytes UTF-8), sem regra de idioma.
             Classe::Texto => {
@@ -489,17 +533,127 @@ impl Chave {
     }
 }
 
+/// Número JSON como decimal exato, sem alocar: `0,d₁d₂… × 10^pos`.
+#[derive(Clone, Copy)]
+struct Decimal<'a> {
+    neg: bool,
+    inteiro: &'a [u8],
+    fracao: &'a [u8],
+    /// Zeros à esquerda (em `inteiro` + `fracao`) antes do 1º dígito significativo.
+    zeros: usize,
+    pos: i64,
+}
+
+fn decimal(v: &[u8]) -> Decimal<'_> {
+    let (neg, v) = match v.split_first() {
+        Some((b'-', r)) => (true, r),
+        _ => (false, v),
+    };
+    let (m, e) = match v.iter().position(|&b| b == b'e' || b == b'E') {
+        Some(i) => (&v[..i], &v[i + 1..]),
+        None => (v, &b""[..]),
+    };
+    let exp = std::str::from_utf8(e.strip_prefix(b"+").unwrap_or(e))
+        .ok()
+        .and_then(|e| e.parse::<i64>().ok())
+        .unwrap_or(if e.starts_with(b"-") {
+            i64::MIN / 2
+        } else if e.is_empty() {
+            0
+        } else {
+            i64::MAX / 2
+        });
+    let (inteiro, fracao) = match m.iter().position(|&b| b == b'.') {
+        Some(i) => (&m[..i], &m[i + 1..]),
+        None => (m, &b""[..]),
+    };
+    let zeros = inteiro
+        .iter()
+        .chain(fracao)
+        .take_while(|&&b| b == b'0')
+        .count();
+    Decimal {
+        neg,
+        inteiro,
+        fracao,
+        zeros,
+        pos: (inteiro.len() as i64 - zeros as i64).saturating_add(exp),
+    }
+}
+
+impl Decimal<'_> {
+    fn digitos(&self) -> impl Iterator<Item = u8> + '_ {
+        self.inteiro
+            .iter()
+            .chain(self.fracao)
+            .skip(self.zeros)
+            .copied()
+    }
+    fn zero(&self) -> bool {
+        self.zeros == self.inteiro.len() + self.fracao.len()
+    }
+}
+
+impl Ord for Decimal<'_> {
+    fn cmp(&self, o: &Self) -> Ordering {
+        let sinal = |d: &Decimal| {
+            if d.zero() {
+                0
+            } else if d.neg {
+                -1
+            } else {
+                1
+            }
+        };
+        let s = sinal(self);
+        s.cmp(&sinal(o)).then_with(|| {
+            if s == 0 {
+                return Ordering::Equal;
+            }
+            let (mut a, mut b) = (self.digitos(), o.digitos());
+            // Mesma posição do 1º dígito: compara dígito a dígito (o que falta vale 0).
+            let m = self.pos.cmp(&o.pos).then_with(|| {
+                loop {
+                    match (a.next(), b.next()) {
+                        (None, None) => break Ordering::Equal,
+                        (x, y) => match x.unwrap_or(b'0').cmp(&y.unwrap_or(b'0')) {
+                            Ordering::Equal => {}
+                            m => break m,
+                        },
+                    }
+                }
+            });
+            if s < 0 { m.reverse() } else { m }
+        })
+    }
+}
+impl PartialOrd for Decimal<'_> {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl PartialEq for Decimal<'_> {
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o) == Ordering::Equal
+    }
+}
+impl Eq for Decimal<'_> {}
+
 #[cfg(test)]
 mod testes {
     use super::*;
     use crate::estrutura::inferir;
 
     fn tabela(dados: &[u8]) -> Result<Tabela, Indisponivel> {
+        tabela_ate(dados, MAX_REGISTROS)
+    }
+
+    fn tabela_ate(dados: &[u8], teto: usize) -> Result<Tabela, Indisponivel> {
         let dados: &'static [u8] = Vec::leak(dados.to_vec());
         let arq = Arc::new(ArquivoLinhas::estatico(dados));
         let nao = AtomicBool::new(false);
         let inf = inferir(arq.bytes(), &nao, |_| {});
-        Tabela::montar(arq, &inf, &nao)
+        Tabela::montar_ate(arq, &inf, &nao, teto)
     }
 
     fn todas(t: &Tabela) -> Vec<usize> {
@@ -722,5 +876,79 @@ mod testes {
         let sim = AtomicBool::new(true);
         assert_eq!(t.ordenar(0, &sim, &|_| {}), Err(FalhaOrdem::Cancelada));
         assert_eq!(t.ordenar(99, &nao, &|_| {}), Err(FalhaOrdem::Coluna));
+    }
+
+    #[test]
+    fn teto_de_registros() {
+        // Ordenar: acima do teto recusa antes de alocar; no teto, ordena.
+        let t = tabela(b"{\"n\":3}\n{\"n\":1}\n{\"n\":2}\n").unwrap();
+        let nao = AtomicBool::new(false);
+        assert_eq!(t.ordenar_ate(0, &nao, &|_| {}, 2), Err(FalhaOrdem::Grande));
+        assert!(t.ordenar_ate(0, &nao, &|_| {}, 3).is_ok());
+        // JSON único: a lista de elementos para no teto.
+        let lista = b"[{\"a\":1},{\"a\":2},{\"a\":3}]";
+        assert_eq!(
+            tabela_ate(lista, 2).err(),
+            Some(Indisponivel::Grande { max: 2 })
+        );
+        assert_eq!(tabela_ate(lista, 3).unwrap().registros(), 3);
+    }
+
+    #[test]
+    fn cancela_no_meio_da_ordenacao() {
+        let n = BLOCO * 3;
+        let dados: String = (0..n).map(|i| format!("{{\"n\":{i}}}\n")).collect();
+        let t = tabela(dados.as_bytes()).unwrap();
+        // Uma thread: os blocos rodam em sequência e o cancelar chega depois do 1º.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let cancelar = AtomicBool::new(false);
+        let avisos = AtomicU64::new(0);
+        let r = pool.install(|| {
+            t.ordenar(0, &cancelar, &|_| {
+                avisos.fetch_add(1, Relaxed);
+                cancelar.store(true, Relaxed);
+            })
+        });
+        assert_eq!(r, Err(FalhaOrdem::Cancelada));
+        assert_eq!(avisos.load(Relaxed), 1, "blocos seguintes não leem nada");
+    }
+
+    #[test]
+    fn numero_compara_pelo_valor_exato() {
+        let linhas = [
+            r#"{"v":100000000000000000001}"#,
+            r#"{"v":1e20}"#,
+            r#"{"v":9007199254740993}"#,
+            r#"{"v":9007199254740992}"#,
+            r#"{"v":-1e20}"#,
+            r#"{"v":-100000000000000000001}"#,
+            r#"{"v":1e400}"#,
+            r#"{"v":2e400}"#,
+            r#"{"v":0.5}"#,
+            r#"{"v":5E-1}"#,
+            r#"{"v":-0}"#,
+            r#"{"v":0.0}"#,
+        ];
+        let t = tabela(linhas.join("\n").as_bytes()).unwrap();
+        assert_eq!(
+            ordem(&t, 0, false),
+            [
+                "-100000000000000000001",
+                "-1e20",
+                "-0",
+                "0.0", // mesmo valor: pelo texto
+                "0.5",
+                "5E-1",
+                "9007199254740992",
+                "9007199254740993",
+                "1e20",
+                "100000000000000000001",
+                "1e400",
+                "2e400",
+            ]
+        );
     }
 }

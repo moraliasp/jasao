@@ -101,9 +101,24 @@ struct EstadoOrdem {
 
 impl EstadoOrdem {
     fn reiniciar(&mut self) {
+        self.cancelar();
+        self.pronta = None;
+    }
+
+    /// Para a ordenação em curso. Subir a geração descarta o resultado mesmo que o núcleo já
+    /// tenha passado do último ponto em que olha o `cancelar`.
+    fn cancelar(&mut self) {
         self.cancelar.store(true, Relaxed);
         self.geracao += 1;
-        self.pronta = None;
+    }
+
+    /// Ordem pronta da ordenação `geracao`; se ela foi cancelada ou substituída, descarta.
+    fn publicar(&mut self, geracao: u64, ordem: Ordem, desc: bool) -> Option<FalhaOrdem> {
+        if self.geracao != geracao {
+            return Some(FalhaOrdem::Cancelada);
+        }
+        self.pronta = Some((Arc::new(ordem), desc));
+        None
     }
 }
 
@@ -258,6 +273,9 @@ struct Andamento {
     coloriu: bool,
     /// A inferência acabou: o comando `estrutura` já tem resposta.
     inferiu: bool,
+    /// A Tabela foi montada (ou recusada): o comando `tabela` já tem resposta. Vem depois de
+    /// `inferiu`, porque JSON único lista os elementos numa passada a mais.
+    tabelou: bool,
 }
 
 impl Varredura {
@@ -269,6 +287,7 @@ impl Varredura {
             legenda: self.legenda.clone(),
             coloriu: self.coloriu,
             inferiu: self.estrutura.is_some(),
+            tabelou: self.tabela.is_some(),
         })
     }
 }
@@ -659,17 +678,18 @@ async fn abrir<R: Runtime>(
         let campos = resumo::campos(&inf.resumo);
         let estrutura = Arc::new(Estrutura::de(&inf));
         let ds = inf.resumo.discriminadores();
-        let tabela = Tabela::montar(Arc::clone(&arquivo), &inf, &cancelar).map(Arc::new);
-        if cancelar.load(Relaxed) {
-            return;
-        }
         let inf = Arc::new(inf);
         avisar(&|v| {
             v.campos = campos;
             v.estrutura = Some(Arc::clone(&estrutura));
             v.inferencia = Some((Arc::clone(&inf), Arc::clone(&arquivo)));
-            v.tabela = Some(tabela.clone());
         });
+        // Depois do aviso: a Árvore, o Texto, a Estrutura e Exportar não esperam a lista de elementos.
+        let tabela = Tabela::montar(Arc::clone(&arquivo), &inf, &cancelar).map(Arc::new);
+        if cancelar.load(Relaxed) {
+            return;
+        }
+        avisar(&|v| v.tabela = Some(tabela.clone()));
         let escolhido = nucleo::regua::escolher(&ds).filter(|_| colorir);
         if let Some(d) = escolhido
             && !nucleo::regua::colorir(&arquivo, d, &marcas, &cancelar)
@@ -1145,8 +1165,7 @@ fn ordenar<R: Runtime>(
     let doc = estado.doc(id)?;
     let t = tabela_pronta(&doc)?;
     let mut o = doc.ordem.lock().map_err(|e| e.to_string())?;
-    o.cancelar.store(true, Relaxed);
-    o.geracao += 1;
+    o.cancelar();
     let geracao = o.geracao;
     let Some(coluna) = coluna else {
         o.pronta = None;
@@ -1198,11 +1217,7 @@ fn ordenar<R: Runtime>(
             Ok(ordem) => {
                 let Some(doc) = doc.upgrade() else { return };
                 let Ok(mut o) = doc.ordem.lock() else { return };
-                if o.geracao != geracao {
-                    return;
-                }
-                o.pronta = Some((Arc::new(ordem), desc));
-                None
+                o.publicar(geracao, ordem, desc)
             }
             Err(f) => Some(f),
         };
@@ -1221,15 +1236,12 @@ fn ordenar<R: Runtime>(
     })
 }
 
-/// Para a ordenação em curso; a ordem anterior continua valendo.
+/// Para a ordenação em curso; a ordem anterior continua valendo. O evento de fim chega com
+/// `falha: cancelada`.
 #[tauri::command]
 fn cancelar_ordenacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
     let doc = estado.doc(id)?;
-    doc.ordem
-        .lock()
-        .map_err(|e| e.to_string())?
-        .cancelar
-        .store(true, Relaxed);
+    doc.ordem.lock().map_err(|e| e.to_string())?.cancelar();
     Ok(())
 }
 
@@ -1805,6 +1817,29 @@ mod testes {
     use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
     use tauri::webview::{InvokeRequest, WebviewWindowBuilder};
 
+    /// Cancelar depois que o núcleo terminou (sort já sem olhar o `cancelar`) descarta a ordem.
+    #[test]
+    fn cancelar_descarta_ordem_ja_calculada() {
+        let arq = Arc::new(nucleo::linhas::ArquivoLinhas::estatico(
+            b"{\"n\":2}\n{\"n\":1}\n",
+        ));
+        let nao = AtomicBool::new(false);
+        let inf = nucleo::estrutura::inferir(arq.bytes(), &nao, |_| {});
+        let t = Tabela::montar(arq, &inf, &nao).unwrap();
+        let mut o = EstadoOrdem::default();
+        o.cancelar(); // o pedido de ordenar
+        let g = o.geracao;
+        let ordem = t.ordenar(0, &nao, &|_| {}).unwrap();
+        o.cancelar(); // o usuário cancela com a ordem pronta, antes de publicar
+        assert_eq!(
+            o.publicar(g, ordem.clone(), false),
+            Some(FalhaOrdem::Cancelada)
+        );
+        assert!(o.pronta.is_none());
+        assert_eq!(o.publicar(o.geracao, ordem, false), None);
+        assert!(o.pronta.is_some());
+    }
+
     /// Mesmo arquivo abrindo em duas abas: cancelar uma não cancela a outra.
     #[test]
     fn cancelar_abertura_e_por_abertura() {
@@ -1892,7 +1927,8 @@ mod testes {
             resumo,
             json!({"conteudo": "objetos", "bytes": 22, "registros": 2, "geracao": 1,
                    "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false,
-                   "campos": 1, "legenda": null, "coloriu": true, "inferiu": true})
+                   "campos": 1, "legenda": null, "coloriu": true, "inferiu": true,
+                   "tabelou": true})
         );
         // Estrutura: a linha inválida não vira registro; `.a[]` com a 1ª linha de cada tipo.
         assert_eq!(
