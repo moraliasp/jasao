@@ -85,10 +85,16 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
       .join("");
   }
 
-  void listen<Validacao>("validacao", ({ payload: v }) => {
-    if (v.id !== docAtivo() || v.geracao !== geracao || el.hidden) return;
+  let adiantado: Validacao | null = null; // evento que chegou antes da resposta do `exportar`
+  const aplicar = (v: Validacao) => {
     if (v.fim) return resultado(v);
     estado(`<span>${x.validando(o.fmt(v.varridas), o.fmt(v.total))}</span>`);
+  };
+  void listen<Validacao>("validacao", ({ payload: v }) => {
+    if (v.id !== docAtivo() || el.hidden) return;
+    // Arquivo pequeno termina antes do `await` devolver a geração: guarda para aplicar depois.
+    if (v.geracao > geracao) adiantado = v;
+    if (v.geracao === geracao) aplicar(v);
   });
 
   /** Gera o código das opções atuais e começa a validar; sem inferência ainda, avisa e espera. */
@@ -109,6 +115,8 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
     codigo = codigoEl.textContent = r.codigo;
     pronto(true);
     estado(`<span>${x.validando("0", "…")}</span>`);
+    if (adiantado?.geracao === geracao) aplicar(adiantado);
+    adiantado = null;
   }
 
   /** Para a validação em curso (sair da vista, trocar de aba, Esc). */
