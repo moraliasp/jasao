@@ -138,6 +138,27 @@ fn numero_como_texto_tratado_como_numero_reprova_no_schema() {
 }
 
 #[test]
+fn motivo_vem_do_ramo_do_discriminador() {
+    // O pedido tem mais erros (4 preços em texto) que o ramo `evento` (tipo e `origem`): o
+    // motivo tem de falar do pedido, não do ramo com menos erros.
+    let dados = br#"{"tipo":"evento","origem":"a"}
+{"tipo":"pedido","itens":[{"preco":"1.5"},{"preco":"2.5"},{"preco":"3.5"},{"preco":"4.5"}]}
+"#;
+    let inf = inferir(dados);
+    let op = Opcoes {
+        literal: false,
+        numero: true,
+    };
+    let v = validar(dados, inf.entrada, &exportar::schema(&inf.resumo, op));
+    assert_eq!((v.passam, v.falham), (1, 1));
+    assert!(
+        v.falhas[0].motivo.starts_with("/itens/"),
+        "{}",
+        v.falhas[0].motivo
+    );
+}
+
+#[test]
 fn chaves_hostis_ficam_escapadas_e_voltam_iguais() {
     let dados = std::fs::read(dourados().join("hostil.jsonl")).unwrap();
     let inf = inferir(&dados);
