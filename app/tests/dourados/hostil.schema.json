@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Registro",
+  "type": "object",
+  "properties": {
+    "a\"b": {
+      "type": "string"
+    },
+    "c\\d": {
+      "type": "integer"
+    },
+    "\u003c/script\u003e\u003cscript\u003ealert(1)\u003c/script\u003e": {
+      "type": "string"
+    },
+    "\u0007sino": {
+      "type": "integer"
+    },
+    "\u202etxt.exe": {
+      "type": "string"
+    },
+    "linha\u2028separada": {
+      "type": "integer"
+    },
+    "__proto__": {
+      "type": "string"
+    },
+    "constructor": {
+      "type": "integer"
+    },
+    "${x}": {
+      "type": "string"
+    },
+    "`crase`": {
+      "type": "integer"
+    },
+    "\u200bzero": {
+      "type": "string"
+    },
+    "\u0085c1": {
+      "type": "integer"
+    },
+    "ok": {
+      "type": "string"
+    }
+  },
+  "required": ["a\"b", "c\\d", "\u003c/script\u003e\u003cscript\u003ealert(1)\u003c/script\u003e", "\u0007sino", "\u202etxt.exe", "linha\u2028separada", "__proto__", "constructor", "${x}", "`crase`", "\u200bzero", "\u0085c1", "ok"]
+}

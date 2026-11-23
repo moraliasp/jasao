@@ -343,3 +343,28 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Limite residual (TOCTOU):** entre o `canonicalize` do `autorizado` e a abertura há uma janela em que o arquivo concedido pode ser trocado (por exemplo, por um link para outro arquivo). Explorar exige escrever na pasta do arquivo concedido, com o mesmo usuário do app; quem já faz isso lê o arquivo sem passar pelo Jasão. Abrir uma vez e passar o descritor adiante (ao núcleo e ao filho da consulta) fecharia a janela, mas muda a API de abertura do núcleo e o protocolo do filho; não vale o custo agora.
 
 **Testado:** `caminhos_concedidos_pelo_ipc` (não concedido, pasta, `..` e link resolvidos pelo alvo real, link e pasta-link repontados depois da concessão, `autorizado` devolvendo o canônico, consulta recusada sem mexer na que está em curso) e `fontes_de_concessao` (soltar, pedido do sistema, argv e diálogo concedem).
+
+## Exportar Zod e JSON Schema (Fase 4, 23/11/2026)
+
+**Um gerador só, em Rust.** `nucleo::exportar` monta um modelo (`Forma`) a partir do `Resumo` da inferência e o imprime em dois formatos: JSON Schema 2020-12 e Zod 4. Não usamos `z.toJSONSchema()` (gerar o Zod e derivar o Schema dele) porque o app não pode depender de Node em runtime. O Schema é a fonte da autovalidação; o Zod sai da mesma `Forma`, e os dois são conferidos por testes separados.
+
+**Forma do que sai** (segue o `docs/mockup-json.html`):
+- Objetos permissivos: sem `additionalProperties: false` nem `.strict()`. A estrutura descreve o que foi visto, não proíbe o resto.
+- Campo opcional quando a presença é menor que 100% (`required` / `.optional()`); nullable quando `null` foi visto (`"null"` no `type` / `.nullable()`).
+- União discriminada (`z.discriminatedUnion` / `anyOf` de objetos) quando todos os registros são objetos e há discriminador no topo; com mais de um candidato, vence o de menos variantes. Na variante, o discriminador vira literal e os outros campos usam a forma geral do caminho.
+- Mapa (`.*`) vira `z.record(z.string(), …)` / `additionalProperties`; lista, `z.array` / `items`.
+- "Campo com um valor só": genérico (padrão) ou travado no valor (`const` / `z.literal`). Só trava escalar de um tipo, valor de até 256 bytes, e número só se for inteiro seguro.
+- "Número guardado como texto": manter (Schema `{type: string, pattern}`, Zod `z.string()`) ou tratar como número (Schema `number`, Zod `z.coerce.number()`). Com "tratar como número", o Schema reprova os registros que têm o texto, e a interface diz isso; o Zod aceita, porque converte. A autovalidação do Zod usa o schema da entrada que ele aceita (`schema_da_entrada_zod`: o mesmo com `numero` desligado). Literal vence número‑como‑texto.
+- Inteiro maior que 2^53 visto no caminho: `z.number()` em vez de `z.int()`, porque `z.int()` recusa inteiro não seguro (Zod 4.6.7).
+
+**Segurança.** Nome de campo e literal só entram no código por `exportar::aspas`: string JSON com `\uXXXX` para `"`, `\`, controles C0/C1 e DEL, `<`, `>`, `&` (nada de `</script>`), U+2028/2029 e os invisíveis e bidi (U+061C, U+200B–200F, U+202A–202E, U+2060–2069, U+FEFF). A saída é ASCII nesses pontos e continua JSON válido, então também é literal válido em TS. No Zod, identificador ASCII sai sem aspas e `__proto__` sai como chave computada (`["__proto__"]`), que é propriedade comum e não troca o protótipo. Nenhum outro valor do arquivo entra no código. Teste com chaves hostis em `core/tests/exportar.rs` e `app/tests/dourados/hostil.jsonl`.
+
+**Autovalidação com validador independente.** `nucleo::validar` confere o arquivo inteiro contra o Schema gerado com o crate `jsonschema` 0.63 (MIT), lendo cada registro com `serde_json` (não com o leitor da inferência). JSONL em blocos paralelos (rayon, mesmo `fatiar` da busca); JSON único em lotes paralelos sobre `estrutura::registros_json_unico`. Progresso por bytes, cancelamento por `AtomicBool`, resultado "N de M registros passam", linhas que não são JSON à parte, e as 20 primeiras falhas (menor linha) com caminho e motivo; no `anyOf`, o motivo vem do ramo com menos erros.
+
+**Dependência nova: `jsonschema` (com `default-features = false`) e `serde_json`.** Precisávamos de um validador que não fosse o nosso gerador, senão a prova é circular. `jsonschema` é o validador 2020-12 mais completo e mais rápido em Rust, puro Rust, MIT. Sem as features padrão não puxa cliente HTTP nem TLS (sem `reqwest`/`aws-lc`): `$ref` remoto não é resolvido, e o Schema gerado não tem. Entram 23 crates no lock, todas MIT, Apache‑2.0 ou MIT‑0 (`fancy-regex`, `referencing`, `fluent-uri`, `num-*`, `uuid-simd` e afins). `serde_json` já vinha transitivo e passa a ser direto (é a entrada do `jsonschema`). Alternativa considerada: `boon` 0.6, menor, mas menos usado e mais lento.
+
+**Provas:** dourados de cada formato e das duas combinações de opções (`app/tests/dourados/*.zod.ts` e `*.schema.json`, regravados por `ATUALIZAR_DOURADOS=1`); proptest em que todo registro de JSONL aleatório passa no Schema gerado (opções padrão e literal), conferido pelo `jsonschema`; caso que reprova (número como texto + tratar como número, com linha e motivo); `app/tests/zod.test.ts` roda os `.zod.ts` dourados com o `zod@4` de verdade (devDependency do `app`) no `pnpm test`.
+
+**CLI:** `jasao exportar --zod|--schema [--literal] [--numero-texto manter|numero] arquivo` imprime o código no stdout e, no stderr, "N de M registros passam" e as falhas; sai com 1 se alguma falhar.
+
+**Pendências:** formatos (`date-time`, `email`, `uuid`) não são inferidos; uniões discriminadas só no topo (objetos aninhados com `tipo` saem como objeto com campos opcionais); `enum` para campo de poucos valores; tipos TS puros, Pydantic e afins ficam fora desta fase.

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Registro",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "tipo": {
+          "const": "evento"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "moeda": {
+          "type": "string"
+        },
+        "msg": {
+          "type": "string"
+        },
+        "nivel": {
+          "type": "string"
+        },
+        "duracao": {
+          "type": "number"
+        }
+      },
+      "required": ["tipo", "id", "moeda", "msg", "nivel", "duracao"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "tipo": {
+          "const": "pagamento"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "moeda": {
+          "type": "string"
+        },
+        "valor": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+        },
+        "parcelas": {
+          "type": "integer"
+        },
+        "aprovado": {
+          "type": "boolean"
+        },
+        "protocolo": {
+          "type": "integer"
+        }
+      },
+      "required": ["tipo", "id", "moeda", "valor", "parcelas", "aprovado", "protocolo"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "tipo": {
+          "const": "pedido"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "moeda": {
+          "type": "string"
+        },
+        "cliente": {
+          "type": "object",
+          "properties": {
+            "nome": {
+              "type": "string"
+            },
+            "cidade": {
+              "type": ["string", "null"]
+            }
+          },
+          "required": ["nome", "cidade"]
+        },
+        "itens": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sku": {
+                "type": "string"
+              },
+              "qtd": {
+                "type": "integer"
+              },
+              "preco": {
+                "type": "string",
+                "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+              }
+            },
+            "required": ["sku", "qtd", "preco"]
+          }
+        },
+        "cupom": {
+          "type": "null"
+        },
+        "obs": {
+          "type": "string"
+        }
+      },
+      "required": ["tipo", "id", "moeda", "cliente", "itens", "cupom"]
+    }
+  ]
+}

@@ -8,6 +8,9 @@
 //!                                         resultados em JSONL no stdout, erros por linha no stderr
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
+//!   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>
+//!                                         Zod 4 ou JSON Schema 2020-12 no stdout; valida o
+//!                                         arquivo contra ele e sai com 1 se algum registro falhar
 //!
 //! Com o stdout num terminal, `janela`, `buscar`, `consultar` e `inferir` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
@@ -31,7 +34,8 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
-                   inferir <arquivo> [--json]";
+                   inferir <arquivo> [--json]\n  \
+                   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -72,6 +76,17 @@ fn main() -> ExitCode {
         ["inferir", arquivo, "--json"] | ["inferir", "--json", arquivo] => {
             inferir(arquivo, true, &mut tela())
         }
+        ["exportar", resto @ ..] => match opcoes_exportar(resto) {
+            Some((arquivo, zod, op)) => exportar(arquivo, zod, op).map(|ok| {
+                if !ok {
+                    saida = ExitCode::from(1);
+                }
+            }),
+            None => {
+                eprintln!("{USO}");
+                return ExitCode::from(2);
+            }
+        },
         _ => {
             eprintln!("{USO}");
             return ExitCode::from(2);
@@ -512,6 +527,67 @@ fn inferir(arquivo: &str, json: bool, out: &mut Terminal<impl Write>) -> Resulta
         a.bytes().len() as f64 / 1e6,
     );
     Ok(())
+}
+
+fn opcoes_exportar<'a>(args: &[&'a str]) -> Option<(&'a str, bool, nucleo::exportar::Opcoes)> {
+    let (mut arquivo, mut zod, mut op) = (None, None, nucleo::exportar::Opcoes::default());
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--zod" if zod.is_none() => zod = Some(true),
+            "--schema" if zod.is_none() => zod = Some(false),
+            "--literal" => op.literal = true,
+            "--numero-texto" => {
+                op.numero = match *it.next()? {
+                    "manter" => false,
+                    "numero" => true,
+                    _ => return None,
+                }
+            }
+            _ if arquivo.is_none() && !a.starts_with("--") => arquivo = Some(a),
+            _ => return None,
+        }
+    }
+    Some((arquivo?, zod?, op))
+}
+
+/// Imprime o código e valida o arquivo contra o JSON Schema equivalente. `Ok(false)` se algum
+/// registro falhar.
+fn exportar(
+    arquivo: &str,
+    zod: bool,
+    op: nucleo::exportar::Opcoes,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use nucleo::{estrutura, exportar, validar};
+    let a = abrir(arquivo)?;
+    let nada = AtomicBool::new(false);
+    let inf = estrutura::inferir(a.bytes(), &nada, |_| {});
+    let r = &inf.resumo;
+    let (codigo, schema) = if zod {
+        (exportar::zod(r, op), exportar::schema_da_entrada_zod(r, op))
+    } else {
+        let s = exportar::schema(r, op);
+        (s.clone(), s)
+    };
+    // O código já sai com controles e bidi escapados (`exportar::aspas`): fiel também no terminal.
+    let mut out = io::stdout().lock();
+    out.write_all(codigo.as_bytes())?;
+    out.flush()?;
+    let t = Instant::now();
+    let v = validar::validar(a.bytes(), inf.entrada, &schema, &nada, |_| {})?;
+    let m = v.passam + v.falham;
+    eprintln!(
+        "{} de {m} registros passam · validado em {:.2?}",
+        v.passam,
+        t.elapsed()
+    );
+    if v.invalidas > 0 {
+        eprintln!("{} linhas não são JSON para o validador", v.invalidas);
+    }
+    for f in &v.falhas {
+        eprintln!("linha {}: {}", f.linha + 1, neutro(&f.motivo));
+    }
+    Ok(v.falham == 0 && v.invalidas == 0)
 }
 
 fn opcoes_erros<'a>(args: &[&'a str]) -> Option<(&'a str, bool, usize)> {

@@ -112,6 +112,69 @@ pub struct No {
     pub elementos: Option<Box<No>>,
     /// Maior número de chaves distintas num mesmo objeto.
     max_chaves: u32,
+    /// Para o export: valor único, textos que são número e inteiro fora do alcance do JS.
+    pub valores: Valores,
+}
+
+/// Valor escalar (não nulo) visto num caminho: nenhum, sempre o mesmo, ou vários.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Unico {
+    #[default]
+    Nenhum,
+    /// Tipo e bytes como estão no arquivo (texto sem as aspas, escapes intactos).
+    Um(Tipo, Box<[u8]>),
+    Varios,
+}
+
+/// Maior valor guardado em `Unico::Um`; acima disso o caminho conta como `Varios`.
+pub const UNICO_MAX_BYTES: usize = 256;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Valores {
+    pub unico: Unico,
+    /// Algum texto cujo conteúdo não é um número JSON (`"42"` e `"-1.5e3"` são).
+    pub texto_nao_numerico: bool,
+    /// Algum inteiro fora de ±(2^53 − 1), que o JavaScript não representa exato.
+    pub inteiro_grande: bool,
+}
+
+impl Valores {
+    fn ver(&mut self, t: Tipo, v: &[u8]) {
+        // Caminho quente (todo escalar): não mexe no `unico` quando ele não muda.
+        match &self.unico {
+            Unico::Varios => {}
+            Unico::Um(t0, v0) if *t0 == t && **v0 == *v => {}
+            Unico::Nenhum if v.len() <= UNICO_MAX_BYTES => self.unico = Unico::Um(t, v.into()),
+            _ => self.unico = Unico::Varios,
+        }
+        match t {
+            Tipo::Texto if !self.texto_nao_numerico => self.texto_nao_numerico = !eh_numero(v),
+            Tipo::Inteiro if v.len() > 15 => {
+                let d = v.strip_prefix(b"-").unwrap_or(v);
+                self.inteiro_grande |= std::str::from_utf8(d)
+                    .ok()
+                    .and_then(|d| d.parse::<u64>().ok())
+                    .is_none_or(|n| n > (1 << 53) - 1);
+            }
+            _ => {}
+        }
+    }
+
+    fn combinar(&mut self, o: Valores) {
+        self.unico = match (std::mem::take(&mut self.unico), o.unico) {
+            (Unico::Nenhum, u) | (u, Unico::Nenhum) => u,
+            (Unico::Um(a, x), Unico::Um(b, y)) if a == b && x == y => Unico::Um(a, x),
+            _ => Unico::Varios,
+        };
+        self.texto_nao_numerico |= o.texto_nao_numerico;
+        self.inteiro_grande |= o.inteiro_grande;
+    }
+}
+
+/// O texto inteiro é um número JSON: `-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`.
+pub fn eh_numero(v: &[u8]) -> bool {
+    let mut l = Leitor::default();
+    matches!(v.first(), Some(b'-' | b'0'..=b'9')) && l.numero(v).is_some() && l.p == v.len()
 }
 
 impl Default for No {
@@ -124,6 +187,7 @@ impl Default for No {
             mapa: None,
             elementos: None,
             max_chaves: 0,
+            valores: Valores::default(),
         }
     }
 }
@@ -131,6 +195,11 @@ impl Default for No {
 impl No {
     pub fn tipo(&self, t: Tipo) -> Contagem {
         self.tipos[t as usize]
+    }
+
+    /// Primeira aparição (linha, posição da chave): a ordem dos irmãos.
+    pub fn ordem(&self) -> (u64, u32) {
+        self.ordem
     }
 
     /// Conjunto de tipos vistos, como máscara de bits.
@@ -169,6 +238,7 @@ impl No {
         self.presenca += o.presenca;
         self.ordem = self.ordem.min(o.ordem);
         self.max_chaves = self.max_chaves.max(o.max_chaves);
+        self.valores.combinar(o.valores);
         combinar_opcao(&mut self.elementos, o.elementos);
         if self.mapa.is_some() || o.mapa.is_some() {
             self.colapsar();
@@ -423,6 +493,7 @@ impl Resumo {
                 no.ordem,
                 Discriminador {
                     campo: juntar(".", &segmento(campo)),
+                    cru: campo.clone(),
                     variantes: vs,
                 },
             ));
@@ -457,6 +528,8 @@ pub struct Caminho {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discriminador {
     pub campo: String,
+    /// Chave como está no arquivo (sem aspas, escapes intactos).
+    pub cru: Box<[u8]>,
     pub variantes: Vec<VarianteDiscriminada>,
 }
 
@@ -537,7 +610,7 @@ enum Ev {
     FimLista,
     Chave(usize, usize),
     Texto(usize, usize),
-    Escalar(Tipo),
+    Escalar(Tipo, usize, usize),
 }
 
 #[derive(Default)]
@@ -595,12 +668,18 @@ impl Leitor {
                     Some((a, z)) => evs.push(Ev::Texto(a, z)),
                     None => return false,
                 },
-                Some(b't') if self.literal(b, b"true") => evs.push(Ev::Escalar(Tipo::Booleano)),
-                Some(b'f') if self.literal(b, b"false") => evs.push(Ev::Escalar(Tipo::Booleano)),
-                Some(b'n') if self.literal(b, b"null") => evs.push(Ev::Escalar(Tipo::Nulo)),
-                Some(b'-' | b'0'..=b'9') => match self.numero(b) {
-                    Some(t) => evs.push(Ev::Escalar(t)),
-                    None => return false,
+                Some(b't') if self.literal(b, b"true") => {
+                    evs.push(Ev::Escalar(Tipo::Booleano, self.p - 4, self.p))
+                }
+                Some(b'f') if self.literal(b, b"false") => {
+                    evs.push(Ev::Escalar(Tipo::Booleano, self.p - 5, self.p))
+                }
+                Some(b'n') if self.literal(b, b"null") => {
+                    evs.push(Ev::Escalar(Tipo::Nulo, self.p - 4, self.p))
+                }
+                Some(b'-' | b'0'..=b'9') => match (self.p, self.numero(b)) {
+                    (a, Some(t)) => evs.push(Ev::Escalar(t, a, self.p)),
+                    (_, None) => return false,
                 },
                 _ => return false,
             }
@@ -729,8 +808,16 @@ fn aplicar(no: &mut No, evs: &[Ev], i: &mut usize, b: &[u8], linha: u64) {
     let ev = evs[*i];
     *i += 1;
     match ev {
-        Ev::Escalar(t) => no.tipos[t as usize].ver(linha),
-        Ev::Texto(..) => no.tipos[Tipo::Texto as usize].ver(linha),
+        Ev::Escalar(t, a, z) => {
+            no.tipos[t as usize].ver(linha);
+            if t != Tipo::Nulo {
+                no.valores.ver(t, &b[a..z]);
+            }
+        }
+        Ev::Texto(a, z) => {
+            no.tipos[Tipo::Texto as usize].ver(linha);
+            no.valores.ver(Tipo::Texto, &b[a..z]);
+        }
         Ev::Lista => {
             no.tipos[Tipo::Lista as usize].ver(linha);
             while evs[*i] != Ev::FimLista {
@@ -1033,6 +1120,50 @@ fn json_unico(
             }
         }
     }
+}
+
+/// Registros de um arquivo que `inferir` leu como JSON único, em ordem: `f(linha, bytes)` para
+/// cada elemento da lista do topo, ou uma vez com o objeto do topo. Para no primeiro trecho
+/// inválido, ao cancelar ou quando `f` devolve `false`. Devolve a última linha alcançada.
+pub fn registros_json_unico<'a>(
+    dados: &'a [u8],
+    cancelar: &AtomicBool,
+    mut f: impl FnMut(u64, &'a [u8]) -> bool,
+) -> u64 {
+    let base = if dados.starts_with(BOM) { BOM.len() } else { 0 };
+    let mut l = Leitor {
+        p: base,
+        ..Leitor::default()
+    };
+    l.ws(dados);
+    let mut evs = Vec::new();
+    match dados.get(l.p) {
+        Some(b'{') => {
+            f(l.linha, &dados[l.p..]);
+        }
+        Some(b'[') => {
+            l.p += 1;
+            l.ws(dados);
+            if dados.get(l.p) == Some(&b']') {
+                return l.linha;
+            }
+            while !cancelar.load(Relaxed) {
+                l.ws(dados);
+                let (ini, linha) = (l.p, l.linha);
+                evs.clear();
+                if !l.valor(dados, &mut evs) || !f(linha, &dados[ini..l.p]) {
+                    break;
+                }
+                l.ws(dados);
+                match dados.get(l.p) {
+                    Some(b',') => l.p += 1,
+                    _ => break,
+                }
+            }
+        }
+        _ => {}
+    }
+    l.linha
 }
 
 #[cfg(test)]

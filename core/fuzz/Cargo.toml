@@ -93,3 +93,9 @@ path = "fuzz_targets/texto.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "exportar"
+path = "fuzz_targets/exportar.rs"
+test = false
+doc = false
