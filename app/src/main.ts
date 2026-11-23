@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ask, open } from "@tauri-apps/plugin-dialog";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { aposFechar, ciclo, EXTENSOES, nomes, porAtalho, posicaoNova, triar } from "./abas";
 import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
@@ -706,7 +706,11 @@ void listen<{ abertura: number; lidos: number; total: number }>("descompactando"
 function erroAoAbrir(erro: unknown): string {
   const e = String(erro);
   if (e === "jasao:cancelada") return t.compactado.cancelada;
-  const textos: Record<string, string> = { "jasao:razao": t.compactado.recusada, "jasao:teto": t.compactado.teto };
+  const textos: Record<string, string> = {
+    "jasao:razao": t.compactado.recusada,
+    "jasao:teto": t.compactado.teto,
+    "jasao:negado": t.negado,
+  };
   return `${t.erro}: ${textos[e] ?? e}`;
 }
 
@@ -1195,8 +1199,8 @@ $("tema").addEventListener("click", () => {
 if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.dataset.theme = "dark";
 
 async function abrirDialogo(): Promise<void> {
-  const caminhos = await open({ multiple: true, filters: [{ name: "JSON, JSON Lines", extensions: EXTENSOES }] });
-  for (const c of caminhos ?? []) await abrirEmAba(c);
+  // O diálogo roda no Rust: o que o usuário escolhe fica concedido lá (ver `autorizado`).
+  for (const c of await invoke<string[]>("escolher", { extensoes: EXTENSOES })) await abrirEmAba(c);
 }
 $("abrir").addEventListener("click", () => void abrirDialogo());
 $("sem-arquivo-abrir").addEventListener("click", () => void abrirDialogo());

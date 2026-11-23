@@ -4,7 +4,8 @@
 //! e `arquivos_pedidos` o que chegou depois, a cada aviso `abrir-arquivos`. Mesmo desenho do
 //! `open.rs` do Leve (ver docs/decisoes.md, "Vários arquivos pedidos pelo SO", lá).
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -66,6 +67,27 @@ impl Abertura {
     }
 }
 
+/// Caminhos que o usuário concedeu nesta execução (diálogo, arraste, pedido do sistema) e o
+/// resultado de consulta que o próprio backend cria, canônicos: link e `..` caem no alvo real.
+/// Só vive na memória do backend; a interface nunca escreve aqui (ver `autorizado` em lib.rs).
+#[derive(Default)]
+pub struct Concedidos(Mutex<HashSet<PathBuf>>);
+
+impl Concedidos {
+    /// Concede o alvo real de `caminho`; inexistente não concede nada.
+    pub fn conceder(&self, caminho: &Path) {
+        if let Ok(c) = std::fs::canonicalize(caminho) {
+            self.0.lock().unwrap().insert(c);
+        }
+    }
+
+    /// Se `canonico` (já canonicalizado) foi concedido. Igualdade exata: pasta concedida não
+    /// concede o que está dentro dela.
+    pub fn tem(&self, canonico: &Path) -> bool {
+        self.0.lock().unwrap().contains(canonico)
+    }
+}
+
 /// Argumentos que são caminhos (não opções), resolvidos contra `cwd`: o de quem chamou, que na
 /// 2ª instância vem do plugin, porque a 1ª tem outra pasta atual.
 pub fn caminhos_argv(argv: &[String], cwd: &Path) -> Vec<String> {
@@ -76,11 +98,14 @@ pub fn caminhos_argv(argv: &[String], cwd: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Pedido do sistema com o app já aberto: enfileira, avisa a interface e traz a janela à frente.
+/// Pedido do sistema com o app já aberto (o pedido é a concessão): enfileira, avisa a interface
+/// e traz a janela à frente.
 pub fn pedir<R: Runtime>(app: &AppHandle<R>, caminhos: Vec<String>) {
     let abertura = app.state::<Abertura>();
+    let concedidos = app.state::<Concedidos>();
     let vazio = caminhos.is_empty();
     for c in caminhos {
+        concedidos.conceder(Path::new(&c));
         abertura.enfileirar(c);
     }
     if !vazio {

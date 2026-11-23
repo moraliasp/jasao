@@ -332,3 +332,7 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Testado:** `filho::testes` (teto, cancelar com filtro preso, recursão sem fundo) e `comandos_pelo_ipc` (recursão pelo comando, FIFO recusado em menos de 2 s). Nos testes o filho é o próprio binário de teste rodando só `filho::testes::modo_filho`.
 
 **Não verificado:** janela nativa aberta (o filho no `.app` empacotado do macOS e no Windows, onde o binário é do subsistema gráfico).
+
+## Caminhos concedidos no IPC (achado 13, 23/11/2026)
+
+**Escolha:** `abrir`, `consultar` e `pastas` só aceitam caminho que o backend concedeu nesta execução (diálogo, agora no Rust pelo comando `escolher`; arraste, pelo evento de soltar no Rust; argv, associação e 2ª instância; o resultado de consulta que ele mesmo cria) ou que está em `recentes.json` (só recebe caminho que já passou pela checagem e mora no diretório de dados, fora do alcance da webview), comparando o canônico e abrindo o canônico; o resto recebe `jasao:negado`, exista o arquivo ou não, e `recente_ausente` só olha o disco para caminho da lista.
