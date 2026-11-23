@@ -291,3 +291,45 @@ fn cache_so_do_dono() {
         assert_eq!(modo(&a), 0o600, "{}", a.display());
     }
 }
+
+/// A reserva cresce com o que sai, ainda durante a escrita (ver `Reserva` em `para_cache`): o
+/// cache velho sai antes de o descompactado terminar, não só na limpeza final.
+#[test]
+fn reserva_despeja_durante_a_escrita() {
+    let c = Caso::novo();
+    fs::create_dir_all(c.cache()).unwrap();
+    let velho = c.cache().join("0000000000000000.dados");
+    fs::write(&velho, vec![0u8; 1 << 20]).unwrap();
+    // zstd em fluxo não declara o tamanho: a estimativa inicial é o compactado (minúsculo).
+    let dados = repetido(4 << 20);
+    let p = c.escrever("s.zst", &zst(&dados));
+    // O último aviso de progresso vem depois da última escrita e antes da limpeza final.
+    let velho_no_fim = std::cell::Cell::new(None);
+    let progresso = |_: u64, _: u64| velho_no_fim.set(Some(velho.exists()));
+    let op = Opcoes {
+        teto_cache: 3 << 20,
+        progresso: Some(&progresso),
+        ..c.op()
+    };
+    assert_eq!(abrir(&p, &op).bytes(), dados);
+    assert_eq!(
+        velho_no_fim.get(),
+        Some(false),
+        "o cache velho só saiu no fim"
+    );
+}
+
+/// Link pré-plantado no lugar da pasta do cache: recusa, e nada vai para o alvo.
+#[cfg(unix)]
+#[test]
+fn pasta_do_cache_link_e_recusada() {
+    let c = Caso::novo();
+    let alvo = c.pasta.path().join("alvo");
+    fs::create_dir(&alvo).unwrap();
+    std::os::unix::fs::symlink(&alvo, c.cache()).unwrap();
+    let e = ArquivoLinhas::abrir_com(c.escrever("p.gz", &gz(JSONL)), &c.op())
+        .err()
+        .expect("abriu com a pasta do cache trocada por link");
+    assert!(e.to_string().contains("link simbólico"), "{e}");
+    assert_eq!(fs::read_dir(&alvo).unwrap().count(), 0);
+}

@@ -43,18 +43,25 @@ struct Estado {
     abrindo: Aberturas,
 }
 
-/// Flags de cancelamento por abertura. A chave é o id que a interface dá a cada abertura,
-/// não o caminho: o mesmo arquivo pode estar abrindo em duas abas.
+/// Flags de cancelamento por abertura. A chave é um id por abertura, não o caminho: o mesmo
+/// arquivo pode estar abrindo em duas abas. O id vem do backend (`nova_abertura`), que já deixa
+/// a flag registrada: o Cancelar que chega antes de o `abrir` começar não se perde, e o id não se
+/// repete nesta execução (nem depois de recarregar a página).
 #[derive(Default)]
-struct Aberturas(Mutex<HashMap<u32, Arc<AtomicBool>>>);
+struct Aberturas(Mutex<HashMap<u32, Arc<AtomicBool>>>, AtomicU32);
 
 impl Aberturas {
+    fn nova(&self) -> u32 {
+        let id = self.1.fetch_add(1, Relaxed) + 1;
+        self.registrar(id);
+        id
+    }
+    /// A flag de `id`, a já registrada (talvez já cancelada) ou uma nova.
     fn registrar(&self, id: u32) -> Arc<AtomicBool> {
-        let c = Arc::new(AtomicBool::new(false));
-        if let Ok(mut m) = self.0.lock() {
-            m.insert(id, Arc::clone(&c));
+        match self.0.lock() {
+            Ok(mut m) => Arc::clone(m.entry(id).or_default()),
+            Err(_) => Arc::default(),
         }
-        c
     }
     /// Tira `id` se ainda for a flag `c` (o id pode ter sido reusado).
     fn soltar(&self, id: u32, c: &Arc<AtomicBool>) {
@@ -343,6 +350,12 @@ fn abrir_cancelavel<R: Runtime>(
     let r = abrir_linhas_com(caminho, &op);
     estado.abrindo.soltar(abertura, &cancelar);
     r
+}
+
+/// Id para a próxima abertura (ver `Aberturas`); a interface o passa ao `abrir`.
+#[tauri::command]
+fn nova_abertura(estado: State<'_, Estado>) -> u32 {
+    estado.abrindo.nova()
 }
 
 /// Cancela a abertura `abertura` em curso (o `abrir` dela falha com `jasao:cancelada`).
@@ -1129,6 +1142,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             limpar_recentes,
             recente_ausente,
             abrir,
+            nova_abertura,
             cancelar_abertura,
             fechar,
             pastas,
@@ -1337,13 +1351,19 @@ mod testes {
         let (um, dois) = (a.registrar(1), a.registrar(2));
         a.cancelar(1);
         assert!(um.load(Relaxed) && !dois.load(Relaxed));
-        // Id reusado: a abertura antiga não solta a nova.
-        let novo = a.registrar(2);
         a.soltar(2, &dois);
-        a.cancelar(2);
-        assert!(novo.load(Relaxed));
-        a.soltar(2, &novo);
         a.cancelar(3); // desconhecido: nada
+    }
+
+    /// Cancelar entre o `nova_abertura` e o `abrir` não se perde: o `abrir` já nasce cancelado.
+    #[test]
+    fn cancelar_antes_do_abrir_vale() {
+        let a = Aberturas::default();
+        let (x, y) = (a.nova(), a.nova());
+        assert_ne!(x, y);
+        a.cancelar(x);
+        assert!(a.registrar(x).load(Relaxed));
+        assert!(!a.registrar(y).load(Relaxed));
     }
 
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
@@ -1389,12 +1409,14 @@ mod testes {
         assert!(erro.as_str().unwrap().contains("não está aberto"), "{erro}");
         assert!(em(1, "estrutura", json!({})).is_err());
         let caminho = f.path().to_str().unwrap();
+        let abertura = chamar("nova_abertura", json!({})).unwrap();
+        assert_ne!(abertura, chamar("nova_abertura", json!({})).unwrap());
         assert_eq!(
-            chamar("abrir", json!({ "caminho": caminho, "abertura": 7 })),
+            chamar("abrir", json!({ "caminho": caminho, "abertura": abertura })),
             Ok(json!({"id": 1, "total": 2}))
         );
         assert_eq!(
-            chamar("cancelar_abertura", json!({ "abertura": 7 })),
+            chamar("cancelar_abertura", json!({ "abertura": abertura })),
             Ok(Value::Null)
         );
         // A varredura roda em outra thread: espera o fim pelo próprio comando.

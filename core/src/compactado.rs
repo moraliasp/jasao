@@ -302,6 +302,16 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
         None => dir_cache_sistema()?,
     };
     fs::create_dir_all(&dir)?;
+    // Link pré-plantado no lugar da pasta: o `privado` e o cache iriam para o alvo dele.
+    if fs::symlink_metadata(&dir)?.file_type().is_symlink() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "a pasta do cache {} é um link simbólico; apague o link e tente de novo",
+                dir.display()
+            ),
+        ));
+    }
     privado(&dir, 0o700)?;
     let canonico = fs::canonicalize(caminho)?;
     let chave = fnv(&[
