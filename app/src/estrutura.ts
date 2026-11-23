@@ -1,6 +1,7 @@
 // Modo Estrutura: desenha o que `nucleo::estrutura` inferiu (comando `estrutura`). Lógica pura,
 // sem DOM, para rodar com `node --test`. Nada de inferência aqui: só formatação.
 import type { Textos } from "./i18n.ts";
+import { visivel } from "./texto.ts";
 
 export interface CaminhoE {
   caminho: string;
@@ -62,7 +63,7 @@ export function itens(e: Estrutura, t: Textos, fmt: Fmt): ItemE[] {
       caminho: c.caminho,
       linha: primeira(c),
       rotulo: `${c.caminho}: ${ti}; ${pr}${opcional ? `; ${t.estrutura.opcional}` : ""}`,
-      html: `<span class="ec" style="padding-left:${8 + c.profundidade * 20}px" title="${esc(c.caminho)}">${esc(nome)}</span>` +
+      html: `<span class="ec" style="padding-left:${8 + c.profundidade * 20}px" title="${esc(c.caminho)}">${visivel(nome)}</span>` +
         `<span class="et">${esc(ti)}</span><span class="ep${opcional ? " op" : ""}">${esc(pr)}</span>`,
     };
   });
@@ -74,8 +75,8 @@ export function itens(e: Estrutura, t: Textos, fmt: Fmt): ItemE[] {
         caminho: d.campo,
         linha: v.linha,
         rotulo: `${t.estrutura.formato(d.campo, v.valor)}: ${t.estrutura.registros(fmt(v.registros))}; ${det}`,
-        html: `<span class="ec" style="padding-left:8px">${esc(`${d.campo} = "${v.valor}"`)}</span>` +
-          `<span class="et">${esc(det)}</span><span class="ep">${esc(t.estrutura.registros(fmt(v.registros)))}</span>`,
+        html: `<span class="ec" style="padding-left:8px">${visivel(`${d.campo} = "${v.valor}"`)}</span>` +
+          `<span class="et">${visivel(det)}</span><span class="ep">${esc(t.estrutura.registros(fmt(v.registros)))}</span>`,
       });
     }
   return out;
