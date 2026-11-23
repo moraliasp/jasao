@@ -224,3 +224,70 @@ fn compactado_vazio_abre_sem_linhas() {
     let a = abrir(&c.escrever("v.gz", &gz(b"")), &c.op());
     assert_eq!(a.linhas(), 0);
 }
+
+/// Mesma linha repetida: comprime centenas de vezes (como a bomba de 292 KB → 200 MB da auditoria).
+fn repetido(bytes: usize) -> Vec<u8> {
+    let linha = b"{\"tipo\":\"evento\",\"nivel\":\"info\",\"msg\":\"ok\"}\n";
+    linha.repeat(bytes / linha.len())
+}
+
+#[test]
+fn razao_padrao_recusa_bomba_de_centenas_de_vezes() {
+    let c = Caso::novo();
+    let dados = repetido(64 << 20);
+    let compactado = gz(&dados);
+    let razao = dados.len() / compactado.len();
+    assert!((150..1000).contains(&razao), "razão {razao}×");
+    let p = c.escrever("bomba.jsonl.gz", &compactado);
+    let e = ArquivoLinhas::abrir_com(&p, &c.op())
+        .err()
+        .expect("bomba abriu com os limites padrão");
+    assert_eq!(e.kind(), ErrorKind::FileTooLarge, "{e}");
+    assert!(nucleo::compactado::razao_estourada(&e), "{e}");
+    assert!(c.no_cache().is_empty(), "{:?}", c.no_cache());
+    // Abrir assim mesmo (a interface pergunta antes): sem teto de razão, abre inteiro.
+    let op = Opcoes {
+        max_razao: u64::MAX,
+        ..c.op()
+    };
+    assert_eq!(abrir(&p, &op).bytes(), dados);
+}
+
+#[test]
+fn tamanho_declarado_nao_despeja_o_cache() {
+    let c = Caso::novo();
+    let op = Opcoes {
+        teto_cache: 1 << 30,
+        ..c.op()
+    };
+    abrir(&c.escrever("velho.gz", &gz(JSONL)), &op);
+    let [velho] = c.no_cache().try_into().unwrap();
+    // gzip minúsculo que declara 4 GiB no ISIZE.
+    let mut mentiroso = gz(JSONL);
+    let n = mentiroso.len();
+    mentiroso[n - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
+    let _ = ArquivoLinhas::abrir_com(c.escrever("mentiroso.gz", &mentiroso), &op);
+    assert!(velho.exists(), "o declarado despejou o cache");
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_so_do_dono() {
+    use std::os::unix::fs::PermissionsExt;
+    let modo = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let c = Caso::novo();
+    // Cache de versão anterior, aberto para todos.
+    fs::create_dir_all(c.cache()).unwrap();
+    fs::set_permissions(c.cache(), fs::Permissions::from_mode(0o755)).unwrap();
+    let antigo = c.cache().join("0000000000000000.dados");
+    fs::write(&antigo, JSONL).unwrap();
+    fs::set_permissions(&antigo, fs::Permissions::from_mode(0o644)).unwrap();
+
+    abrir(&c.escrever("p.gz", &gz(JSONL)), &c.op());
+    assert_eq!(modo(&c.cache()), 0o700);
+    let arquivos = c.no_cache();
+    assert_eq!(arquivos.len(), 2);
+    for a in arquivos {
+        assert_eq!(modo(&a), 0o600, "{}", a.display());
+    }
+}

@@ -57,10 +57,13 @@ impl Default for Opcoes<'_> {
     fn default() -> Self {
         Self {
             dir_cache: None,
-            teto_cache: 20 * GIB,
+            // Cabe um descompactado do tamanho máximo; o dobro só deixava mais lixo em disco.
+            teto_cache: 10 * GIB,
             // Plano, seção 3: o teto de tamanho é 10 GB.
             max_saida: 10 * GIB,
-            max_razao: 1000,
+            // JSONL de log comprime 10–30×; 100× dá folga de 3× para log muito repetitivo. Acima
+            // disso o app pergunta antes de abrir (ver `RazaoEstourada`).
+            max_razao: 100,
             cancelar: None,
             progresso: None,
         }
@@ -69,6 +72,42 @@ impl Default for Opcoes<'_> {
 
 fn cancelado() -> io::Error {
     io::Error::new(ErrorKind::Interrupted, "abertura cancelada")
+}
+
+/// Descompactado passou de `max_razao` × compactado. Pode ser bomba ou log muito repetitivo:
+/// quem chama pode oferecer abrir assim mesmo, com `max_razao` maior.
+#[derive(Debug)]
+pub struct RazaoEstourada {
+    /// Saída aceita, em bytes.
+    pub limite: u64,
+    pub total: u64,
+    pub razao: u64,
+}
+
+impl std::fmt::Display for RazaoEstourada {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "descompactado passou de {} MiB, mais de {}× o compactado ({} KiB); parece bomba de \
+             descompactação; se for confiável, descompacte fora do app e abra o resultado",
+            self.limite / MIB,
+            self.razao,
+            self.total.div_ceil(1024)
+        )
+    }
+}
+
+impl std::error::Error for RazaoEstourada {}
+
+/// Se o erro é a razão estourada (e não o teto absoluto, que não se contorna).
+pub fn razao_estourada(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|i| i.is::<RazaoEstourada>())
+}
+
+/// Saída máxima aceita para um compactado de `total` bytes.
+fn limite(op: &Opcoes, total: u64) -> u64 {
+    op.max_saida
+        .min(total.saturating_mul(op.max_razao).max(SAIDA_LIVRE))
 }
 
 fn corrompido(formato: Formato, e: &io::Error) -> io::Error {
@@ -102,9 +141,7 @@ pub fn descompactar(
         Formato::Zstd => Box::new(zstd::stream::read::Decoder::new(contador)?),
         Formato::Cru => Box::new(contador),
     };
-    let limite = op
-        .max_saida
-        .min(total.saturating_mul(op.max_razao).max(SAIDA_LIVRE));
+    let limite = limite(op, total);
     let mut buf = vec![0u8; 256 * 1024];
     let mut escritos = 0u64;
     loop {
@@ -121,18 +158,25 @@ pub fn descompactar(
             Err(e) => return Err(corrompido(formato, &e)),
         };
         escritos += n as u64;
+        if escritos > limite && limite < op.max_saida {
+            return Err(io::Error::new(
+                ErrorKind::FileTooLarge,
+                RazaoEstourada {
+                    limite,
+                    total,
+                    razao: op.max_razao,
+                },
+            ));
+        }
         if escritos > limite {
             let mb = |b: u64| b / MIB;
             return Err(io::Error::new(
                 ErrorKind::FileTooLarge,
                 format!(
-                    "descompactado passou de {} MiB (compactado tem {} MiB; limites: {} MiB e razão {}×); \
-                     parece bomba de descompactação ou é grande demais para abrir; se for confiável, \
+                    "descompactado passou de {} MiB (compactado tem {} MiB), o teto do app; \
                      descompacte fora do app e abra o resultado",
                     mb(limite),
-                    mb(total),
-                    mb(op.max_saida),
-                    op.max_razao
+                    mb(total)
                 ),
             ));
         }
@@ -258,6 +302,7 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
         None => dir_cache_sistema()?,
     };
     fs::create_dir_all(&dir)?;
+    privado(&dir, 0o700)?;
     let canonico = fs::canonicalize(caminho)?;
     let chave = fnv(&[
         canonico.as_os_str().as_encoded_bytes(),
@@ -272,28 +317,20 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
             .write(true)
             .open(&destino)
             .and_then(|f| f.set_modified(SystemTime::now()));
+        let _ = privado(&destino, 0o600);
         if let Some(p) = op.progresso {
             p(total, total);
         }
         return Ok(destino);
     }
 
+    // O declarado vem do arquivo (pode mentir): só uma dica, nunca acima do que o limite deixa
+    // sair. Daí em diante a reserva cresce com o que de fato sai (ver `Reserva`).
+    let limite = limite(op, total);
     let estimativa = tamanho_declarado(&mut arquivo, formato, total)?
         .max(total)
-        .min(op.max_saida);
-    limpar(&dir, op.teto_cache.saturating_sub(estimativa), None)?;
-    let livre = fs4::available_space(&dir)?;
-    if livre < estimativa {
-        return Err(io::Error::new(
-            ErrorKind::StorageFull,
-            format!(
-                "sem espaço para descompactar: precisa de ~{} MiB em {}, há {} MiB livres; libere espaço",
-                estimativa / MIB,
-                dir.display(),
-                livre / MIB
-            ),
-        ));
-    }
+        .min(limite);
+    reservar(&dir, op.teto_cache, estimativa, 0)?;
 
     let tmp = dir.join(format!(
         "{chave:016x}.{}.{}.parcial",
@@ -305,8 +342,18 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
     ));
     let mut guarda = Parcial(Some(tmp.clone()));
     let saida = BufWriter::with_capacity(MIB as usize, File::create(&tmp)?);
+    privado(&tmp, 0o600)?;
+    let saida = Reserva {
+        dentro: saida,
+        dir: &dir,
+        teto: op.teto_cache,
+        limite,
+        reservado: estimativa,
+        escritos: 0,
+    };
     descompactar(&mut arquivo, formato, total, saida, op).map_err(|e| {
-        if e.kind() == ErrorKind::StorageFull {
+        // Só o disco cheio do sistema; o nosso (`reservar`) já tem mensagem.
+        if e.kind() == ErrorKind::StorageFull && e.get_ref().is_none() {
             io::Error::new(
                 ErrorKind::StorageFull,
                 format!(
@@ -325,6 +372,69 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
     Ok(destino)
 }
 
+/// Permissão só do dono (o cache guarda o conteúdo de arquivos do usuário).
+#[cfg(unix)]
+fn privado(p: &Path, modo: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(p, fs::Permissions::from_mode(modo))
+}
+
+#[cfg(not(unix))]
+fn privado(_: &Path, _: u32) -> io::Result<()> {
+    Ok(())
+}
+
+/// Abre espaço para `reserva` bytes de descompactado, dos quais `escritos` já estão em disco:
+/// tira do cache o que for preciso e confere o espaço livre.
+fn reservar(dir: &Path, teto: u64, reserva: u64, escritos: u64) -> io::Result<()> {
+    limpar(dir, teto.saturating_sub(reserva), None)?;
+    let falta = reserva.saturating_sub(escritos);
+    let livre = fs4::available_space(dir)?;
+    if livre < falta {
+        return Err(io::Error::new(
+            ErrorKind::StorageFull,
+            format!(
+                "sem espaço para descompactar: precisa de mais ~{} MiB em {}, há {} MiB livres; libere espaço",
+                falta.div_ceil(MIB),
+                dir.display(),
+                livre / MIB
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Saída do descompactado que reserva espaço pelo tamanho real: ao passar do reservado, dobra a
+/// reserva (até `limite`) e chama `reservar` de novo.
+struct Reserva<'a, W> {
+    dentro: W,
+    dir: &'a Path,
+    teto: u64,
+    limite: u64,
+    reservado: u64,
+    escritos: u64,
+}
+
+impl<W: Write> Write for Reserva<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.dentro.write(buf)?;
+        self.escritos += n as u64;
+        if self.escritos > self.reservado {
+            self.reservado = self
+                .escritos
+                .saturating_mul(2)
+                .min(self.limite)
+                .max(self.escritos);
+            reservar(self.dir, self.teto, self.reservado, self.escritos)?;
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.dentro.flush()
+    }
+}
+
 /// Tira do cache os arquivos usados há mais tempo até a soma caber em `teto`. Nunca tira
 /// `manter`. Parciais com mais de um dia (sobra de processo que morreu) também saem.
 fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
@@ -336,7 +446,11 @@ fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
         let meta = e.metadata()?;
         let quando = meta.modified()?;
         match caminho.extension().and_then(|x| x.to_str()) {
-            Some(EXT_CACHE) => entradas.push((quando, meta.len(), caminho)),
+            Some(EXT_CACHE) => {
+                // Cache de versão anterior foi criado aberto para todos.
+                let _ = privado(&caminho, 0o600);
+                entradas.push((quando, meta.len(), caminho));
+            }
             Some("parcial")
                 if agora.duration_since(quando).unwrap_or_default()
                     > Duration::from_secs(86_400) =>
@@ -374,5 +488,27 @@ mod testes {
         assert_eq!(detectar(b"\x1f"), Formato::Cru);
         assert_eq!(detectar(b"{}"), Formato::Cru);
         assert_eq!(detectar(b""), Formato::Cru);
+    }
+
+    #[test]
+    fn reserva_despeja_pelo_que_sai() {
+        let dir = tempfile::tempdir().unwrap();
+        let velho = dir.path().join("velho.dados");
+        fs::write(&velho, [0u8; 600]).unwrap();
+        let mut r = Reserva {
+            dentro: Vec::new(),
+            dir: dir.path(),
+            teto: 2000,
+            limite: 1 << 20,
+            reservado: 10,
+            escritos: 0,
+        };
+        r.write_all(&[1u8; 300]).unwrap();
+        // Reserva 600 (o dobro do que saiu): 600 + 600 cabem no teto.
+        assert!(velho.exists());
+        r.write_all(&[1u8; 800]).unwrap();
+        // Reserva 2200 passou do teto: o velho sai antes de o descompactado crescer mais.
+        assert!(!velho.exists());
+        assert_eq!((r.escritos, r.reservado), (1100, 2200));
     }
 }
