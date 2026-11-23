@@ -39,8 +39,36 @@ const INTERVALO: Duration = Duration::from_millis(100);
 struct Estado {
     docs: Mutex<HashMap<u32, Arc<Doc>>>,
     proximo: AtomicU32,
-    /// Descompactações em curso, por caminho (ver `cancelar_abertura`).
-    abrindo: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Descompactações em curso (ver `cancelar_abertura`).
+    abrindo: Aberturas,
+}
+
+/// Flags de cancelamento por abertura. A chave é o id que a interface dá a cada abertura,
+/// não o caminho: o mesmo arquivo pode estar abrindo em duas abas.
+#[derive(Default)]
+struct Aberturas(Mutex<HashMap<u32, Arc<AtomicBool>>>);
+
+impl Aberturas {
+    fn registrar(&self, id: u32) -> Arc<AtomicBool> {
+        let c = Arc::new(AtomicBool::new(false));
+        if let Ok(mut m) = self.0.lock() {
+            m.insert(id, Arc::clone(&c));
+        }
+        c
+    }
+    /// Tira `id` se ainda for a flag `c` (o id pode ter sido reusado).
+    fn soltar(&self, id: u32, c: &Arc<AtomicBool>) {
+        if let Ok(mut m) = self.0.lock()
+            && m.get(&id).is_some_and(|x| Arc::ptr_eq(x, c))
+        {
+            m.remove(&id);
+        }
+    }
+    fn cancelar(&self, id: u32) {
+        if let Some(c) = self.0.lock().ok().as_ref().and_then(|m| m.get(&id)) {
+            c.store(true, Relaxed);
+        }
+    }
 }
 
 /// Um arquivo aberto e o que roda sobre ele. As threads de 2º plano guardam só um `Weak`:
@@ -271,26 +299,24 @@ fn abrir_linhas_com(caminho: &str, op: &Opcoes) -> Result<ArquivoLinhas, String>
     })
 }
 
-/// Evento `descompactando`: progresso da descompactação de `caminho`, em bytes do compactado.
+/// Evento `descompactando`: progresso da abertura `abertura`, em bytes do compactado.
 #[derive(Clone, Serialize)]
-struct Descompactando<'a> {
-    caminho: &'a str,
+struct Descompactando {
+    abertura: u32,
     lidos: u64,
     total: u64,
 }
 
-/// Abre `caminho` descompactando com progresso e cancelável por `cancelar_abertura`.
+/// Abre `caminho` descompactando com progresso e cancelável por `cancelar_abertura(abertura)`.
 /// `forcar`: sem teto de razão (a interface perguntou); o teto absoluto continua.
 fn abrir_cancelavel<R: Runtime>(
     caminho: &str,
+    abertura: u32,
     forcar: bool,
     app: &AppHandle<R>,
     estado: &Estado,
 ) -> Result<ArquivoLinhas, String> {
-    let cancelar = Arc::new(AtomicBool::new(false));
-    if let Ok(mut m) = estado.abrindo.lock() {
-        m.insert(caminho.into(), Arc::clone(&cancelar));
-    }
+    let cancelar = estado.abrindo.registrar(abertura);
     let ultimo = std::cell::Cell::new(None::<Instant>);
     let progresso = |lidos: u64, total: u64| {
         if lidos < total && ultimo.get().is_some_and(|t| t.elapsed() < INTERVALO) {
@@ -300,7 +326,7 @@ fn abrir_cancelavel<R: Runtime>(
         let _ = app.emit(
             "descompactando",
             Descompactando {
-                caminho,
+                abertura,
                 lidos,
                 total,
             },
@@ -315,26 +341,14 @@ fn abrir_cancelavel<R: Runtime>(
         op.max_razao = u64::MAX;
     }
     let r = abrir_linhas_com(caminho, &op);
-    if let Ok(mut m) = estado.abrindo.lock()
-        && m.get(caminho).is_some_and(|c| Arc::ptr_eq(c, &cancelar))
-    {
-        m.remove(caminho);
-    }
+    estado.abrindo.soltar(abertura, &cancelar);
     r
 }
 
-/// Cancela a descompactação de `caminho` em curso (o `abrir` dele falha com `jasao:cancelada`).
+/// Cancela a abertura `abertura` em curso (o `abrir` dela falha com `jasao:cancelada`).
 #[tauri::command]
-fn cancelar_abertura(caminho: String, estado: State<'_, Estado>) -> Result<(), String> {
-    if let Some(c) = estado
-        .abrindo
-        .lock()
-        .map_err(|e| e.to_string())?
-        .get(&caminho)
-    {
-        c.store(true, Relaxed);
-    }
-    Ok(())
+fn cancelar_abertura(abertura: u32, estado: State<'_, Estado>) {
+    estado.abrindo.cancelar(abertura);
 }
 
 /// Se cada caminho é uma pasta (o arraste avisa em vez de tentar abrir).
@@ -421,12 +435,14 @@ struct Aberto {
 async fn abrir<R: Runtime>(
     caminho: String,
     id: Option<u32>,
+    abertura: Option<u32>,
     forcar: Option<bool>,
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<Aberto, String> {
     let arvore = Arvore::new(abrir_cancelavel(
         &caminho,
+        abertura.unwrap_or(0),
         forcar.unwrap_or(false),
         &app,
         &estado,
@@ -1232,6 +1248,22 @@ mod testes {
     use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
     use tauri::webview::{InvokeRequest, WebviewWindowBuilder};
 
+    /// Mesmo arquivo abrindo em duas abas: cancelar uma não cancela a outra.
+    #[test]
+    fn cancelar_abertura_e_por_abertura() {
+        let a = Aberturas::default();
+        let (um, dois) = (a.registrar(1), a.registrar(2));
+        a.cancelar(1);
+        assert!(um.load(Relaxed) && !dois.load(Relaxed));
+        // Id reusado: a abertura antiga não solta a nova.
+        let novo = a.registrar(2);
+        a.soltar(2, &dois);
+        a.cancelar(2);
+        assert!(novo.load(Relaxed));
+        a.soltar(2, &novo);
+        a.cancelar(3); // desconhecido: nada
+    }
+
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
     #[test]
     fn comandos_pelo_ipc() {
@@ -1272,8 +1304,12 @@ mod testes {
         assert!(em(1, "estrutura", json!({})).is_err());
         let caminho = f.path().to_str().unwrap();
         assert_eq!(
-            chamar("abrir", json!({ "caminho": caminho })),
+            chamar("abrir", json!({ "caminho": caminho, "abertura": 7 })),
             Ok(json!({"id": 1, "total": 2}))
+        );
+        assert_eq!(
+            chamar("cancelar_abertura", json!({ "abertura": 7 })),
+            Ok(Value::Null)
         );
         // A varredura roda em outra thread: espera o fim pelo próprio comando.
         let resumo = (0..200)

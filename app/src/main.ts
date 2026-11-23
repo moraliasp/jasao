@@ -682,19 +682,21 @@ function prepararRegua(): void {
   regua.busca(busca.ativa());
 }
 
-/** Abas abrindo agora, com o caminho: a descompactação delas tem progresso e cancelamento. */
-const abrindo = new Map<Aba, string>();
+/** Abas abrindo agora, com o id da abertura: a descompactação delas tem progresso e cancelamento.
+ * Id e não caminho: o mesmo arquivo pode estar abrindo em duas abas. */
+const abrindo = new Map<Aba, number>();
+let ultimaAbertura = 0;
 const cancelarAbertura = $<HTMLButtonElement>("cancelar-abertura");
 const mostrarCancelar = () => void (cancelarAbertura.hidden = !abrindo.has(abaAtiva()!));
 const cancelarDe = (a: Aba) => {
-  const caminho = abrindo.get(a);
-  if (caminho) void chamar("cancelar_abertura", { caminho }).catch(() => {});
+  const abertura = abrindo.get(a);
+  if (abertura) void chamar("cancelar_abertura", { abertura }).catch(() => {});
 };
 cancelarAbertura.textContent = t.compactado.cancelar;
 cancelarAbertura.addEventListener("click", () => cancelarDe(abaAtiva()!));
-void listen<{ caminho: string; lidos: number; total: number }>("descompactando", ({ payload: p }) => {
-  for (const [a, caminho] of abrindo) {
-    if (caminho !== p.caminho) continue;
+void listen<{ abertura: number; lidos: number; total: number }>("descompactando", ({ payload: p }) => {
+  for (const [a, abertura] of abrindo) {
+    if (abertura !== p.abertura) continue;
     a.status = t.descompactando(Math.floor((p.lidos * 100) / Math.max(p.total, 1)));
     if (a === abaAtiva()) status.textContent = a.status;
   }
@@ -714,14 +716,17 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo, forcar = false): P
   if (a.doc !== null) consulta.abriu(caminho, a.doc);
   a.status = t.abrindo;
   if (a === abaAtiva()) status.textContent = t.abrindo;
-  abrindo.set(a, caminho);
+  const abertura = ++ultimaAbertura;
+  abrindo.set(a, abertura);
   mostrarCancelar();
   try {
     const inicio = performance.now();
-    const r = await chamar<{ id: number; total: number }>("abrir", { caminho, id: a.doc, forcar }).finally(() => {
-      abrindo.delete(a);
-      mostrarCancelar();
-    });
+    const r = await chamar<{ id: number; total: number }>("abrir", { caminho, id: a.doc, abertura, forcar }).finally(
+      () => {
+        if (abrindo.get(a) === abertura) abrindo.delete(a);
+        mostrarCancelar();
+      },
+    );
     if (!lista.includes(a)) {
       void chamar("fechar", { id: r.id }).catch(() => {}); // aba fechada no meio
       return false;

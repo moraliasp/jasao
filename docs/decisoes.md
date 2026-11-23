@@ -34,6 +34,8 @@ Mora em `app/src-tauri/tauri.conf.json` (`productName`, `identifier`) e em `cli/
 
 **Limites:** saída máxima 10 GiB (teto do plano); razão saída/compactado até 100× acima de 16 MiB livres (JSONL de log comprime 10–30×; a auditoria de segurança achou 1000× folgado demais: 10 MB viravam 10 GiB). Estourou: `ErrorKind::FileTooLarge`; a razão vem como `RazaoEstourada`, e o app pergunta se abre assim mesmo (sem teto de razão, com progresso e cancelamento); o teto absoluto não se contorna ("descompacte fora do app"). Cache: até 10 GiB, pasta 0700 e arquivos 0600 em Unix (o cache antigo é corrigido ao abrir). Espaço: o tamanho declarado (ISIZE do gzip ou 1º quadro zstd) é só dica, limitada ao que o teto deixaria sair; a reserva cresce com o que de fato sai (dobra ao passar), despejando o cache e conferindo o espaço livre a cada passo; disco cheio no meio vira `StorageFull` com mensagem. Truncado/corrompido: `InvalidData`, sem abrir o pedaço que saiu.
 
+**`forcar` sem token:** o `abrir` aceita `forcar` direto da interface, sem token da confirmação; explorá-lo exige JS rodando na webview (XSS), que já seria falha maior. O teto de 10 GiB, o progresso e o cancelamento continuam valendo. Cancelar é por id de abertura que a interface gera, não por caminho (o mesmo arquivo pode abrir em duas abas).
+
 **Vazão medida** (`cargo bench -p nucleo --bench compactado`, 256 MB de JSONL gerado, em memória, saída descartada; Apple M5 Pro):
 
 | Formato | Compactado | Saída |
