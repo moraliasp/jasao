@@ -17,7 +17,7 @@ import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPar
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
-import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml } from "./texto";
+import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml, visivel } from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -168,7 +168,7 @@ function linhaHtml(v: number, l: Linha | undefined): string {
   return `<div class="row" id="l${v}" data-v="${v}" role="treeitem" aria-level="${l.prof + 1}"
     aria-selected="${v === sel}"${l.expansivel ? ` aria-expanded="${l.aberto}"` : ""}
     ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}" aria-setsize="${l.irmaos}"`}
-    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${esc(chave(l))}</span>${valor(l)}
+    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${visivel(chave(l))}</span>${valor(l)}
     <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(chave(l))}">${icone("copy")}</button></div>`;
 }
 
@@ -206,7 +206,7 @@ function rodape(): void {
     const it = estr?.[selE];
     copiar.disabled = !it;
     verFormatado.disabled = true;
-    migalhas.innerHTML = it ? `<li>${esc(it.caminho)}</li>` : "";
+    migalhas.innerHTML = it ? `<li>${visivel(it.caminho)}</li>` : "";
     migalhasDe = "";
     return;
   }
@@ -220,10 +220,10 @@ function rodape(): void {
     return;
   }
   const inicio = t.linha(fmt(atual.registro + 1));
-  migalhas.innerHTML = `<li>${esc(inicio)}</li>`;
+  migalhas.innerHTML = `<li>${visivel(inicio)}</li>`;
   chamar<string[] | null>("migalhas", { v: sel })
     .then((m) => {
-      if (migalhasDe === de) migalhas.innerHTML = [inicio, ...(m ?? [])].map((x) => `<li>${esc(x)}</li>`).join("");
+      if (migalhasDe === de) migalhas.innerHTML = [inicio, ...(m ?? [])].map((x) => `<li>${visivel(x)}</li>`).join("");
     })
     .catch(() => {}); // doc fechado no meio: o próximo desenho refaz
 }
@@ -514,7 +514,7 @@ async function abrirFormatado(): Promise<void> {
   $("formatado-titulo").textContent = `${t.registroFormatado} · ${t.linha(fmt(atual.registro + 1))}`;
   try {
     const f = await chamar<{ texto: string; truncado: boolean; teto: number }>("formatado", { registro: atual.registro });
-    $("formatado-texto").textContent = f.texto;
+    $("formatado-texto").innerHTML = visivel(f.texto);
     if (f.truncado) $("formatado-titulo").textContent += ` · ${t.formatadoTruncado(fmt(f.teto / 2 ** 20))}`;
     dialogo.showModal();
   } catch (erro) {

@@ -51,3 +51,45 @@ path = "fuzz_targets/erros.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "arvore"
+path = "fuzz_targets/arvore.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formatado"
+path = "fuzz_targets/formatado.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "estrutura"
+path = "fuzz_targets/estrutura.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "regua"
+path = "fuzz_targets/regua.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resumo"
+path = "fuzz_targets/resumo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "texto"
+path = "fuzz_targets/texto.rs"
+test = false
+doc = false
+bench = false

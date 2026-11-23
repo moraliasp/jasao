@@ -95,6 +95,10 @@
       .row .tg svg { width: 13px; height: 13px; }
       .row .key { color: var(--bar-muted); }
       .row .val { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      /* Texto do arquivo: cada chave/valor isolado (direção bidi não vaza) e invisíveis com o código à vista. */
+      .row .key, .row .val, .tl .tx span, .estr .ec, .estr .et, .crumbs li { unicode-bidi: isolate; }
+      .inv { unicode-bidi: isolate; }
+      .inv::before { content: attr(data-u); margin: 0 1px; padding: 0 2px; border-radius: 3px; font: 9px/1 var(--mono); vertical-align: 1px; color: var(--del); background: color-mix(in srgb, var(--del) 12%, transparent); }
       .row .dim { color: var(--bar-muted); }
       .row .err { color: var(--del); display: inline-flex; gap: 6px; align-items: center; flex: none; }
       .row .err svg { width: 13px; height: 13px; }

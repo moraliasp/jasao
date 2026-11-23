@@ -107,6 +107,7 @@ const pt = {
     resultados: (n: number, f: string) => (n === 1 ? "1 resultado" : `${f} resultados`),
     erros: (n: string, linha: string, motivo: string) => `${n} com erro (linha ${linha}: ${motivo})`,
     cancelada: "Consulta cancelada",
+    cortada: "resultado parcial: a saída passou do teto de tamanho e a consulta parou",
     sintaxe: (l: number, c: number, m: string) => `Erro no filtro, linha ${l}, coluna ${c}: ${m}`,
   },
   regua: {
@@ -279,6 +280,7 @@ const en: Textos = {
     resultados: (n: number, f: string) => (n === 1 ? "1 result" : `${f} results`),
     erros: (n: string, linha: string, motivo: string) => `${n} with errors (line ${linha}: ${motivo})`,
     cancelada: "Query canceled",
+    cortada: "partial result: the output hit the size cap and the query stopped",
     sintaxe: (l: number, c: number, m: string) => `Filter error, line ${l}, column ${c}: ${m}`,
   },
   regua: {

@@ -23,13 +23,13 @@ jobs:
   rust:
     runs-on: [self-hosted, jasao-local]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml fixa a versão; o rustup do runner instala sozinho.
       # O app embute app/dist; o clippy do workspace precisa dele existir.
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: app/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -50,11 +50,11 @@ jobs:
   app:
     runs-on: [self-hosted, jasao-local]
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: app/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -67,22 +67,45 @@ jobs:
 
   fuzz:
     runs-on: [self-hosted, jasao-local]
+    env:
+      # Versões fixas: nightly por data e cargo-fuzz exato (atualizar os dois juntos, aqui e em
+      # scripts/gates.sh). Orçamento: ~300 s de fuzz no total, repartidos entre os alvos.
+      NIGHTLY: nightly-2026-11-20
+      FUZZ_SEG: 27
     steps:
-      - uses: actions/checkout@v7
-      - run: rustup toolchain install nightly --profile minimal
-      - run: cargo install cargo-fuzz --locked
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install "$NIGHTLY" --profile minimal
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz curto do índice de linhas
         working-directory: core/fuzz
-        run: cargo +nightly fuzz run indice_linhas --fuzz-dir . -- -max_total_time=60
+        run: cargo +"$NIGHTLY" fuzz run indice_linhas --fuzz-dir . -- -max_total_time="$FUZZ_SEG"
       - name: Fuzz curto da descompactação
         working-directory: core/fuzz
-        run: cargo +nightly fuzz run compactado --fuzz-dir . -- -max_total_time=60
+        run: cargo +"$NIGHTLY" fuzz run compactado --fuzz-dir . -- -max_total_time="$FUZZ_SEG"
       - name: Fuzz curto da busca
         working-directory: core/fuzz
-        run: cargo +nightly fuzz run busca --fuzz-dir . -- -max_total_time=60 -max_len=4096
+        run: cargo +"$NIGHTLY" fuzz run busca --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
       - name: Fuzz curto da consulta jq
         working-directory: core/fuzz
-        run: cargo +nightly fuzz run consulta --fuzz-dir . -- -max_total_time=60 -max_len=4096
+        run: cargo +"$NIGHTLY" fuzz run consulta --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
       - name: Fuzz curto das linhas inválidas
         working-directory: core/fuzz
-        run: cargo +nightly fuzz run erros --fuzz-dir . -- -max_total_time=60 -max_len=4096
+        run: cargo +"$NIGHTLY" fuzz run erros --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da árvore
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run arvore --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto do registro formatado
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run formatado --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da inferência de estrutura
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run estrutura --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da régua
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run regua --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto do resumo do arquivo
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run resumo --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da visão Texto
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run texto --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
