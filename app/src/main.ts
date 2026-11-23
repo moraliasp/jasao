@@ -17,7 +17,16 @@ import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPar
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
-import { decodificar, escAtributo, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml, visivel } from "./texto";
+import {
+  decodificar,
+  escAtributo,
+  type JanelaTexto,
+  marcado,
+  resumir,
+  semInvisiveis,
+  linhaHtml as textoHtml,
+  visivel,
+} from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -631,7 +640,7 @@ function desenharAbas(): void {
   if (!a) return;
   area.setAttribute("aria-labelledby", `arq-${a.chave}`);
   semArquivo.setAttribute("aria-labelledby", `arq-${a.chave}`);
-  $("nome").textContent = a.arquivo ? n[ativa] : "";
+  $("nome").textContent = a.arquivo ? semInvisiveis(n[ativa]) : "";
   document.getElementById(`arq-${a.chave}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -663,7 +672,7 @@ function ativar(i: number, foco = false): void {
   else if (!resumo) void preparar(a, a.visao);
   else {
     prepararRegua();
-    $("painel-nome").textContent = nomesDasAbas()[i];
+    $("painel-nome").textContent = semInvisiveis(nomesDasAbas()[i]);
     $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], a.ms);
     desenharPainel();
     if (noPainel) mostrarPainel();
@@ -769,7 +778,7 @@ async function preparar(a: Aba, visao?: Modo): Promise<void> {
     if (v !== versao) return; // trocou de aba: prepara quando voltar
     resumo = r;
     prepararRegua();
-    $("painel-nome").textContent = nomesDasAbas()[ativa];
+    $("painel-nome").textContent = semInvisiveis(nomesDasAbas()[ativa]);
     $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[r.conteudo], a.ms);
     desenharPainel();
     const destino = visao ?? destinoAoAbrir();

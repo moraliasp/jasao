@@ -31,11 +31,14 @@ export const visivel = (s: string) =>
 const codigo = (c: string) => c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0");
 const esc = visivel;
 
-/** Texto que vem do arquivo fora do conteúdo (atributo `title`/`aria-label`, nome de aba): escapado
- * para atributo e com cada invisível trocado pelo código, `<U+202E>`, porque ali não cabe o `.inv`
- * e o caractere cru inverteria o que o usuário vê ou o leitor de tela lê. */
+/** Texto que vem do arquivo fora do conteúdo (`title`, nome de aba, recentes): cada invisível
+ * trocado pelo código, `<U+202E>`, porque ali não cabe o `.inv` e o caractere cru inverteria o que
+ * o usuário vê ou o leitor de tela lê. Para `textContent`/`title` pelo DOM. */
+export const semInvisiveis = (s: string) => s.replace(INVISIVEIS, (c) => `<U+${codigo(c)}>`);
+
+/** `semInvisiveis` escapado para atributo em HTML montado como texto. */
 export const escAtributo = (s: string) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;").replace(INVISIVEIS, (c) => `&lt;U+${codigo(c)}>`);
+  semInvisiveis(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
 // Chave (texto seguido de `:`), texto, número, literal, pontuação, espaço, qualquer outro.
 const TOKEN = /("(?:[^"\\]|\\.)*"?)(?=\s*:)|("(?:[^"\\]|\\.)*"?)|(-?\d[\d.eE+-]*)|(true|false|null)\b|([{}[\],:])|(\s+)|(.)/gu;

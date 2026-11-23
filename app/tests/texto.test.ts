@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { escAtributo, indiceDe, linhaHtml, type Marca, marcado, partir, resumir, visivel } from "../src/texto.ts";
+import { escAtributo, indiceDe, semInvisiveis, linhaHtml, type Marca, marcado, partir, resumir, visivel } from "../src/texto.ts";
 
 test("partir sem marca devolve o token inteiro", () => {
   assert.deepEqual(partir('"abc"', 5, [[0, 2, false]]), [['"abc"', 5, 0]]);
@@ -115,4 +115,10 @@ test("atributo não leva invisível cru: troca pelo código e escapa aspas", () 
   const a = escAtributo('a\u202eb"<&\u2066');
   assert.equal(a, "a&lt;U+202E>b&quot;&lt;&amp;&lt;U+2066>");
   assert.doesNotMatch(a, /[\u202a-\u202e\u2066-\u2069]/);
+});
+
+test("semInvisiveis troca cada invisível pelo código e não escapa nada (vai por textContent/title)", () => {
+  assert.equal(semInvisiveis("fatura\u202eldt.jsonl"), "fatura<U+202E>ldt.jsonl");
+  assert.equal(semInvisiveis("a\u200bb & <c>"), "a<U+200B>b & <c>");
+  assert.doesNotMatch(semInvisiveis("x\u2066\u2069\ufeff"), /[\u2066\u2069\ufeff]/);
 });
