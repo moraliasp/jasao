@@ -353,8 +353,12 @@ fn cancelar_abertura(abertura: u32, estado: State<'_, Estado>) {
 
 /// Se cada caminho é uma pasta (o arraste avisa em vez de tentar abrir).
 #[tauri::command]
-fn pastas(caminhos: Vec<String>) -> Vec<bool> {
-    caminhos.iter().map(|c| Path::new(c).is_dir()).collect()
+fn pastas<R: Runtime>(caminhos: Vec<String>, app: AppHandle<R>) -> Vec<bool> {
+    // Só responde pelo concedido (o arraste concede antes de avisar a interface).
+    caminhos
+        .iter()
+        .map(|c| autorizado(&app, c).is_ok_and(|c| Path::new(&c).is_dir()))
+        .collect()
 }
 
 /// Onde mora `recentes.json`. Só o `run` gerencia: nos testes de IPC não há recentes em disco.
@@ -362,6 +366,33 @@ struct Recentes(PathBuf);
 
 fn com_recentes<R: Runtime, T>(app: &AppHandle<R>, f: impl FnOnce(&Path) -> T) -> Option<T> {
     app.try_state::<Recentes>().map(|r| f(&r.0))
+}
+
+/// Erro de todo caminho recusado: o mesmo para não concedido, inexistente ou ilegível, para a
+/// interface não servir de oráculo de existência de arquivo.
+const NEGADO: &str = "jasao:negado";
+
+/// O caminho a abrir de fato, se o usuário o concedeu: escolhido no diálogo, solto na janela,
+/// pedido pelo sistema (argv, associação, 2ª instância), resultado de consulta ou recente. O
+/// recente conta porque `recentes.json` só recebe caminho que já passou por aqui e mora no
+/// diretório de dados, fora do alcance da interface. Compara e devolve o canônico (link e `..`
+/// resolvidos), e é ele que se abre. Exemplo embutido passa como veio (não é arquivo).
+fn autorizado<R: Runtime>(app: &AppHandle<R>, caminho: &str) -> Result<String, String> {
+    if exemplos::embutido(caminho).is_some() {
+        return Ok(caminho.to_owned());
+    }
+    let negado = || NEGADO.to_owned();
+    let c = std::fs::canonicalize(caminho).map_err(|_| negado())?;
+    let recente = || {
+        com_recentes(app, recentes::ler)
+            .unwrap_or_default()
+            .iter()
+            .any(|r| Path::new(r) == c)
+    };
+    if !app.state::<abertura::Concedidos>().tem(&c) && !recente() {
+        return Err(negado());
+    }
+    c.into_os_string().into_string().map_err(|_| negado())
 }
 
 /// Põe um arquivo aberto no topo dos recentes. Falha ao gravar não impede a abertura.
@@ -403,10 +434,12 @@ fn limpar_recentes<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     r
 }
 
-/// Se o recente não existe mais: tira da lista e devolve `true` (a interface avisa).
+/// Se o recente não existe mais: tira da lista e devolve `true` (a interface avisa). Caminho fora
+/// da lista é `false` sem olhar o disco (não é oráculo de existência).
 #[tauri::command]
 fn recente_ausente<R: Runtime>(caminho: String, app: AppHandle<R>) -> Result<bool, String> {
-    if Path::new(&caminho).exists() {
+    let lista = com_recentes(&app, recentes::ler).unwrap_or_default();
+    if !lista.contains(&caminho) || Path::new(&caminho).exists() {
         return Ok(false);
     }
     com_recentes(&app, |a| recentes::remover(a, &caminho))
@@ -414,6 +447,36 @@ fn recente_ausente<R: Runtime>(caminho: String, app: AppHandle<R>) -> Result<boo
         .map_err(|e| e.to_string())?;
     recentes_mudaram(&app);
     Ok(true)
+}
+
+fn soltos<R: Runtime>(app: &AppHandle<R>, caminhos: &[PathBuf]) {
+    let concedidos = app.state::<abertura::Concedidos>();
+    caminhos.iter().for_each(|c| concedidos.conceder(c));
+}
+
+/// Diálogo de abrir no backend: o que o usuário escolher fica concedido. `extensoes` é só o
+/// filtro do diálogo (vem da interface, que tem a lista); escolher é sempre do usuário.
+#[tauri::command]
+async fn escolher<R: Runtime>(
+    extensoes: Vec<String>,
+    janela: tauri::WebviewWindow<R>,
+) -> Vec<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let ext: Vec<&str> = extensoes.iter().map(String::as_str).collect();
+    let escolhidos = janela
+        .dialog()
+        .file()
+        .set_parent(&janela)
+        .add_filter("JSON, JSON Lines", &ext)
+        .blocking_pick_files()
+        .unwrap_or_default();
+    let concedidos = janela.state::<abertura::Concedidos>();
+    escolhidos
+        .into_iter()
+        .filter_map(|f| f.into_path().ok())
+        .inspect(|p| concedidos.conceder(p))
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Documento aberto: o id e o número de registros (= linhas visíveis).
@@ -429,8 +492,7 @@ struct Aberto {
 /// `async` para rodar fora da thread principal: o índice de 1 GB leva ~150 ms.
 /// Dispara a varredura de inválidas numa thread própria, que emite `varredura` com o progresso;
 /// a do arquivo anterior do documento é cancelada.
-// shortcut: aceita qualquer caminho vindo da interface (só leitura); passar a concessões por
-// diálogo/arraste como no Leve quando a interface carregar conteúdo de fora.
+/// Só abre caminho concedido (ver `autorizado`).
 #[tauri::command]
 async fn abrir<R: Runtime>(
     caminho: String,
@@ -440,6 +502,7 @@ async fn abrir<R: Runtime>(
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<Aberto, String> {
+    let caminho = autorizado(&app, &caminho)?;
     let arvore = Arvore::new(abrir_cancelavel(
         &caminho,
         abertura.unwrap_or(0),
@@ -885,6 +948,7 @@ async fn consultar<R: Runtime>(
             })
             .collect(),
     })?;
+    let caminho = autorizado(&app, &caminho)?;
     filho::arquivo_comum(&caminho)?;
     // Nome com os nanossegundos do relógio para não ser previsível; `create_new` (O_EXCL) recusa
     // arquivo ou link que alguém tenha posto ali antes, e 0600 deixa o resultado só para o dono.
@@ -902,6 +966,8 @@ async fn consultar<R: Runtime>(
     abrir
         .open(&destino)
         .map_err(|e| format!("{}: {e}", destino.display()))?;
+    // O resultado reabre pelo `abrir`: o backend que o criou o concede.
+    app.state::<abertura::Concedidos>().conceder(&destino);
     doc.consulta.lock().map_err(|e| e.to_string())?.arquivo = Some(destino.clone());
     let doc = Arc::downgrade(&doc);
     std::thread::spawn(move || {
@@ -1054,7 +1120,9 @@ fn regua_busca(id: u32, k: usize, estado: State<'_, Estado>) -> Result<Vec<usize
 fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
     b.manage(Estado::default())
         .manage(abertura::Abertura::default())
+        .manage(abertura::Concedidos::default())
         .invoke_handler(tauri::generate_handler![
+            escolher,
             abertura::arquivos_iniciais,
             abertura::arquivos_pedidos,
             recentes,
@@ -1198,6 +1266,18 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let b = b.menu(menu).on_menu_event(no_menu);
     b.plugin(tauri_plugin_dialog::init())
+        // Arraste: soltar na janela é a concessão. Roda antes de a interface receber o evento
+        // (ela só pergunta depois, pelo IPC). Janela com webview manda como evento de janela.
+        .on_window_event(|j, e| {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = e {
+                soltos(j.app_handle(), paths);
+            }
+        })
+        .on_webview_event(|w, e| {
+            if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = e {
+                soltos(w.app_handle(), paths);
+            }
+        })
         .setup(|app| {
             // Título vem do productName (tauri.conf.json), onde mora o nome do produto.
             let nome = app.package_info().name.clone();
@@ -1211,7 +1291,9 @@ pub fn run() {
             let cwd = std::env::current_dir().unwrap_or_default();
             let argv: Vec<String> = std::env::args().collect();
             let abertura = app.state::<abertura::Abertura>();
+            let concedidos = app.state::<abertura::Concedidos>();
             for c in abertura::caminhos_argv(&argv, &cwd) {
+                concedidos.conceder(Path::new(&c));
                 abertura.enfileirar(c);
             }
             Ok(())
@@ -1299,6 +1381,10 @@ mod testes {
             args["id"] = json!(id);
             chamar(cmd, args)
         };
+        // Os arquivos do teste entram como se o usuário os tivesse escolhido no diálogo.
+        let conceder = |p: &Path| app.state::<abertura::Concedidos>().conceder(p);
+        conceder(f.path());
+        conceder(tipos.path());
         let erro = em(1, "linhas", json!({"inicio": 0, "quantidade": 10})).unwrap_err();
         assert!(erro.as_str().unwrap().contains("não está aberto"), "{erro}");
         assert!(em(1, "estrutura", json!({})).is_err());
@@ -1588,6 +1674,7 @@ mod testes {
                     .unwrap()
                     .success()
             );
+            conceder(&fifo);
             // Sem a recusa, a leitura destrava quando este escritor abre (e o teste falha).
             let f = fifo.clone();
             std::thread::spawn(move || {
@@ -1672,6 +1759,7 @@ mod testes {
         let fundo = format!("[{}]\n", vec![cadeia; 100].join(","));
         let longo = format!("\"{}\"\n", "a".repeat(MAX_FORMATADO));
         std::io::Write::write_all(&mut grande, (fundo + &longo).as_bytes()).unwrap();
+        conceder(grande.path());
         let caminho_grande = grande.path().to_str().unwrap();
         assert_eq!(
             chamar("abrir", json!({ "caminho": caminho_grande })).unwrap()["id"],
@@ -1689,6 +1777,7 @@ mod testes {
         // Pasta: `pastas` avisa e `abrir` recusa com mensagem clara.
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_str().unwrap();
+        conceder(dir.path());
         assert_eq!(
             chamar("pastas", json!({ "caminhos": [d, caminho] })),
             Ok(json!([true, false]))
@@ -1729,6 +1818,7 @@ mod testes {
                 .unwrap()
         };
         let caminho = arq.to_str().unwrap();
+        app.state::<abertura::Concedidos>().conceder(&arq);
         assert_eq!(chamar("recentes", json!({})), json!([]));
         chamar("abrir", json!({ "caminho": caminho }));
         let pasta_txt = raiz.to_str().unwrap();
@@ -1748,5 +1838,94 @@ mod testes {
         assert_eq!(chamar("recentes", json!({})), json!([]));
         chamar("limpar_recentes", json!({}));
         assert!(!lista.exists());
+    }
+
+    /// Só abre o que o usuário concedeu; o resto recebe o mesmo erro, exista ou não.
+    #[test]
+    fn caminhos_concedidos_pelo_ipc() {
+        let pasta = tempfile::tempdir().unwrap();
+        let raiz = std::fs::canonicalize(pasta.path()).unwrap();
+        let dentro = raiz.join("dentro");
+        std::fs::create_dir(&dentro).unwrap();
+        let concedido = dentro.join("a.jsonl");
+        let fora = raiz.join("fora.jsonl");
+        let recente = raiz.join("recente.jsonl");
+        for p in [&concedido, &fora, &recente] {
+            std::fs::write(p, b"{\"a\":1}\n").unwrap();
+        }
+        // Recente de uma execução anterior: está na lista, mas não foi concedido nesta.
+        let lista = raiz.join("recentes.json");
+        recentes::adicionar(&lista, recente.to_str().unwrap()).unwrap();
+        let app = comandos(mock_builder())
+            .manage(Recentes(lista))
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let chamar = |cmd: &str, args: Value| -> Result<Value, Value> {
+            let pedido = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            };
+            get_ipc_response(&janela, pedido).map(|b| b.deserialize::<Value>().unwrap())
+        };
+        let abrir = |c: &Path| chamar("abrir", json!({ "caminho": c.to_str().unwrap() }));
+        let negado = Err(json!(NEGADO));
+        // O usuário concede um arquivo e a pasta dele (arraste de pasta).
+        let concedidos = app.state::<abertura::Concedidos>();
+        concedidos.conceder(&concedido);
+        concedidos.conceder(&dentro);
+
+        // Não concedido: erro genérico, igual para arquivo que existe e que não existe.
+        assert_eq!(abrir(&fora), negado);
+        assert_eq!(abrir(&raiz.join("nao-existe.jsonl")), negado);
+        assert_eq!(abrir(Path::new("/etc/passwd")), negado);
+        // Pasta concedida não concede o que está dentro dela.
+        assert_eq!(abrir(&dentro.join("outro.jsonl")), negado);
+        // Nem oráculo pelos vizinhos: `pastas` e `recente_ausente` não olham o disco.
+        let r = raiz.to_str().unwrap();
+        assert_eq!(
+            chamar(
+                "pastas",
+                json!({ "caminhos": [r, dentro.to_str().unwrap()] })
+            ),
+            Ok(json!([false, true]))
+        );
+        assert_eq!(
+            chamar("recente_ausente", json!({ "caminho": "/nao/existe.json" })),
+            Ok(json!(false))
+        );
+        // Consulta jq também só sobre o concedido (abre um documento para ter o id).
+        assert_eq!(abrir(&concedido), Ok(json!({"id": 1, "total": 1})));
+        let erro = chamar(
+            "consultar",
+            json!({"id": 1, "filtro": ".", "caminho": fora.to_str().unwrap()}),
+        );
+        assert_eq!(erro.unwrap_err()["mensagem"], json!(NEGADO));
+
+        // `..` e link para fora do concedido: compara o alvo real, recusa.
+        assert_eq!(abrir(&dentro.join("..").join("fora.jsonl")), negado);
+        #[cfg(unix)]
+        {
+            let link = dentro.join("link.jsonl");
+            std::os::unix::fs::symlink(&fora, &link).unwrap();
+            assert_eq!(abrir(&link), negado);
+            // Link para o concedido abre: o alvo real é o que o usuário escolheu.
+            let bom = raiz.join("bom.jsonl");
+            std::os::unix::fs::symlink(&concedido, &bom).unwrap();
+            assert_eq!(abrir(&bom), Ok(json!({"id": 2, "total": 1})));
+        }
+        // Mesmo arquivo em outra aba e `..` que volta ao concedido: abrem.
+        let volta = dentro.join("..").join("dentro").join("a.jsonl");
+        assert!(abrir(&volta).is_ok());
+
+        // Recente reaberto (lista em disco, sem concessão nesta execução): abre.
+        assert!(abrir(&recente).is_ok());
     }
 }
