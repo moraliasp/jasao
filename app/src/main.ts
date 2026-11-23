@@ -90,12 +90,17 @@ let registrosE = 0;
 const tabelaEl = $("tabela");
 const grade = criarGrade(tabelaEl, {
   geracao: () => resumo?.geracao,
-  inferiu: () => !!resumo?.inferiu,
+  inferiu: () => !!resumo?.tabelou,
   revelar: (linha, byte) => {
     trocarModo("arvore");
     void revelar(linha, byte).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
   },
   mudou: () => {
+    // "Sugerido" abriu a Tabela antes de saber se o arquivo serve: não serviu, vai ao próximo.
+    if (palpite && grade.disponivel() !== null) {
+      palpite = false;
+      if (modo === "tabela" && !noPainel && grade.disponivel() === false) trocarModo(sugerido());
+    }
     if (modo === "tabela") rodape();
     if (!noPainel) return;
     const f = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-modo]")?.dataset.modo;
@@ -482,6 +487,7 @@ function focar(el: HTMLElement | null | undefined): void {
 function trocarModo(m: Modo, rolagem?: [number, number]): void {
   if (m !== "exportar") exportar.parar();
   modo = m;
+  palpite = false;
   noPainel = false;
   painel.hidden = true;
   conteudo.hidden = false;
@@ -845,6 +851,8 @@ async function preparar(a: Aba, visao?: Modo): Promise<void> {
     if (destino === "texto") await selecionar(0);
     if (v !== versao) return;
     if (destino !== "painel") trocarModo(destino);
+    palpite = destino === "tabela" && !visao && lerPreferencia() === "sugerido" && grade.disponivel() === null;
+    grade.inferiu(); // já montada: confere o palpite agora
     busca.reabrir();
   } catch (erro) {
     if (v === versao) status.textContent = `${t.erro}: ${erro}`;
@@ -942,7 +950,7 @@ $("nova-aba").addEventListener("click", novaAba);
 type Conteudo = keyof typeof t.painel.conteudo;
 interface Andamento {
   geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null;
-  legenda: Legenda | null; coloriu: boolean; inferiu: boolean;
+  legenda: Legenda | null; coloriu: boolean; inferiu: boolean; tabelou: boolean;
 }
 interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
 
@@ -970,6 +978,8 @@ const inicioBtn = $<HTMLButtonElement>("inicio");
 const painelModos = $("painel-modos");
 const preferencia = $<HTMLSelectElement>("painel-pref");
 let resumo: Resumo | null = null;
+/** A Tabela foi aberta pelo "sugerido" antes de a montagem dizer se o arquivo serve. */
+let palpite = false;
 
 function lerPreferencia(): string {
   let v: string | null = null;
@@ -1211,13 +1221,14 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   desenharAndamento();
   if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
   if (p.inferiu && modo === "exportar" && !noPainel && !exportar.temCodigo()) void exportar.mostrar();
+  if (p.tabelou) grade.inferiu(); // colunas (ou o motivo) chegam; painel e Tabela redesenham
+
   regua.andamento(p);
 });
 void listen<Ordenacao>("ordenacao", ({ payload }) => grade.ordenacao(payload));
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
 async function focarRegistro(r: number): Promise<boolean> {
-  if (modo === "estrutura" || modo === "tabela") trocarModo("arvore"); // Estrutura e Tabela: na Árvore
-  if (semRegistros()) trocarModo("arvore");
+  if (semRegistros()) trocarModo("arvore"); // Estrutura, Tabela e Exportar: na Árvore
   const v = await chamar<number | null>("ir_para", { registro: r });
   if (v === null) return false;
   if (modo === "texto") {

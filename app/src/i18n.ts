@@ -92,7 +92,8 @@ const pt = {
     cancelar: "Cancelar",
     falha: {
       cancelada: "Ordenação cancelada; vale a ordem anterior.",
-      grande: "Registros demais para ordenar (acima de 4,29 bilhões).",
+      // Teto `MAX_REGISTROS` do núcleo (core/src/tabela.rs).
+      grande: "Registros demais para ordenar (acima de 50 milhões); a grade segue na ordem do arquivo.",
       coluna: "A coluna não existe mais.",
     } as Record<string, string>,
     ausente: "campo ausente (diferente de null)",
@@ -109,6 +110,7 @@ const pt = {
       sem_campos: "Os registros são objetos vazios.",
       json_invalido: "O JSON não é válido.",
       cancelado: "A análise foi interrompida.",
+      grande: (n: string) => `A lista tem mais de ${n} elementos, o teto da tabela; veja na Árvore ou no Texto.`,
     },
   },
   textoDoArquivo: "Texto do arquivo, um registro por linha",
@@ -328,7 +330,7 @@ const en: Textos = {
     cancelar: "Cancel",
     falha: {
       cancelada: "Sort cancelled; the previous order stays.",
-      grande: "Too many records to sort (over 4.29 billion).",
+      grande: "Too many records to sort (over 50 million); the grid stays in file order.",
       coluna: "The column no longer exists.",
     } as Record<string, string>,
     ausente: "missing field (not the same as null)",
@@ -345,6 +347,7 @@ const en: Textos = {
       sem_campos: "The records are empty objects.",
       json_invalido: "The JSON is not valid.",
       cancelado: "The analysis was interrupted.",
+      grande: (n: string) => `The list has more than ${n} elements, the table limit; see Tree or Text.`,
     },
   },
   textoDoArquivo: "File text, one record per line",

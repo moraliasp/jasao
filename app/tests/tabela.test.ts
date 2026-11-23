@@ -4,7 +4,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { t } from "../src/i18n.ts";
-import { type Celula, type LinhaT, celula, detalhe, invalida, largura, motivo, ordemVisivel, proximaOrdem } from "../src/tabela.ts";
+import {
+  type Celula, type EstadoOrdem, type LinhaT, celula, chegou, detalhe, invalida, largura, motivo, ordemVisivel, proximaOrdem,
+  respondeu, rotulos,
+} from "../src/tabela.ts";
 
 const fmt = (n: number) => String(n);
 const cel = (tipo: Celula["tipo"], texto: string, filhos = 0): Celula => ({ tipo, texto, filhos, byte: 0 });
@@ -71,6 +74,36 @@ test("motivo de indisponível e detalhe do cabeçalho", () => {
   assert.ok(detalhe({ ...c, presenca: 1 }, 3, t, fmt).endsWith(t.estrutura.deN("1", "3")));
   assert.equal(largura(c), 110);
   assert.equal(largura({ ...c, nome: "x".repeat(200) }), 280);
+});
+
+test("fim da ordenação antes da resposta de `ordenar` não se perde", () => {
+  const alvo = { coluna: 2, desc: false };
+  const e: EstadoOrdem = { ordem: null, pedida: null, fim: null };
+  const fim = { id: 1, geracao: 7, lidos: 10, total: 10, fim: true, falha: null };
+  assert.equal(chegou(e, fim), null); // ainda sem a geração: guarda
+  assert.deepEqual(respondeu(e, alvo, { geracao: 7, pronta: false }, 10), { ordem: alvo, falha: null });
+  assert.deepEqual(e.ordem, alvo);
+  assert.equal(e.pedida, null); // barra e Cancelar somem
+
+  // Ordem normal: progresso e fim depois da resposta; fim de geração velha é ignorado.
+  const f: EstadoOrdem = { ordem: null, pedida: null, fim: null };
+  assert.equal(respondeu(f, alvo, { geracao: 8, pronta: false }, 10), null);
+  assert.equal(chegou(f, { ...fim, geracao: 8, lidos: 4, fim: false }), null);
+  assert.equal(f.pedida?.lidos, 4);
+  assert.equal(chegou(f, { ...fim, geracao: 7 }), null);
+  assert.deepEqual(chegou(f, { ...fim, geracao: 8, falha: "cancelada" }), { ordem: alvo, falha: "cancelada" });
+  assert.equal(f.ordem, null); // cancelada: vale a anterior
+  assert.equal(f.pedida, null);
+});
+
+test("nome e caminho de coluna em atributo e texto passam pelo neutralizador", () => {
+  const c = { nome: "a\u202Eb", caminho: '."a\u202Eb"', presenca: 1, tipos: ["texto"] };
+  for (const s of [rotulos.titulo(c), rotulos.mostrar(c, t), rotulos.ordenando(c, 5, t), rotulos.ordenada(c, true, t)]) {
+    assert.ok(!s.includes("\u202E"), s);
+    assert.ok(s.includes("202E"), s);
+  }
+  assert.ok(!celula(cel("texto", '"a\u202Eb"'), t, fmt).rotulo.includes("\u202E"));
+  assert.equal(motivo({ motivo: "grande", max: 50 }, t, fmt), t.tabela.indisponivel.grande("50"));
 });
 
 test("o CSS isola o texto das células e do cabeçalho", () => {

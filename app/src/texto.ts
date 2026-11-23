@@ -30,6 +30,10 @@ export const visivel = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(INVISIVEIS, (c) => `<span class="inv" data-u="${codigo(c)}">${c}</span>`);
 const codigo = (c: string) => c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0");
 const esc = visivel;
+/** O mesmo neutralizador para atributo (`title`, `aria-label`) e `textContent`, onde não há
+ * HTML: cada invisível vira o código à vista, `⟦202E⟧`. */
+export const visivelTexto = (s: string) =>
+  s.replace(INVISIVEIS, (c) => `⟦${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}⟧`);
 
 /** Texto que vem do arquivo fora do conteúdo (`title`, nome de aba, recentes): cada invisível
  * trocado pelo código, `<U+202E>`, porque ali não cabe o `.inv` e o caractere cru inverteria o que

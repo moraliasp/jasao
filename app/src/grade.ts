@@ -5,8 +5,8 @@ import { chamar, docAtivo } from "./doc.ts";
 import { t } from "./i18n.ts";
 import { espaco, geometria, mostrarLinha } from "./rolagem.ts";
 import {
-  type Coluna, type LinhaT, type Ordem, type TabelaUi, celula, detalhe, invalida, largura, motivo, ordemVisivel,
-  proximaOrdem,
+  type Coluna, type Concluida, type EstadoOrdem, type LinhaT, type Ordenacao, type TabelaUi, celula, chegou, detalhe, invalida, largura, motivo, ordemVisivel,
+  proximaOrdem, respondeu, rotulos,
 } from "./tabela.ts";
 import { visivel } from "./texto.ts";
 
@@ -14,16 +14,14 @@ const ALTURA = 26; // px por linha; igual ao CSS de .grade .td
 const CAB = 44; // px do cabeçalho; igual ao CSS de .grade .thead .tr
 const CELULAS = 30_000; // células por pedido: com muitas colunas o bloco de linhas encolhe
 
-export interface Ordenacao { id: number; geracao: number; lidos: number; total: number; fim: boolean; falha: string | null }
+export type { Ordenacao };
 
-interface Estado {
+interface Estado extends EstadoOrdem {
   de: number; // geração da varredura: outra = documento reaberto, estado novo
   info: TabelaUi | null;
   pedindo: boolean;
   fixas: number[];
   ocultas: Set<number>;
-  ordem: Ordem | null; // a que vale nas linhas
-  pedida: { geracao: number; ordem: Ordem; lidos: number; total: number } | null; // em curso
   aviso: string; // fim da última ordenação (falha ou ordem nova)
   lin: number; // célula selecionada; -1 = cabeçalho
   col: number; // posição na ordem visível
@@ -33,7 +31,7 @@ interface Estado {
 
 interface Deps {
   geracao: () => number | undefined; // da varredura do documento ativo
-  inferiu: () => boolean;
+  inferiu: () => boolean; // a Tabela já foi montada (ou recusada) no Rust
   revelar: (linha: number, byte: number) => void;
   mudou: () => void; // seleção ou disponibilidade mudou: painel e rodapé
   erro: (e: unknown) => void;
@@ -70,7 +68,7 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
     if (d === null || g === undefined) return null;
     let e = docs.get(d);
     if (!e || e.de !== g) {
-      e = { de: g, info: null, pedindo: false, fixas: [], ocultas: new Set(), ordem: null, pedida: null, aviso: "", lin: 0, col: 0, topo: 0, esquerda: 0 };
+      e = { de: g, info: null, pedindo: false, fixas: [], ocultas: new Set(), ordem: null, pedida: null, fim: null, aviso: "", lin: 0, col: 0, topo: 0, esquerda: 0 };
       docs.set(d, e);
     }
     return e;
@@ -131,7 +129,7 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
       const seta = o ? `<span class="seta" aria-hidden="true">${o.desc ? "↓" : "↑"}</span>` : "";
       html += `<div class="th${fix ? " fix" : ""}${fix && j === nFix - 1 ? " ult" : ""}${e.lin === -1 && e.col === j ? " sel" : ""}"
         role="columnheader" id="h${j}" data-j="${j}" aria-colindex="${j + 2}"${sort}${fix ? ` style="left:${esquerdas[j]}px"` : ""}
-        title="${esc(col.caminho)}"><span class="nm">${visivel(col.nome)}${seta}</span><span class="dt">${esc(detalhe(col, e.info.objetos, t, fmt))}</span>
+        title="${esc(rotulos.titulo(col))}"><span class="nm">${visivel(col.nome)}${seta}</span><span class="dt">${esc(detalhe(col, e.info.objetos, t, fmt))}</span>
         <span class="acoes"><button class="ib" type="button" tabindex="-1" data-fixar="${c}" aria-pressed="${fix}"
         aria-label="${esc(fix ? t.tabela.soltar : t.tabela.fixar)}" title="${esc(fix ? t.tabela.soltar : t.tabela.fixar)}">${icone("pin")}</button><button
         class="ib" type="button" tabindex="-1" data-ocultar="${c}" aria-label="${esc(t.tabela.ocultar)}" title="${esc(t.tabela.ocultar)}">${icone("x")}</button></span></div>`;
@@ -213,8 +211,8 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
     const oc = [...e.ocultas].sort((a, b) => a - b);
     ocultasEl.innerHTML = oc.length
       ? `<span>${esc(t.tabela.ocultas)}</span>` + oc.map((c) => {
-        const nome = i.colunas[c].nome;
-        return `<button class="chip" type="button" data-mostrar="${c}" aria-label="${esc(t.tabela.mostrar(nome))}">${visivel(nome)}${icone("plus")}</button>`;
+        const col = i.colunas[c];
+        return `<button class="chip" type="button" data-mostrar="${c}" aria-label="${esc(rotulos.mostrar(col, t))}">${visivel(col.nome)}${icone("plus")}</button>`;
       }).join("")
       : "";
     const p = e.pedida;
@@ -223,7 +221,7 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
     if (p) {
       const pct = Math.floor((p.lidos * 100) / Math.max(1, p.total));
       barraEl.value = pct;
-      ordTexto.textContent = t.tabela.ordenando(i.colunas[p.ordem.coluna].caminho, String(pct));
+      ordTexto.textContent = rotulos.ordenando(i.colunas[p.ordem.coluna], pct, t);
     } else ordTexto.textContent = e.aviso;
   }
 
@@ -254,12 +252,15 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
     const r = await chamar<{ geracao: number; pronta: boolean }>("ordenar", { coluna: alvo?.coluna ?? null, desc: alvo?.desc ?? false });
     if (estado() !== e) return;
     e.aviso = "";
-    if (r.pronta) {
-      e.ordem = alvo;
-      e.pedida = null;
-    } else e.pedida = { geracao: r.geracao, ordem: alvo!, lidos: 0, total: e.info.registros };
+    // O evento de fim pode ter chegado antes desta resposta: `respondeu` o aplica.
+    avisar(e, respondeu(e, alvo, r, e.info.registros));
     barra();
     desenhar();
+  }
+
+  function avisar(e: Estado, f: Concluida | null): void {
+    if (!f || !e.info) return;
+    e.aviso = f.falha ? (t.tabela.falha[f.falha] ?? f.falha) : rotulos.ordenada(e.info.colunas[f.ordem.coluna], f.ordem.desc, t);
   }
 
   function fixar(c: number): void {
@@ -387,17 +388,8 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
     },
     ordenacao(p: Ordenacao): void {
       const e = docs.get(p.id);
-      if (!e?.pedida || e.pedida.geracao !== p.geracao || !e.info) return;
-      if (!p.fim) Object.assign(e.pedida, { lidos: p.lidos, total: p.total });
-      else {
-        const o = e.pedida.ordem;
-        if (p.falha) e.aviso = t.tabela.falha[p.falha] ?? p.falha;
-        else {
-          e.ordem = o;
-          e.aviso = t.tabela.ordenada(e.info.colunas[o.coluna].caminho, o.desc);
-        }
-        e.pedida = null;
-      }
+      if (!e?.info) return;
+      avisar(e, chegou(e, p));
       if (p.id !== docAtivo()) return;
       barra();
       if (p.fim) desenhar();
