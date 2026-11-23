@@ -18,6 +18,7 @@ use nucleo::arvore::{Formatado, Linha, MAX_FORMATADO};
 use nucleo::consulta::Consulta;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
+use nucleo::tabela::{self, Coluna, FalhaOrdem, Indisponivel, Ordem, Tabela};
 use nucleo::{Achado, ArquivoLinhas, Arvore, Busca, Opcoes};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
@@ -86,6 +87,24 @@ struct Doc {
     busca: Mutex<EstadoBusca>,
     consulta: Mutex<EstadoConsulta>,
     exportar: Mutex<EstadoExportar>,
+    ordem: Mutex<EstadoOrdem>,
+}
+
+/// Ordenação da Tabela: a pronta (com a direção) e a que roda em 2º plano.
+#[derive(Default)]
+struct EstadoOrdem {
+    /// Sobe a cada pedido: progresso de uma ordenação anterior é descartado.
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+    pronta: Option<(Arc<Ordem>, bool)>,
+}
+
+impl EstadoOrdem {
+    fn reiniciar(&mut self) {
+        self.cancelar.store(true, Relaxed);
+        self.geracao += 1;
+        self.pronta = None;
+    }
 }
 
 /// Evento com o id do documento de onde veio.
@@ -224,6 +243,8 @@ struct Varredura {
     estrutura: Option<Arc<Estrutura>>,
     /// A inferência crua e o arquivo dela, para Exportar (gerar e validar); chega com `estrutura`.
     inferencia: Option<InfArquivo>,
+    /// Modo Tabela (ou por que não há); chega junto com `estrutura`.
+    tabela: Option<Result<Arc<Tabela>, Indisponivel>>,
 }
 
 /// Evento `varredura` e parte do `resumo`.
@@ -280,6 +301,9 @@ impl Doc {
         }
         if let Ok(mut c) = self.consulta.lock() {
             c.reiniciar();
+        }
+        if let Ok(mut o) = self.ordem.lock() {
+            o.reiniciar();
         }
     }
 }
@@ -569,6 +593,7 @@ async fn abrir<R: Runtime>(
                 busca: Default::default(),
                 consulta: Default::default(),
                 exportar: Default::default(),
+                ordem: Default::default(),
             });
             let mut docs = estado.docs.lock().map_err(|e| e.to_string())?;
             docs.insert(id, Arc::clone(&doc));
@@ -594,8 +619,10 @@ async fn abrir<R: Runtime>(
         v.coloriu = false;
         v.estrutura = None;
         v.inferencia = None;
+        v.tabela = None;
         v.geracao
     };
+    doc.ordem.lock().map_err(|e| e.to_string())?.reiniciar();
     doc.busca.lock().map_err(|e| e.to_string())?.reiniciar();
     // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
     // jq reabre num documento que já existe (`id` Some), então também fica.
@@ -632,11 +659,16 @@ async fn abrir<R: Runtime>(
         let campos = resumo::campos(&inf.resumo);
         let estrutura = Arc::new(Estrutura::de(&inf));
         let ds = inf.resumo.discriminadores();
+        let tabela = Tabela::montar(Arc::clone(&arquivo), &inf, &cancelar).map(Arc::new);
+        if cancelar.load(Relaxed) {
+            return;
+        }
         let inf = Arc::new(inf);
         avisar(&|v| {
             v.campos = campos;
             v.estrutura = Some(Arc::clone(&estrutura));
             v.inferencia = Some((Arc::clone(&inf), Arc::clone(&arquivo)));
+            v.tabela = Some(tabela.clone());
         });
         let escolhido = nucleo::regua::escolher(&ds).filter(|_| colorir);
         if let Some(d) = escolhido
@@ -987,6 +1019,218 @@ async fn salvar_exportado<R: Runtime>(
     };
     std::fs::write(&p, codigo).map_err(|e| format!("{}: {e}", p.display()))?;
     Ok(Some(p.to_string_lossy().into_owned()))
+}
+
+#[derive(Serialize)]
+struct TabelaUi {
+    registros: usize,
+    objetos: u64,
+    colunas: Vec<Coluna>,
+    omitidas: usize,
+    /// Por que o arquivo não vira tabela (`colunas` vazio).
+    indisponivel: Option<Indisponivel>,
+    ordem: Option<OrdemUi>,
+}
+
+#[derive(Serialize)]
+struct OrdemUi {
+    coluna: usize,
+    desc: bool,
+}
+
+/// Colunas da Tabela e a ordem pronta, ou `null` enquanto a inferência roda (igual a
+/// `estrutura`).
+#[tauri::command]
+fn tabela(id: u32, estado: State<'_, Estado>) -> Result<Option<TabelaUi>, String> {
+    let doc = estado.doc(id)?;
+    let t = doc
+        .varredura
+        .lock()
+        .map_err(|e| e.to_string())?
+        .tabela
+        .clone();
+    let ordem = doc
+        .ordem
+        .lock()
+        .map_err(|e| e.to_string())?
+        .pronta
+        .as_ref()
+        .map(|(o, desc)| OrdemUi {
+            coluna: o.coluna,
+            desc: *desc,
+        });
+    Ok(t.map(|t| match t {
+        Ok(t) => TabelaUi {
+            registros: t.registros(),
+            objetos: t.objetos,
+            colunas: t.colunas.clone(),
+            omitidas: t.omitidas,
+            indisponivel: None,
+            ordem,
+        },
+        Err(m) => TabelaUi {
+            registros: 0,
+            objetos: 0,
+            colunas: Vec::new(),
+            omitidas: 0,
+            indisponivel: Some(m),
+            ordem: None,
+        },
+    }))
+}
+
+fn tabela_pronta(doc: &Doc) -> Result<Arc<Tabela>, String> {
+    match doc
+        .varredura
+        .lock()
+        .map_err(|e| e.to_string())?
+        .tabela
+        .clone()
+    {
+        Some(Ok(t)) => Ok(t),
+        _ => Err("tabela indisponível neste documento".into()),
+    }
+}
+
+/// Linhas `[inicio, inicio + quantidade)` da Tabela, na ordem pronta, só com as `colunas`
+/// pedidas (as visíveis).
+#[tauri::command]
+fn tabela_linhas(
+    id: u32,
+    inicio: usize,
+    quantidade: usize,
+    mut colunas: Vec<usize>,
+    estado: State<'_, Estado>,
+) -> Result<Vec<tabela::Linha>, String> {
+    let doc = estado.doc(id)?;
+    let t = tabela_pronta(&doc)?;
+    let ordem = doc.ordem.lock().map_err(|e| e.to_string())?.pronta.clone();
+    colunas.truncate(tabela::MAX_COLUNAS);
+    Ok(t.janela(
+        ordem.as_ref().map(|(o, desc)| (&**o, *desc)),
+        inicio,
+        quantidade.min(MAX_JANELA),
+        &colunas,
+    ))
+}
+
+/// Evento `ordenacao`.
+#[derive(Clone, Serialize)]
+struct Ordenacao {
+    geracao: u64,
+    lidos: u64,
+    total: u64,
+    fim: bool,
+    falha: Option<FalhaOrdem>,
+}
+
+#[derive(Serialize)]
+struct Ordenado {
+    geracao: u64,
+    /// Já valeu (volta à ordem do arquivo ou só troca de direção): é só pedir as linhas.
+    pronta: bool,
+}
+
+/// Ordena a Tabela pela `coluna`; sem coluna, volta à ordem do arquivo. A coluna já ordenada
+/// só troca de direção. Coluna nova ordena o arquivo todo em 2º plano, com o evento
+/// `ordenacao` (progresso e fim); até o fim, as linhas seguem na ordem anterior.
+#[tauri::command]
+fn ordenar<R: Runtime>(
+    id: u32,
+    coluna: Option<usize>,
+    desc: bool,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Ordenado, String> {
+    let doc = estado.doc(id)?;
+    let t = tabela_pronta(&doc)?;
+    let mut o = doc.ordem.lock().map_err(|e| e.to_string())?;
+    o.cancelar.store(true, Relaxed);
+    o.geracao += 1;
+    let geracao = o.geracao;
+    let Some(coluna) = coluna else {
+        o.pronta = None;
+        return Ok(Ordenado {
+            geracao,
+            pronta: true,
+        });
+    };
+    if let Some((p, _)) = &o.pronta
+        && p.coluna == coluna
+    {
+        o.pronta = Some((Arc::clone(p), desc));
+        return Ok(Ordenado {
+            geracao,
+            pronta: true,
+        });
+    }
+    if coluna >= t.colunas.len() {
+        return Err(format!("coluna {coluna} não existe"));
+    }
+    let cancelar = Arc::new(AtomicBool::new(false));
+    o.cancelar = Arc::clone(&cancelar);
+    drop(o);
+    let doc = Arc::downgrade(&doc);
+    let total = t.registros() as u64;
+    std::thread::spawn(move || {
+        let ultimo = Mutex::new(Instant::now());
+        let aviso = |lidos| {
+            if let Ok(mut u) = ultimo.lock()
+                && u.elapsed() >= INTERVALO
+            {
+                *u = Instant::now();
+                let fim = false;
+                emitir(
+                    &app,
+                    "ordenacao",
+                    id,
+                    Ordenacao {
+                        geracao,
+                        lidos,
+                        total,
+                        fim,
+                        falha: None,
+                    },
+                );
+            }
+        };
+        let falha = match t.ordenar(coluna, &cancelar, &aviso) {
+            Ok(ordem) => {
+                let Some(doc) = doc.upgrade() else { return };
+                let Ok(mut o) = doc.ordem.lock() else { return };
+                if o.geracao != geracao {
+                    return;
+                }
+                o.pronta = Some((Arc::new(ordem), desc));
+                None
+            }
+            Err(f) => Some(f),
+        };
+        let fim = Ordenacao {
+            geracao,
+            lidos: total,
+            total,
+            fim: true,
+            falha,
+        };
+        emitir(&app, "ordenacao", id, fim);
+    });
+    Ok(Ordenado {
+        geracao,
+        pronta: false,
+    })
+}
+
+/// Para a ordenação em curso; a ordem anterior continua valendo.
+#[tauri::command]
+fn cancelar_ordenacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
+    let doc = estado.doc(id)?;
+    doc.ordem
+        .lock()
+        .map_err(|e| e.to_string())?
+        .cancelar
+        .store(true, Relaxed);
+    Ok(())
 }
 
 fn marcas_atuais(estado: &Estado, id: u32) -> Result<Arc<[AtomicU8]>, String> {
@@ -1370,6 +1614,10 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             regua,
             marcas,
             estrutura,
+            tabela,
+            tabela_linhas,
+            ordenar,
+            cancelar_ordenacao,
             buscar,
             achado,
             achados,
@@ -1696,6 +1944,43 @@ mod testes {
             em(1, "marcas", json!({"inicio": 0, "quantidade": 9})),
             Ok(json!([0, 255]))
         );
+        // Tabela: colunas do topo, célula composta resumida, linha inválida marcada.
+        let t = em(1, "tabela", json!({})).unwrap();
+        assert_eq!(t["registros"], 2);
+        assert_eq!(
+            t["colunas"],
+            json!([{"nome": "a", "caminho": ".a", "presenca": 1, "tipos": ["lista"]}])
+        );
+        assert_eq!(t["indisponivel"], Value::Null);
+        let tl = em(
+            1,
+            "tabela_linhas",
+            json!({"inicio": 0, "quantidade": 9, "colunas": [0]}),
+        )
+        .unwrap();
+        assert_eq!(
+            tl[0]["celulas"],
+            json!([{"tipo": "lista", "texto": "", "filhos": 2, "byte": 5}])
+        );
+        assert_eq!(tl[1]["erro"], json!({"byte": 8, "motivo": "literal"}));
+        assert_eq!(
+            em(1, "ordenar", json!({"coluna": 0, "desc": true})).unwrap()["pronta"],
+            false
+        );
+        let ordem = (0..200)
+            .map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                em(1, "tabela", json!({})).unwrap()["ordem"].clone()
+            })
+            .find(|o| !o.is_null())
+            .expect("ordenação não terminou");
+        assert_eq!(ordem, json!({"coluna": 0, "desc": true}));
+        assert_eq!(
+            em(1, "ordenar", json!({"coluna": null, "desc": false})).unwrap()["pronta"],
+            true
+        );
+        assert_eq!(em(1, "cancelar_ordenacao", json!({})), Ok(Value::Null));
+        assert!(em(1, "ordenar", json!({"coluna": 5, "desc": false})).is_err());
         assert_eq!(em(1, "alternar", json!({"v": 0})), Ok(json!(3)));
         let linhas = em(1, "linhas", json!({"inicio": 0, "quantidade": 10})).unwrap();
         assert_eq!(linhas[1]["chave"], "a");
