@@ -18,6 +18,7 @@ interface Andamento {
   cancelado: boolean;
   arquivo: string | null;
   falha: string | null;
+  cortado: boolean; // a saída passou do teto: resultado parcial
 }
 interface Falha { inicio: number; fim: number; linha: number; coluna: number; mensagem: string }
 
@@ -102,6 +103,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
       e,
       [
         t.consulta.resultados(p.resultados, o.fmt(p.resultados)),
+        p.cortado ? t.consulta.cortada : "",
         erro ? t.consulta.erros(o.fmt(p.erros), o.fmt(erro[0] + 1), erro[1]) : "",
       ].filter(Boolean).join(" · "),
     );
