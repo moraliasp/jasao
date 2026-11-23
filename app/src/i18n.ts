@@ -8,6 +8,16 @@ const pt = {
     nome: (n: string) => `${n} (exemplo)`,
   },
   abrindo: "Abrindo…",
+  descompactando: (pct: number) => `Descompactando… ${pct}%`,
+  compactado: {
+    cancelar: "Cancelar",
+    cancelada: "Abertura cancelada",
+    titulo: "Possível bomba de descompactação",
+    razao:
+      "Descompactado, o arquivo fica mais de 100 vezes maior que o compactado. Pode ser uma bomba de descompactação, feita para encher o disco. Abrir assim mesmo? Dá para cancelar enquanto descompacta.",
+    recusada: "não aberto: descompactado, fica mais de 100 vezes maior que o compactado (possível bomba de descompactação)",
+    teto: "descompactado, o arquivo passa de 10 GiB, o teto do app; descompacte fora do app e abra o resultado",
+  },
   abasArquivos: {
     rotulo: "Arquivos abertos",
     nova: "Nova aba",
@@ -171,6 +181,16 @@ const en: Textos = {
     nome: (n: string) => `${n} (example)`,
   },
   abrindo: "Opening…",
+  descompactando: (pct) => `Decompressing… ${pct}%`,
+  compactado: {
+    cancelar: "Cancel",
+    cancelada: "Opening canceled",
+    titulo: "Possible decompression bomb",
+    razao:
+      "Decompressed, the file gets more than 100 times larger than the compressed one. It may be a decompression bomb, made to fill the disk. Open anyway? You can cancel while it decompresses.",
+    recusada: "not opened: decompressed, it gets more than 100 times larger than the compressed file (possible decompression bomb)",
+    teto: "decompressed, the file exceeds 10 GiB, the app limit; decompress it outside the app and open the result",
+  },
   abasArquivos: {
     rotulo: "Open files",
     nova: "New tab",
