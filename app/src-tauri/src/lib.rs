@@ -1655,7 +1655,9 @@ mod testes {
         );
         assert_eq!(a["arquivo"], Value::Null);
         // Filtro preso e `fechar_consulta`: a thread da consulta só termina (e solta o
-        // `cancelar`) depois de matar e esperar o filho.
+        // `cancelar`) depois de matar e esperar o filho. `consultar` volta na hora, com o
+        // filtro ainda girando: não espera a consulta (síncrono, nem voltaria).
+        let t = Instant::now();
         assert!(
             em(
                 2,
@@ -1663,6 +1665,11 @@ mod testes {
                 json!({"filtro": "def f: f; f", "caminho": caminho})
             )
             .is_ok()
+        );
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
         let preso = Arc::downgrade(

@@ -77,17 +77,7 @@ pub(crate) fn rodar(
     let _vivo = filho.stdin.take();
     let stderr = filho.stderr.take().expect("stderr do filho");
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        // Em bytes: uma linha que não é UTF-8 não pode encerrar a leitura.
-        let (mut leitor, mut linha) = (BufReader::new(stderr), Vec::new());
-        while leitor.read_until(b'\n', &mut linha).is_ok_and(|n| n > 0) {
-            let texto = String::from_utf8_lossy(&linha).trim_end().to_owned();
-            if tx.send(texto).is_err() {
-                return;
-            }
-            linha.clear();
-        }
-    });
+    std::thread::spawn(move || ler_linhas(stderr, &tx));
     let (mut fim, mut ultima, mut aberto) = (None, String::new(), true);
     // O cancelar vale até o filho sair, mesmo depois de ele fechar o stderr.
     let saida = loop {
@@ -128,6 +118,19 @@ pub(crate) fn rodar(
                 ultima
             }
         )),
+    }
+}
+
+/// Manda cada linha de `r` (sem o fim de linha) por `tx` até o fim ou até ninguém ouvir. Em
+/// bytes: uma linha que não é UTF-8 não pode encerrar a leitura.
+fn ler_linhas(r: impl std::io::Read, tx: &mpsc::Sender<String>) {
+    let (mut leitor, mut linha) = (BufReader::new(r), Vec::new());
+    while leitor.read_until(b'\n', &mut linha).is_ok_and(|n| n > 0) {
+        let texto = String::from_utf8_lossy(&linha).trim_end().to_owned();
+        if tx.send(texto).is_err() {
+            return;
+        }
+        linha.clear();
     }
 }
 
@@ -238,6 +241,25 @@ fn consultar(
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    /// Linha do stderr que não é UTF-8 (pânico com bytes do arquivo) não esconde as seguintes.
+    #[test]
+    fn leitor_segue_depois_de_utf8_invalido() {
+        let (tx, rx) = mpsc::channel();
+        ler_linhas(
+            &b"ruim \xff\xfe\n{\"fim\":true}\r\nsem fim de linha"[..],
+            &tx,
+        );
+        drop(tx);
+        assert_eq!(
+            rx.iter().collect::<Vec<_>>(),
+            [
+                "ruim \u{fffd}\u{fffd}",
+                "{\"fim\":true}",
+                "sem fim de linha"
+            ]
+        );
+    }
 
     /// Não é um teste: é a porta do processo filho quando `comando` reexecuta o binário de teste.
     #[test]
