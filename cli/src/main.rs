@@ -8,8 +8,15 @@
 //!                                         resultados em JSONL no stdout, erros por linha no stderr
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
+//!
+//! Com o stdout num terminal, `janela`, `buscar`, `consultar` e `inferir` trocam controles (C0
+//! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
+//! hostil não manda sequência ESC/CSI/OSC ao terminal nem inverte o texto. O mesmo vale para os
+//! erros do jq no stderr, se ele for terminal. Redirecionada (arquivo, pipe), a saída é fiel byte
+//! a byte. No terminal, o `\r` de um CRLF aparece como `\u{d}` e a saída `--json` deixa de ser
+//! JSON válido onde houver escape (`\u{..}` não é escape JSON): para máquina, use pipe.
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -33,18 +40,18 @@ fn main() -> ExitCode {
     let resultado = match args.as_slice() {
         ["linhas", arquivo] => linhas(arquivo),
         ["janela", arquivo, inicio, quantidade] => match (inicio.parse(), quantidade.parse()) {
-            (Ok(i), Ok(q)) => janela(arquivo, i, q),
+            (Ok(i), Ok(q)) => janela(arquivo, i, q, &mut tela()),
             _ => Err("início e quantidade precisam ser números inteiros".into()),
         },
         ["buscar", resto @ ..] => match opcoes_busca(resto) {
-            Some(op) => buscar(op),
+            Some(op) => buscar(op, &mut tela()),
             None => {
                 eprintln!("{USO}");
                 return ExitCode::from(2);
             }
         },
         ["consultar", resto @ ..] => match opcoes_consulta(resto) {
-            Some(op) => consultar(op),
+            Some(op) => consultar(op, &mut tela()),
             None => {
                 eprintln!("{USO}");
                 return ExitCode::from(2);
@@ -61,8 +68,10 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         },
-        ["inferir", arquivo] => inferir(arquivo, false),
-        ["inferir", arquivo, "--json"] | ["inferir", "--json", arquivo] => inferir(arquivo, true),
+        ["inferir", arquivo] => inferir(arquivo, false, &mut tela()),
+        ["inferir", arquivo, "--json"] | ["inferir", "--json", arquivo] => {
+            inferir(arquivo, true, &mut tela())
+        }
         _ => {
             eprintln!("{USO}");
             return ExitCode::from(2);
@@ -114,9 +123,69 @@ fn linhas(arquivo: &str) -> Resultado {
     Ok(())
 }
 
-fn janela(arquivo: &str, inicio: usize, quantidade: usize) -> Resultado {
+/// Saída que, ligada, troca controles e invisíveis por `\u{..}` (ver o topo do arquivo).
+struct Terminal<W: Write> {
+    out: W,
+    neutralizar: bool,
+}
+
+/// O stdout, neutralizado se for terminal. Os comandos que imprimem conteúdo do arquivo pedem um
+/// `Terminal` no tipo: não há como passar o stdout cru por engano.
+fn tela() -> Terminal<io::BufWriter<io::StdoutLock<'static>>> {
+    let stdout = io::stdout();
+    Terminal {
+        neutralizar: stdout.is_terminal(),
+        out: io::BufWriter::new(stdout.lock()),
+    }
+}
+
+/// Controle que mexe no terminal, ou bidi/largura zero que engana quem lê.
+fn perigoso(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t')
+        || matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// `s` com controles e invisíveis trocados por `\u{..}` (para o stderr).
+fn neutro(s: &str) -> String {
+    let mut t = Terminal {
+        out: Vec::new(),
+        neutralizar: true,
+    };
+    let _ = t.write_all(s.as_bytes()); // Vec não falha
+    String::from_utf8_lossy(&t.out).into_owned()
+}
+
+impl<W: Write> Write for Terminal<W> {
+    // Cada chamada traz um pedaço inteiro (linha ou argumento do `write!`); UTF-8 inválido vira
+    // U+FFFD, que o terminal mostraria do mesmo jeito.
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if !self.neutralizar {
+            return self.out.write(buf);
+        }
+        let texto = String::from_utf8_lossy(buf);
+        let mut resto = &texto[..];
+        while let Some(i) = resto.find(perigoso) {
+            let c = resto[i..].chars().next().unwrap_or_default();
+            self.out.write_all(&resto.as_bytes()[..i])?;
+            write!(self.out, "\\u{{{:x}}}", c as u32)?;
+            resto = &resto[i + c.len_utf8()..];
+        }
+        self.out.write_all(resto.as_bytes())?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+fn janela(
+    arquivo: &str,
+    inicio: usize,
+    quantidade: usize,
+    out: &mut Terminal<impl Write>,
+) -> Resultado {
     let a = abrir(arquivo)?;
-    let mut out = io::BufWriter::new(io::stdout().lock());
     for linha in a.janela(inicio, quantidade) {
         out.write_all(linha)?;
         out.write_all(b"\n")?;
@@ -159,11 +228,10 @@ fn opcoes_busca<'a>(args: &[&'a str]) -> Option<OpcoesBusca<'a>> {
 /// Bytes de contexto de cada lado do achado no trecho impresso.
 const CONTEXTO: usize = 40;
 
-fn buscar(op: OpcoesBusca) -> Resultado {
+fn buscar(op: OpcoesBusca, out: &mut Terminal<impl Write>) -> Resultado {
     let busca = Busca::nova(op.padrao, op.regex, op.ignorar_caixa)?;
     let a = abrir(op.arquivo)?;
     let t = Instant::now();
-    let mut out = io::BufWriter::new(io::stdout().lock());
     let (mut impressos, mut erro) = (0, None);
     let resumo = busca.executar(a.bytes(), &AtomicBool::new(false), |lote| {
         for achado in lote.achados {
@@ -239,7 +307,7 @@ fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
 /// resultados, e filtro que não produz nada (`last(range(1e12))`, `def f: f; f`) nunca devolve.
 const FOLGA_TEMPO: Duration = Duration::from_secs(2);
 
-fn consultar(op: OpcoesConsulta) -> Resultado {
+fn consultar(op: OpcoesConsulta, out: &mut Terminal<impl Write>) -> Resultado {
     let consulta = Consulta::nova(op.filtro)?.com_tempo_max(op.tempo_max);
     let a = abrir(op.arquivo)?;
     if let Some(t) = op.tempo_max {
@@ -251,7 +319,6 @@ fn consultar(op: OpcoesConsulta) -> Resultado {
     }
     let t = Instant::now();
     let cancelar = AtomicBool::new(false);
-    let mut out = io::BufWriter::new(io::stdout().lock());
     let mut erro = None;
     let ao_lote = |lote: nucleo::consulta::LoteConsulta| {
         for r in lote.resultados {
@@ -272,7 +339,12 @@ fn consultar(op: OpcoesConsulta) -> Resultado {
     }
     out.flush()?;
     for e in &resumo.primeiros_erros {
-        eprintln!("linha {}: {}", e.linha + 1, e.motivo);
+        let motivo = if io::stderr().is_terminal() {
+            neutro(&e.motivo)
+        } else {
+            e.motivo.clone()
+        };
+        eprintln!("linha {}: {motivo}", e.linha + 1);
     }
     if resumo.erros > resumo.primeiros_erros.len() as u64 {
         eprintln!(
@@ -295,7 +367,7 @@ fn consultar(op: OpcoesConsulta) -> Resultado {
     Ok(())
 }
 
-fn inferir(arquivo: &str, json: bool) -> Resultado {
+fn inferir(arquivo: &str, json: bool, out: &mut Terminal<impl Write>) -> Resultado {
     use nucleo::estrutura::{self, Entrada, Relacao, Tipo};
     let a = abrir(arquivo)?;
     let t = Instant::now();
@@ -305,7 +377,6 @@ fn inferir(arquivo: &str, json: bool) -> Resultado {
     let caminhos = r.caminhos();
     let discriminadores = r.discriminadores();
     let linha = |c: nucleo::estrutura::Contagem| c.primeira().map(|l| l + 1);
-    let mut out = io::BufWriter::new(io::stdout().lock());
     if json {
         let num = |x: Option<u64>| x.map_or("null".into(), |v| v.to_string());
         let lista = |v: Vec<String>| v.join(",");
@@ -512,4 +583,134 @@ fn erros(arquivo: &str, json: bool, max: usize) -> Result<bool, Box<dyn std::err
         r.total as f64 / 1e6,
     );
     Ok(r.invalidas > 0)
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    fn escrito(neutralizar: bool, partes: &[&[u8]]) -> Vec<u8> {
+        let mut t = Terminal {
+            out: Vec::new(),
+            neutralizar,
+        };
+        for p in partes {
+            t.write_all(p).unwrap();
+        }
+        t.out
+    }
+
+    #[test]
+    fn terminal_neutraliza_escapes_controles_e_invisiveis() {
+        // Título (OSC 0), limpar tela (CSI 2J), link OSC 8, CSI em C1, CR, DEL, RLO e ZWSP.
+        let hostil = "{\"a\":\"\x1b]0;pwned\x07\x1b[2J\x1b]8;;http://x\x1b\\\\l\u{9b}31m\r\x7f\u{202e}fdp.exe\u{200b}\"}\tok";
+        let s = String::from_utf8(escrito(true, &[hostil.as_bytes(), b"\n"])).unwrap();
+        assert_eq!(
+            s,
+            "{\"a\":\"\\u{1b}]0;pwned\\u{7}\\u{1b}[2J\\u{1b}]8;;http://x\\u{1b}\\\\l\\u{9b}31m\\u{d}\\u{7f}\\u{202e}fdp.exe\\u{200b}\"}\tok\n"
+        );
+        assert!(!s.chars().any(perigoso));
+    }
+
+    /// Os 17 invisíveis bidi/de largura zero que a interface também marca (app/src/texto.ts).
+    const INVISIVEIS: [char; 17] = [
+        '\u{061c}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}', '\u{200f}', '\u{202a}',
+        '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2060}', '\u{2066}', '\u{2067}',
+        '\u{2068}', '\u{2069}', '\u{feff}',
+    ];
+
+    #[test]
+    fn perigoso_cobre_a_lista_inteira() {
+        let controles = (0u32..0x20).chain(0x7f..0xa0).filter_map(char::from_u32);
+        for c in controles.chain(INVISIVEIS) {
+            let esperado = !matches!(c, '\n' | '\t');
+            assert_eq!(perigoso(c), esperado, "U+{:04X}", c as u32);
+            if esperado {
+                assert_eq!(
+                    neutro(&format!("a{c}b")),
+                    format!("a\\u{{{:x}}}b", c as u32)
+                );
+            }
+        }
+        // Vizinhos que não entram: espaço, NBSP, U+200A, U+2010, U+202F, U+2065, U+206A.
+        for c in [
+            ' ', '\u{a0}', '\u{200a}', '\u{2010}', '\u{202f}', '\u{2065}', '\u{206a}',
+        ] {
+            assert!(!perigoso(c), "U+{:04X}", c as u32);
+        }
+    }
+
+    /// Arquivo temporário com `conteudo`; apagado no fim do teste.
+    struct Temporario(std::path::PathBuf);
+    impl Temporario {
+        fn novo(nome: &str, conteudo: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("jasao-{}-{nome}.jsonl", std::process::id()));
+            std::fs::write(&p, conteudo).unwrap();
+            Self(p)
+        }
+    }
+    impl Drop for Temporario {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    // Linha 1: JSON válido com C1 e bidi crus. Linha 2: ESC/BEL crus (inválida; só a janela mostra).
+    const HOSTIL: &str = "{\"k\":\"\u{9b}\u{202e} ok\"}\n{\"r\":\"\x1b]0;x\x07\"}\n";
+
+    /// Roda o comando com um `Terminal` ligado e devolve o que ele escreveu.
+    fn no_terminal(cmd: impl FnOnce(&mut Terminal<Vec<u8>>) -> Resultado) -> String {
+        let mut t = Terminal {
+            out: Vec::new(),
+            neutralizar: true,
+        };
+        cmd(&mut t).unwrap();
+        String::from_utf8(t.out).unwrap()
+    }
+
+    #[test]
+    fn janela_e_consultar_passam_pelo_terminal() {
+        let f = Temporario::novo("call-site", HOSTIL);
+        let arquivo = f.0.to_str().unwrap();
+        let jan = no_terminal(|t| janela(arquivo, 0, 2, t));
+        assert_eq!(
+            jan,
+            "{\"k\":\"\\u{9b}\\u{202e} ok\"}\n{\"r\":\"\\u{1b}]0;x\\u{7}\"}\n"
+        );
+        let op = OpcoesConsulta {
+            filtro: ".k",
+            arquivo,
+            documento: false,
+            tempo_max: None,
+        };
+        let con = no_terminal(|t| consultar(op, t));
+        // C1 e bidi são válidos crus em texto JSON e saíam assim do jq.
+        assert!(con.contains("\\u{9b}\\u{202e}"), "{con:?}");
+        assert!(!con.chars().any(perigoso), "{con:?}");
+        let op = OpcoesBusca {
+            arquivo,
+            padrao: "ok",
+            regex: false,
+            ignorar_caixa: false,
+            max: 10,
+        };
+        let bus = no_terminal(|t| buscar(op, t));
+        assert!(
+            bus.contains("\\u{9b}\\u{202e} [ok]") && !bus.chars().any(perigoso),
+            "{bus:?}"
+        );
+        let inf = no_terminal(|t| inferir(arquivo, false, t));
+        assert!(!inf.chars().any(perigoso), "{inf:?}");
+    }
+
+    #[test]
+    fn terminal_desligado_e_fiel_ao_byte() {
+        let cru: &[u8] = b"\x1b[2J \xff \xe2\x80\xae";
+        assert_eq!(escrito(false, &[cru]), cru);
+        // Ligado, UTF-8 inválido vira U+FFFD (o terminal mostraria igual).
+        assert_eq!(
+            escrito(true, &[cru]),
+            "\\u{1b}[2J \u{fffd} \\u{202e}".as_bytes()
+        );
+    }
 }

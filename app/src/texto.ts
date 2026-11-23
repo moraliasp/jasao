@@ -21,7 +21,14 @@ export function decodificar(inicio: number, buf: ArrayBuffer): JanelaTexto {
   return { inicio, tamanhos, linhas: linhas.slice(0, tamanhos.length) };
 }
 
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+// Controles bidi (U+061C, U+200E/F, U+202A–E, U+2066–9) e de largura zero (U+200B–D, U+2060, U+FEFF).
+const INVISIVEIS = /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+
+/** Texto do arquivo como HTML: escapado e com cada invisível num `.inv` que mostra o código (CSS)
+ * e o isola. O caractere continua no DOM: seleção, posição em bytes e cópia ficam iguais. */
+export const visivel = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(INVISIVEIS, (c) => `<span class="inv" data-u="${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}">${c}</span>`);
+const esc = visivel;
 
 // Chave (texto seguido de `:`), texto, número, literal, pontuação, espaço, qualquer outro.
 const TOKEN = /("(?:[^"\\]|\\.)*"?)(?=\s*:)|("(?:[^"\\]|\\.)*"?)|(-?\d[\d.eE+-]*)|(true|false|null)\b|([{}[\],:])|(\s+)|(.)/gu;
@@ -36,12 +43,21 @@ const bytesDe = (cp: number) => (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ?
  * com marca 0 (fora), 1 (achado) ou 2 (achado atual). */
 export function partir(tok: string, b: number, marcas: Marca[]): [string, number, number][] {
   const fim = b + enc.encode(tok).length;
-  if (!marcas.some(([i, f]) => i < fim && f > b)) return [[tok, b, 0]];
+  // As marcas vêm do núcleo em ordem e sem sobreposição: busca binária pela primeira que termina
+  // depois de `b` e um ponteiro que só anda. Linear na linha, não caracteres × marcas.
+  let j = 0;
+  for (let hi = marcas.length; j < hi; ) {
+    const m = (j + hi) >> 1;
+    if (marcas[m][1] <= b) j = m + 1;
+    else hi = m;
+  }
+  if (j === marcas.length || marcas[j][0] >= fim) return [[tok, b, 0]];
   const pedacos: [string, number, number][] = [];
   let antes: Marca | undefined | null = null; // marca do pedaço anterior (null: nenhum ainda)
   let x = b;
   for (const ch of tok) {
-    const m = marcas.find(([i, f]) => x >= i && x < f);
+    while (j < marcas.length && marcas[j][1] <= x) j++;
+    const m = j < marcas.length && marcas[j][0] <= x ? marcas[j] : undefined;
     if (m === antes) pedacos[pedacos.length - 1][0] += ch;
     else pedacos.push([ch, x, m ? (m[2] ? 2 : 1) : 0]);
     antes = m;
