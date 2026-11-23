@@ -70,8 +70,26 @@ impl Default for Opcoes<'_> {
     }
 }
 
+/// Abertura cancelada pelo usuário. Não usa `Interrupted`: o gzip lê o cabeçalho com
+/// `read_exact`, que repete o `read` em `Interrupted` e girava para sempre.
+#[derive(Debug)]
+struct Cancelada;
+
+impl std::fmt::Display for Cancelada {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("abertura cancelada")
+    }
+}
+
+impl std::error::Error for Cancelada {}
+
 fn cancelado() -> io::Error {
-    io::Error::new(ErrorKind::Interrupted, "abertura cancelada")
+    io::Error::other(Cancelada)
+}
+
+/// Se o erro é o cancelamento (ver `Opcoes::cancelar`).
+pub fn cancelada(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|i| i.is::<Cancelada>())
 }
 
 /// Descompactado passou de `max_razao` × compactado. Pode ser bomba ou log muito repetitivo:

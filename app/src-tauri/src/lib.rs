@@ -299,7 +299,7 @@ fn abrir_linhas_com(caminho: &str, op: &Opcoes) -> Result<ArquivoLinhas, String>
         return Err(format!("{caminho}: é uma pasta, não um arquivo"));
     }
     ArquivoLinhas::abrir_com(caminho, op).map_err(|e| match e.kind() {
-        std::io::ErrorKind::Interrupted => ERRO_CANCELADA.into(),
+        _ if nucleo::compactado::cancelada(&e) => ERRO_CANCELADA.into(),
         _ if nucleo::compactado::razao_estourada(&e) => ERRO_RAZAO.into(),
         std::io::ErrorKind::FileTooLarge => ERRO_TETO.into(),
         _ => format!("{caminho}: {e}"),
