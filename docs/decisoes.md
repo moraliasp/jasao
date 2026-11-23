@@ -190,7 +190,7 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 
 **Limites explícitos:** um trabalhador junta no máximo `max_lote` resultados (padrão 10 000) antes de entregar, e um lote nunca passa disso, mesmo numa linha que explode (`range(1e12)`). Cancelamento (`AtomicBool`) e teto de tempo opcional (`com_tempo_max`) são conferidos entre linhas e entre resultados; visto o sinal, nenhum lote sai. Filtro limitado a 16 KiB e compilado e avaliado em threads de 256 MiB de pilha (reserva virtual): o parser desce no filtro e um filtro de 16 KiB todo de `-` ou `(` compila e roda até em debug; com 128 MiB em debug, ou 64 MiB em release a partir de ~60 mil níveis, abortava.
 
-**Limite conhecido (cancelar):** o `jaq` não tem ponto de interrupção. Filtro que gira sem entregar resultado (`last(range(1e12))`, `[range(1e12)]`, `def f: f; f`) só é visto parar quando termina, e recursão sem fundo (`def f: 1 + f; f`) estoura a pilha e aborta o processo inteiro. Por isso a CLI, com `--tempo-max`, tem um vigia que encerra o processo (código 3) dois segundos depois do teto. Recomendação para a interface: rodar a consulta num processo filho (`jasao consultar`) e matar o processo no cancelar, em vez de rodar o `jaq` dentro do processo do app.
+**Limite conhecido (cancelar):** o `jaq` não tem ponto de interrupção. Filtro que gira sem entregar resultado (`last(range(1e12))`, `[range(1e12)]`, `def f: f; f`) só é visto parar quando termina, e recursão sem fundo (`def f: 1 + f; f`) estoura a pilha e aborta o processo inteiro. Por isso a CLI, com `--tempo-max`, tem um vigia que encerra o processo (código 3) dois segundos depois do teto; em recursão sem fundo a CLI continua abortando (SIGABRT), o que só derruba aquele comando. O app roda a consulta num processo filho (ver "Consulta em processo filho", 22/11/2026).
 
 **Fidelidade de número** (testado em `consulta::testes::fidelidade_de_numero`):
 
@@ -276,9 +276,9 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Copiar caminho:** os textos vêm do núcleo (`Arvore::caminho` e `Arvore::valor`, comandos `caminhos` e `valor`), não do front; o caminho que o front já montava fica só no rótulo acessível da linha. Menu de contexto em HTML (botão direito, tecla Menu ou ⇧F10), com setas, Home/End e Esc; ⇧⌘C copia o caminho jq e ⌘C copia o valor quando não há texto selecionado (com seleção, ⌘C fica com o navegador). A escrita usa `navigator.clipboard.write` com `ClipboardItem` de promessa, para o WebKit aceitar a escrita dentro do gesto mesmo com o texto chegando depois do `invoke`: sem plugin e sem permissão nova. Valor acima de 16 MB é recusado. A confirmação aparece na barra de status por 2,5 s.
 
-**Consulta jq:** campo na mesma faixa da busca, aberto por ⌘J. Roda sempre sobre o arquivo **original** (uma consulta nova não encadeia sobre o resultado anterior). `consultar` compila o filtro (erro de sintaxe volta com linha e coluna e o front seleciona o trecho no campo), escolhe modo documento para JSON único ou de várias linhas e JSONL para o resto, e grava os resultados numa thread num JSONL temporário (`jasao-consulta-<pid>-<geração>-<nanos>.jsonl`, criado com `create_new` e 0600). No fim, o temporário abre na visão atual como um arquivo comum, sem passar pelo painel de entrada; "Voltar ao arquivo" reabre o original. O temporário é apagado ao voltar, numa consulta nova, ao cancelar e ao sair do app; por isso cancelar uma consulta feita por cima de um resultado aberto volta ao arquivo original.
+**Consulta jq:** campo na mesma faixa da busca, aberto por ⌘J. Roda sempre sobre o arquivo **original** (uma consulta nova não encadeia sobre o resultado anterior). `consultar` compila o filtro (erro de sintaxe volta com linha e coluna e o front seleciona o trecho no campo), escolhe modo documento para JSON único ou de várias linhas e JSONL para o resto, e grava os resultados, num processo filho, num JSONL temporário (`jasao-consulta-<pid>-<geração>-<nanos>.jsonl`, criado com `create_new` e 0600). No fim, o temporário abre na visão atual como um arquivo comum, sem passar pelo painel de entrada; "Voltar ao arquivo" reabre o original. O temporário é apagado ao voltar, numa consulta nova, ao cancelar e ao sair do app; por isso cancelar uma consulta feita por cima de um resultado aberto volta ao arquivo original.
 
-**Limites conhecidos:** sem teto de tempo na interface (o usuário cancela); filtro que gira sem entregar resultado só para quando termina, e recursão sem fundo ainda aborta o processo inteiro (o processo filho recomendado na seção da consulta jq ficou para outra fatia). No Windows, um temporário aberto pela visão pode não ser apagado. O destaque do erro de sintaxe usa o comprimento em bytes da faixa, aproximado para texto fora do ASCII.
+**Limites conhecidos:** sem teto de tempo na interface (o usuário cancela, e o cancelar mata o processo filho mesmo com o filtro preso; ver "Consulta em processo filho"). No Windows, um temporário aberto pela visão pode não ser apagado. O destaque do erro de sintaxe usa o comprimento em bytes da faixa, aproximado para texto fora do ASCII.
 
 ## Abas de arquivo e arrastar (Fase 1, 22/11/2026)
 
@@ -313,3 +313,20 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Por aba:** cada documento guarda a própria inferência no Rust (`estrutura` leva o `id`, como os outros comandos) e cada aba guarda no front a lista formatada e a seleção. Trocar de aba não refaz o pedido; resposta que chega depois da troca é descartada (documento ativo e `geracao`).
 
 **Pendências:** abrir o nó exato na Árvore (não só o registro); progresso e resultado parcial da inferência (meta de 500 ms do plano); virtualizar a lista (hoje desenha tudo; `shortcut:` no código); filtro por variante como no mockup.
+
+## Consulta em processo filho (22/11/2026)
+
+**Problema** (auditoria de segurança, achados 6, 8 e 9): no app, a consulta jq rodava dentro do processo. Filtro preso (`def f: f; f`) não via o cancelar, recursão sem fundo (`def f: 1 + f; f`) abortava o app inteiro, a saída não tinha teto (um `range(1e12)` enchia o disco) e `consultar` era síncrono, de modo que abrir um FIFO travava a interface.
+
+**Escolha:** o app reexecuta o próprio binário (`std::env::current_exe()`) com `JASAO_CONSULTA_FILHO=<arquivo>` no ambiente (filtro e destino em outras duas variáveis); o `main` vê a variável antes de subir o Tauri e roda só a consulta (`app/src-tauri/src/filho.rs`). Foi escolhido em vez de empacotar a CLI `jasao` como sidecar: não muda empacotamento nem `tauri.conf.json`, e o filho reaproveita `abrir_linhas` (exemplos embutidos, `.gz`/`.zst`) e `nucleo::consulta` sem protocolo novo de argumentos. O filho grava os resultados direto no temporário que o pai criou (`create_new`, 0600) e manda andamento e fim como `AndamentoConsulta` em JSON, um por linha, no stderr.
+
+**O que passou a valer:**
+- Cancelar (botão, Esc, consulta nova, voltar, fechar a aba) mata o filho: vale para filtro que gira sem entregar.
+- Recursão sem fundo ou falta de memória derrubam só o filho; o pai devolve `falha` ("a consulta parou sem terminar…", com a última linha do stderr do filho) e o app segue.
+- Teto de 1 GiB no resultado em disco (`filho::TETO_SAIDA`): ao passar, o filho para, o que já foi gravado abre normalmente e o evento traz `cortado: true`; a interface avisa "resultado parcial".
+- `consultar` é `async` (fora da thread da interface) e não abre o arquivo: confere com `metadata` (que não bloqueia) e recusa o que não é arquivo comum (FIFO, socket, dispositivo) com erro claro. O filtro ainda é compilado no pai, só para devolver o erro de sintaxe com posição (compilar é limitado por `MAX_FILTRO`).
+- Se o app morrer, o stdin do filho (um pipe que o pai segura) fecha e o filho sai; não fica consulta órfã girando.
+
+**Testado:** `filho::testes` (teto, cancelar com filtro preso, recursão sem fundo) e `comandos_pelo_ipc` (recursão pelo comando, FIFO recusado em menos de 2 s). Nos testes o filho é o próprio binário de teste rodando só `filho::testes::modo_filho`.
+
+**Não verificado:** janela nativa aberta (o filho no `.app` empacotado do macOS e no Windows, onde o binário é do subsistema gráfico).

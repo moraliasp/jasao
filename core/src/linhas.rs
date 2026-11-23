@@ -88,6 +88,7 @@ impl ArquivoLinhas {
     /// Compactado é descompactado para o cache e o cache é que é mapeado.
     pub fn abrir_com(caminho: impl AsRef<Path>, op: &Opcoes) -> io::Result<Self> {
         let caminho = caminho.as_ref();
+        arquivo_comum(caminho)?;
         let mut arquivo = File::open(caminho)?;
         let mut magico = [0u8; 4];
         let n = arquivo.by_ref().take(4).read(&mut magico)?;
@@ -137,9 +138,51 @@ impl ArquivoLinhas {
     }
 }
 
+/// Recusa o que não é arquivo comum, sem abrir: `open` de um FIFO bloqueia até alguém escrever,
+/// e dispositivo (`/dev/zero`) tem tamanho 0 e não acaba. `metadata` segue link simbólico.
+pub fn arquivo_comum(caminho: &Path) -> io::Result<()> {
+    if std::fs::metadata(caminho)?.is_file() {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "não é um arquivo comum (pasta, FIFO, socket ou dispositivo)",
+    ))
+}
+
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    /// Achado 9: FIFO e dispositivo são recusados na hora, sem abrir.
+    #[cfg(unix)]
+    #[test]
+    fn recusa_o_que_nao_e_arquivo_comum() {
+        let pasta = tempfile::tempdir().unwrap();
+        let fifo = pasta.path().join("fifo");
+        let ok = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        // Sem a recusa, o `open` destrava quando este escritor abre (e o teste falha no Ok).
+        let f = fifo.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let _ = std::fs::write(f, "1\n");
+        });
+        let t = std::time::Instant::now();
+        let erro = ArquivoLinhas::abrir(&fifo)
+            .err()
+            .expect("FIFO devia ser recusado");
+        assert!(
+            erro.to_string().contains("não é um arquivo comum"),
+            "{erro}"
+        );
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        assert!(ArquivoLinhas::abrir("/dev/zero").is_err());
+        assert!(ArquivoLinhas::abrir(pasta.path()).is_err());
+    }
 
     fn linhas(dados: &[u8]) -> Vec<&[u8]> {
         let ind = IndiceLinhas::construir(dados);
