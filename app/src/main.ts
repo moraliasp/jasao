@@ -17,7 +17,7 @@ import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPar
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
-import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml, visivel } from "./texto";
+import { decodificar, escAtributo, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml, visivel } from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -54,7 +54,7 @@ const verFormatado = $<HTMLButtonElement>("ver-formatado");
 const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura") };
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+const esc = escAtributo;
 const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
 
 let total = 0; // linhas visíveis

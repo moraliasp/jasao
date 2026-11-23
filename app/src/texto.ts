@@ -27,8 +27,15 @@ const INVISIVEIS = /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
 /** Texto do arquivo como HTML: escapado e com cada invisível num `.inv` que mostra o código (CSS)
  * e o isola. O caractere continua no DOM: seleção, posição em bytes e cópia ficam iguais. */
 export const visivel = (s: string) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(INVISIVEIS, (c) => `<span class="inv" data-u="${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}">${c}</span>`);
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(INVISIVEIS, (c) => `<span class="inv" data-u="${codigo(c)}">${c}</span>`);
+const codigo = (c: string) => c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0");
 const esc = visivel;
+
+/** Texto que vem do arquivo fora do conteúdo (atributo `title`/`aria-label`, nome de aba): escapado
+ * para atributo e com cada invisível trocado pelo código, `<U+202E>`, porque ali não cabe o `.inv`
+ * e o caractere cru inverteria o que o usuário vê ou o leitor de tela lê. */
+export const escAtributo = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;").replace(INVISIVEIS, (c) => `&lt;U+${codigo(c)}>`);
 
 // Chave (texto seguido de `:`), texto, número, literal, pontuação, espaço, qualquer outro.
 const TOKEN = /("(?:[^"\\]|\\.)*"?)(?=\s*:)|("(?:[^"\\]|\\.)*"?)|(-?\d[\d.eE+-]*)|(true|false|null)\b|([{}[\],:])|(\s+)|(.)/gu;

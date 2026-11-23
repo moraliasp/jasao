@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { indiceDe, linhaHtml, type Marca, marcado, partir, resumir, visivel } from "../src/texto.ts";
+import { escAtributo, indiceDe, linhaHtml, type Marca, marcado, partir, resumir, visivel } from "../src/texto.ts";
 
 test("partir sem marca devolve o token inteiro", () => {
   assert.deepEqual(partir('"abc"', 5, [[0, 2, false]]), [['"abc"', 5, 0]]);
@@ -109,4 +109,10 @@ test("indiceDe converte linha e coluna (em caracteres) do erro do filtro", () =>
   assert.equal(indiceDe(".a |\n  ]", 2, 3), 7);
   assert.equal(indiceDe("\"😀\" | (", 1, 7), 7); // emoji conta 1 coluna e 2 unidades UTF-16
   assert.equal(indiceDe("x", 3, 1), 1);
+});
+
+test("atributo não leva invisível cru: troca pelo código e escapa aspas", () => {
+  const a = escAtributo('a\u202eb"<&\u2066');
+  assert.equal(a, "a&lt;U+202E>b&quot;&lt;&amp;&lt;U+2066>");
+  assert.doesNotMatch(a, /[\u202a-\u202e\u2066-\u2069]/);
 });
