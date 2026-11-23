@@ -337,3 +337,9 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 ## Caminhos concedidos no IPC (achado 13, 23/11/2026)
 
 **Escolha:** `abrir`, `consultar` e `pastas` só aceitam caminho que o backend concedeu nesta execução (diálogo, agora no Rust pelo comando `escolher`; arraste, pelo evento de soltar no Rust; argv, associação e 2ª instância; o resultado de consulta que ele mesmo cria) ou que está em `recentes.json` (só recebe caminho que já passou pela checagem e mora no diretório de dados, fora do alcance da webview), comparando o canônico e abrindo o canônico; o resto recebe `jasao:negado`, exista o arquivo ou não, e `recente_ausente` só olha o disco para caminho da lista.
+
+**Arraste e ordem dos eventos:** no Tauri 2.12 o evento de soltar chega à interface antes do handler do Rust que concede. Não importa: a interface chama primeiro `pastas`, comando síncrono que roda na thread principal, a mesma do handler, e só então `abrir`.
+
+**Limite residual (TOCTOU):** entre o `canonicalize` do `autorizado` e a abertura há uma janela em que o arquivo concedido pode ser trocado (por exemplo, por um link para outro arquivo). Explorar exige escrever na pasta do arquivo concedido, com o mesmo usuário do app; quem já faz isso lê o arquivo sem passar pelo Jasão. Abrir uma vez e passar o descritor adiante (ao núcleo e ao filho da consulta) fecharia a janela, mas muda a API de abertura do núcleo e o protocolo do filho; não vale o custo agora.
+
+**Testado:** `caminhos_concedidos_pelo_ipc` (não concedido, pasta, `..` e link resolvidos pelo alvo real, link e pasta-link repontados depois da concessão, `autorizado` devolvendo o canônico, consulta recusada sem mexer na que está em curso) e `fontes_de_concessao` (soltar, pedido do sistema, argv e diálogo concedem).
