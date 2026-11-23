@@ -179,6 +179,59 @@ fn chaves_hostis_ficam_escapadas_e_voltam_iguais() {
     }
 }
 
+/// Bidi, invisíveis, separadores e parecidos: cada um como chave e como valor travado sai
+/// escapado no Zod e no Schema, e o código inteiro é ASCII.
+#[test]
+fn todo_caractere_perigoso_sai_escapado() {
+    let faixas = [
+        '\u{200b}'..='\u{200f}',
+        '\u{202a}'..='\u{202e}',
+        '\u{2060}'..='\u{2069}',
+        '\u{061c}'..='\u{061c}',
+        '\u{2028}'..='\u{2029}',
+        '\u{feff}'..='\u{feff}',
+        '\u{80}'..='\u{9f}',
+    ];
+    let soltos = [
+        '&',
+        '<',
+        '>',
+        'é',
+        '\u{ad}',
+        '\u{180e}',
+        '\u{34f}',
+        '\u{e0041}',
+        '\u{2800}',
+    ];
+    let todos: Vec<char> = faixas.into_iter().flatten().chain(soltos).collect();
+    assert!(todos.len() > 60);
+    for c in todos {
+        let k = format!("k{c}k");
+        let q = exportar::aspas(&k);
+        assert!(q.is_ascii() && !q.contains(c), "{c:?}: {q}");
+        assert_eq!(serde_json::from_str::<String>(&q).unwrap(), k);
+        let linha = serde_json::to_string(&serde_json::json!({ &k: &k })).unwrap();
+        let dados = format!("{linha}\n{linha}\n");
+        let inf = inferir(dados.as_bytes());
+        let op = Opcoes {
+            literal: true,
+            numero: false,
+        };
+        for codigo in [
+            exportar::zod(&inf.resumo, op),
+            exportar::schema(&inf.resumo, op),
+        ] {
+            assert!(codigo.is_ascii(), "{c:?} cru:\n{codigo}");
+        }
+        let v = validar(
+            dados.as_bytes(),
+            inf.entrada,
+            &exportar::schema(&inf.resumo, op),
+        );
+        assert_eq!((v.passam, v.falham), (2, 0), "{c:?}");
+    }
+}
+
 #[test]
 fn aspas_escapa_o_perigoso_e_continua_json() {
     let s = "a\"b\\c</script>\u{0}\u{1b}\u{7f}\u{9b}\u{202e}\u{2066}\u{2028}\u{feff}ok";

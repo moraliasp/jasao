@@ -74,7 +74,7 @@
             "cidade": {
               "anyOf": [
                 {
-                  "const": "Cidade Fictícia"
+                  "const": "Cidade Fict\u00edcia"
                 },
                 {
                   "type": "null"
@@ -106,7 +106,7 @@
           "type": "null"
         },
         "obs": {
-          "const": "entregar à tarde"
+          "const": "entregar \u00e0 tarde"
         }
       },
       "required": ["tipo", "id", "moeda", "cliente", "itens", "cupom"]

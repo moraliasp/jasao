@@ -13,7 +13,7 @@ export const Registro = z.discriminatedUnion("tipo", [
     tipo: z.literal("pagamento"),
     id: z.int(),
     moeda: z.string(),
-    valor: z.string(),
+    valor: z.string().regex(/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/),
     parcelas: z.int(),
     aprovado: z.boolean(),
     protocolo: z.number(),
@@ -29,7 +29,7 @@ export const Registro = z.discriminatedUnion("tipo", [
     itens: z.array(z.object({
       sku: z.string(),
       qtd: z.int(),
-      preco: z.string(),
+      preco: z.string().regex(/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/),
     })),
     cupom: z.null(),
     obs: z.string().optional(),

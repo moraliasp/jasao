@@ -13,8 +13,8 @@ use crate::estrutura::{Discriminador, No, Resumo, Tipo, Unico};
 pub struct Opcoes {
     /// Campo com um valor só: travar no valor (`const` / `z.literal`) em vez do tipo genérico.
     pub literal: bool,
-    /// Texto que é sempre número: tratar como número (Schema `number`, Zod `z.coerce.number()`)
-    /// em vez de texto com padrão numérico.
+    /// Texto que é sempre número: tratar como número (Schema `number`; Zod confere o padrão e
+    /// converte com `.transform(Number)`) em vez de texto com padrão numérico.
     pub numero: bool,
 }
 
@@ -218,10 +218,10 @@ fn uniao(raiz: &No, d: &Discriminador, op: Opcoes) -> Alt {
     Alt::Uniao(campo, variantes)
 }
 
-/// Texto JSON entre aspas, válido também como literal JS/TS. Escapa, além do que o JSON exige,
-/// `<`, `>` e `&` (para `</script>` e HTML), DEL e C1, U+2028/2029 e os controles bidi e invisíveis
-/// (`U+061C`, `U+200B`–`U+200F`, `U+202A`–`U+202E`, `U+2060`–`U+2069`, `U+FEFF`), que fariam o
-/// código parecer outro do que é.
+/// Texto JSON entre aspas, válido também como literal JS/TS, e só ASCII: escapa, além do que o
+/// JSON exige, `<`, `>` e `&` (para `</script>` e HTML), DEL e todo caractere não-ASCII em
+/// `\uXXXX` (pares substitutos fora do BMP). Assim nenhum controle bidi, invisível ou parecido
+/// com outro chega cru ao código.
 pub fn aspas(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 2);
     o.push('"');
@@ -232,18 +232,11 @@ pub fn aspas(s: &str) -> String {
             '\n' => o.push_str("\\n"),
             '\r' => o.push_str("\\r"),
             '\t' => o.push_str("\\t"),
-            '\u{0}'..='\u{1f}'
-            | '<'
-            | '>'
-            | '&'
-            | '\u{7f}'..='\u{9f}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{061c}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2069}'
-            | '\u{feff}' => o.push_str(&format!("\\u{:04x}", c as u32)),
+            '\u{0}'..='\u{1f}' | '<' | '>' | '&' | '\u{7f}'.. => {
+                for u in c.encode_utf16(&mut [0; 2]) {
+                    o.push_str(&format!("\\u{u:04x}"));
+                }
+            }
             c => o.push(c),
         }
     }
@@ -461,8 +454,11 @@ fn zod_forma(f: &Forma, nivel: usize, op: Opcoes) -> String {
             Alt::Inteiro { seguro: true } => "z.int()".into(),
             Alt::Inteiro { seguro: false } | Alt::Numero => "z.number()".into(),
             Alt::Texto => "z.string()".into(),
-            Alt::TextoNumero if op.numero => "z.coerce.number()".into(),
-            Alt::TextoNumero => "z.string()".into(),
+            // Mesmo padrão do Schema; "tratar como número" converte depois de conferir o texto.
+            Alt::TextoNumero if op.numero => {
+                format!("z.string().regex(/{PADRAO_NUMERO}/).transform(Number)")
+            }
+            Alt::TextoNumero => format!("z.string().regex(/{PADRAO_NUMERO}/)"),
             Alt::Literal(l) => format!("z.literal({l})"),
             Alt::Objeto(c) => zod_objeto(c, nivel, op),
             Alt::Mapa(m) => format!("z.record(z.string(), {})", zod_forma(m, nivel, op)),
@@ -520,8 +516,8 @@ pub fn zod(r: &Resumo, op: Opcoes) -> String {
     )
 }
 
-/// Para o Zod, o JSON Schema que diz o que ele aceita na entrada: `z.coerce.number()` aceita o
-/// texto numérico, então "tratar como número" valida como "manter texto".
+/// Para o Zod, o JSON Schema que diz o que ele aceita na entrada: com "tratar como número" o Zod
+/// confere o mesmo padrão de texto antes de converter, então valida como "manter texto".
 pub fn schema_da_entrada_zod(r: &Resumo, op: Opcoes) -> String {
     schema(
         r,

@@ -29,6 +29,9 @@ test("tratar como número converte o texto numérico e trava o valor único", as
   assert.equal(v.valor, 200);
   assert.equal(v.moeda, "BRL");
   assert.ok(!Registro.safeParse({ ...pagamento, moeda: "USD" }).success);
+  // Como o Schema da entrada: só texto no padrão numérico (`z.coerce.number()` aceitaria todos).
+  for (const valor of [null, "", [], [7], true, "1,5", 200])
+    assert.ok(!Registro.safeParse({ ...pagamento, valor }).success, JSON.stringify(valor));
 });
 
 test("chaves hostis chegam iguais ao objeto validado", async () => {
