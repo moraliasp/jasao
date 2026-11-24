@@ -11,7 +11,7 @@ import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
 import { abrirLinkDe, criarDetalhe, selo } from "./detalhe";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
-import { type Estrutura, type ItemE, itens as itensEstrutura } from "./estrutura";
+import { detalhe as detalheE, type Estrutura, type ItemE, itens as itensEstrutura, type Perfil } from "./estrutura";
 import { erroDoRust, type Motivo, t, tamanho } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
@@ -90,6 +90,9 @@ const estruturaLinhas = $("estrutura-linhas");
 let estr: ItemE[] | null = null; // null: ainda não pedida (ou a inferência não acabou)
 let selE = 0;
 let registrosE = 0;
+const perfilEl = $("estrutura-perfil");
+let perfilDe = ""; // documento, geração e caminho do perfil mostrado (ou pedido)
+let esperaPerfil: number | undefined;
 const tabelaEl = $("tabela");
 const grade = criarGrade(tabelaEl, {
   geracao: () => resumo?.geracao,
@@ -450,7 +453,27 @@ function desenharEstrutura(): void {
     estruturaEl.setAttribute("aria-activedescendant", el.id);
     el.scrollIntoView({ block: "nearest" });
   } else estruturaEl.removeAttribute("aria-activedescendant");
+  pedirPerfil();
   rodape();
+}
+
+/** Estatísticas do caminho selecionado, pedidas depois de uma pausa (o núcleo varre o arquivo). */
+function pedirPerfil(): void {
+  const it = estr?.[selE];
+  const indice = it?.indice ?? null;
+  perfilEl.hidden = modo !== "estrutura" || indice === null || !registrosE;
+  const de = `${docAtivo()}:${resumo?.geracao}:${indice}`;
+  if (perfilEl.hidden || de === perfilDe) return;
+  perfilDe = de;
+  clearTimeout(esperaPerfil);
+  perfilEl.innerHTML = `<p class="pm">${esc(t.estrutura.calculando)}</p>`;
+  esperaPerfil = window.setTimeout(() => {
+    chamar<Perfil | null>("perfil", { indice })
+      .then((p) => {
+        if (p && de === perfilDe) perfilEl.innerHTML = detalheE(it!.caminho, p, t, fmt);
+      })
+      .catch((erro) => de === perfilDe && (status.textContent = `${t.erro}: ${erro}`));
+  }, 200);
 }
 
 function moverE(i: number): void {
@@ -506,6 +529,8 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
   arvore.hidden = m !== "arvore";
   textoEl.hidden = m !== "texto";
   estruturaEl.hidden = m !== "estrutura";
+  perfilEl.hidden = true; // Estrutura mostra de novo em `pedirPerfil`
+  perfilDe = "";
   $("tabela-vista").hidden = m !== "tabela";
   exportarEl.hidden = m !== "exportar";
   if (m === "tabela") {
@@ -1199,6 +1224,10 @@ estruturaLinhas.addEventListener("click", (e) => {
 estruturaLinhas.addEventListener("dblclick", (e) => {
   if ((e.target as HTMLElement).closest("[data-i]")) void abrirOcorrencia();
 });
+perfilEl.addEventListener("click", (e) => {
+  const l = (e.target as HTMLElement).closest<HTMLElement>("[data-l]");
+  if (l) void focarRegistro(Number(l.dataset.l));
+});
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
 textoEl.addEventListener("scroll", () => (quadro ||= requestAnimationFrame(desenhar)), { passive: true });
@@ -1372,6 +1401,7 @@ $("tabela-ordem").querySelector("button")!.textContent = t.tabela.cancelar;
 abas.exportar.firstChild!.textContent = t.exportar.aba;
 exportarEl.setAttribute("aria-label", t.exportar.rotulo);
 estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);
+perfilEl.setAttribute("aria-label", t.estrutura.perfil);
 $("abas").setAttribute("aria-label", t.valores);
 listaEl.setAttribute("aria-label", t.abasArquivos.rotulo);
 $("nova-aba").setAttribute("aria-label", t.abasArquivos.nova);

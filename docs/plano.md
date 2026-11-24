@@ -78,9 +78,9 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 
 ### Fase 2: estrutura
 - Tipo, presença, formato e evidência por caminho; união discriminada; união dentro de objeto; objeto que é mapa.
-- Avisos: número como texto, data fora do ISO, valor único, campo opaco, "parece segredo".
-- **Estatísticas por campo:** mínimo, máximo, distribuição, cardinalidade, valores mais comuns.
-- **Registros que fogem:** da estrutura para a lista de linhas que têm (ou não têm) um campo.
+- Avisos: número como texto, data fora do ISO, valor único, campo opaco, "parece segredo". Feito (24/11/2026; ver decisoes.md).
+- **Estatísticas por campo:** mínimo, máximo, distribuição, cardinalidade, valores mais comuns. Feito, sob pedido por caminho, com aproximação avisada (24/11/2026).
+- **Registros que fogem:** da estrutura para a lista de linhas que têm (ou não têm) um campo. Feito: lista no painel, que abre a Árvore (24/11/2026); falta filtrar a Tabela.
 
 ### Fase 3: diff
 - Diff de estrutura com quebra × compatível, usando a taxonomia do oasdiff/buf. Feito no núcleo e na CLI (`jasao diff a b [--json] [--falha-em quebra|qualquer]`, 23/11/2026; ver decisoes.md); falta a interface.
@@ -96,7 +96,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - **Consulta jq** com resultado ao vivo e filtros salvos; exportar resultado em JSONL e CSV. Feito (24/11/2026), com `jasao jq` na linha de comando; Parquet ficou fora (dependência pesada; ver decisoes.md).
 - **Acompanhar arquivo vivo** (como `tail -f`) ✅ (24/11: botão Seguir/Pausar, indicador de novas, truncado/rotacionado/reescrito reabre com aviso); vigiar pasta e linha do tempo de pasta ainda não.
 - **Linha de comando:** `inferir`, `diff --falha-em quebra`, `validar`, para CI.
-- **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada.
+- **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada. Feito em 24/11/2026 (somente leitura, convertidos para JSONL no cache; ver `docs/decisoes.md`, "Formatos de entrada").
 - **Máscara de segredos** na tela e na exportação; anonimização.
 
 ### Fora por enquanto

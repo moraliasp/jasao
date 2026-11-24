@@ -1,8 +1,9 @@
 // Lógica pura das abas de arquivo (sem DOM nem Tauri; testada em tests/abas.test.ts).
 
 /** Extensões que se abrem por arraste: JSON, JSON Lines e as mesmas compactadas. */
-export const EXTENSOES = ["json", "jsonl", "ndjson", "gz", "zst"];
-const ACEITO = /\.(json|jsonl|ndjson)(\.(gz|zst))?$/i;
+export const EXTENSOES = ["json", "jsonl", "ndjson", "gz", "zst", "yaml", "yml", "toml", "msgpack", "mpk", "cbor", "bson"];
+// Compactado só JSON/JSONL; YAML, TOML, MessagePack, CBOR e BSON o núcleo converte (`formatos.rs`).
+const ACEITO = /(\.(json|jsonl|ndjson)(\.(gz|zst))?|\.(yaml|yml|toml|msgpack|mpk|cbor|bson))$/i;
 
 export const aceito = (caminho: string) => ACEITO.test(caminho);
 
