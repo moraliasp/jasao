@@ -17,6 +17,7 @@ import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPar
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { criarExportar } from "./exportar";
+import { criarGrade, type Ordenacao } from "./grade";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
 import {
   decodificar,
@@ -61,7 +62,7 @@ const textoEl = $("texto");
 const textoAlto = $("texto-alto");
 const textoLinhas = $("texto-linhas");
 const verFormatado = $<HTMLButtonElement>("ver-formatado");
-const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura"), exportar: $("aba-exportar") };
+const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura"), tabela: $("aba-tabela"), exportar: $("aba-exportar") };
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = escAtributo;
@@ -86,6 +87,29 @@ const estruturaLinhas = $("estrutura-linhas");
 let estr: ItemE[] | null = null; // null: ainda não pedida (ou a inferência não acabou)
 let selE = 0;
 let registrosE = 0;
+const tabelaEl = $("tabela");
+const grade = criarGrade(tabelaEl, {
+  geracao: () => resumo?.geracao,
+  inferiu: () => !!resumo?.tabelou,
+  revelar: (linha, byte) => {
+    trocarModo("arvore");
+    void revelar(linha, byte).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+  },
+  mudou: () => {
+    // "Sugerido" abriu um modo antes de saber se a Tabela serve: a resposta chegou, vai ao sugerido de fato.
+    if (palpite && grade.disponivel() !== null) {
+      palpite = false;
+      if (!noPainel && sugerido() !== modo) trocarModo(sugerido());
+    }
+    if (modo === "tabela") rodape();
+    if (!noPainel) return;
+    const f = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-modo]")?.dataset.modo;
+    desenharPainel(); // cartão da Tabela liga ou desliga; o foco fica no mesmo cartão
+    if (f) painelModos.querySelector<HTMLElement>(`[data-modo="${f}"]`)?.focus();
+  },
+  erro: (erro) => (status.textContent = `${t.erro}: ${erro}`),
+  fmt: (n) => fmt(n),
+});
 
 const faixa = $("faixa");
 const regua = criarRegua($("regua"), $("legenda"), {
@@ -101,9 +125,9 @@ const regua = criarRegua($("regua"), $("legenda"), {
 });
 
 const exportarEl = $("exportar");
-const visaoAtual = () => ({ texto: textoEl, estrutura: estruturaEl, exportar: exportarEl, arvore })[modo];
-/** Visão sem registros (Estrutura, Exportar): achado e "ir para registro" vão para a Árvore. */
-const semRegistros = () => modo === "estrutura" || modo === "exportar";
+const visaoAtual = () => ({ texto: textoEl, estrutura: estruturaEl, tabela: tabelaEl, exportar: exportarEl, arvore })[modo];
+/** Visão sem linha de registro (Estrutura, Tabela, Exportar): achado e "ir para registro" vão para a Árvore. */
+const semRegistros = () => modo === "estrutura" || modo === "tabela" || modo === "exportar";
 const exportar = criarExportar(exportarEl, {
   fmt: (n) => fmt(n),
   icone: (id) => icone(id),
@@ -233,6 +257,14 @@ function rodape(): void {
     copiar.disabled = !it;
     verFormatado.disabled = true;
     migalhas.innerHTML = it ? `<li>${visivel(it.caminho)}</li>` : "";
+    migalhasDe = "";
+    return;
+  }
+  if (modo === "tabela") {
+    const c = grade.caminho();
+    copiar.disabled = !c;
+    verFormatado.disabled = true;
+    migalhas.innerHTML = c ? `<li>${visivel(c)}</li>` : "";
     migalhasDe = "";
     return;
   }
@@ -455,6 +487,7 @@ function focar(el: HTMLElement | null | undefined): void {
 function trocarModo(m: Modo, rolagem?: [number, number]): void {
   if (m !== "exportar") exportar.parar();
   modo = m;
+  palpite = false;
   noPainel = false;
   painel.hidden = true;
   conteudo.hidden = false;
@@ -465,8 +498,13 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
   arvore.hidden = m !== "arvore";
   textoEl.hidden = m !== "texto";
   estruturaEl.hidden = m !== "estrutura";
+  $("tabela-vista").hidden = m !== "tabela";
   exportarEl.hidden = m !== "exportar";
-  if (m === "exportar") {
+  if (m === "tabela") {
+    grade.mostrar();
+    rodape();
+    focar(tabelaEl);
+  } else if (m === "exportar") {
     rodape();
     void exportar.mostrar();
     focar(exportarEl);
@@ -809,10 +847,16 @@ async function preparar(a: Aba, visao?: Modo): Promise<void> {
     desenharPainel();
     const destino = visao ?? destinoAoAbrir();
     if (destino === "painel") mostrarPainel();
-    await recarregar();
+    await recarregar(); // incrementa `versao`: daqui em diante, trocar de aba é o que cancela
     if (destino === "texto") await selecionar(0);
-    if (v !== versao) return;
+    if (abaAtiva() !== a) return;
     if (destino !== "painel") trocarModo(destino);
+    // "Sugerido" escolheu antes de saber se a Tabela serve; se já se sabe, confere agora, senão `mudou` confere.
+    if (destino !== "painel" && !visao && lerPreferencia() === "sugerido") {
+      if (grade.disponivel() === null) palpite = true;
+      else if (sugerido() !== destino) trocarModo(sugerido());
+    }
+    grade.inferiu(); // já montada: confere o palpite agora
     busca.reabrir();
   } catch (erro) {
     if (v === versao) status.textContent = `${t.erro}: ${erro}`;
@@ -857,6 +901,7 @@ function fecharAba(i: number): void {
     void chamar("fechar", { id: a.doc }).catch(() => {}); // já fechado: nada a liberar
     busca.fechar(a.doc);
     consulta.fechar(a.doc);
+    grade.esquecer(a.doc);
   }
   const eraAtiva = i === ativa;
   const nova = aposFechar(lista.length, i, ativa);
@@ -909,21 +954,25 @@ $("nova-aba").addEventListener("click", novaAba);
 type Conteudo = keyof typeof t.painel.conteudo;
 interface Andamento {
   geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null;
-  legenda: Legenda | null; coloriu: boolean; inferiu: boolean;
+  legenda: Legenda | null; coloriu: boolean; inferiu: boolean; tabelou: boolean;
 }
 interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
 
 /** Modos com cartão, na ordem dos cartões e dos atalhos 1, 2…; o sugerido é o primeiro disponível.
  * `sempre`: entra no seletor "Abrir sempre em…". Modo novo entra ligando `disponivel`. */
-const MODOS: { id: Modo | "tabela"; icone: string; disponivel: boolean; sempre: boolean }[] = [
-  { id: "tabela", icone: "table", disponivel: false, sempre: true },
+const MODOS: { id: Modo; icone: string; disponivel: boolean; sempre: boolean }[] = [
+  { id: "tabela", icone: "table", disponivel: true, sempre: true },
   { id: "arvore", icone: "binary-tree", disponivel: true, sempre: true },
   { id: "texto", icone: "file-text", disponivel: true, sempre: false },
   { id: "estrutura", icone: "list-tree", disponivel: true, sempre: false },
   { id: "exportar", icone: "braces", disponivel: true, sempre: false },
 ];
-const disponiveis = MODOS.filter((m) => m.disponivel) as { id: Modo; icone: string; sempre: boolean }[];
-const sugerido = disponiveis[0].id;
+const disponiveis = MODOS.filter((m) => m.disponivel);
+/** Modo que o arquivo aceita agora; só a Tabela depende do arquivo (`null`: inferência em curso). */
+const aceita = (m: Modo): boolean | null => (m === "tabela" ? grade.disponivel() : true);
+/** Primeiro cartão disponível que o arquivo aceita; com a Tabela ainda indefinida, o tipo do conteúdo decide. */
+const sugerido = (): Modo =>
+  disponiveis.find((m) => aceita(m.id) ?? resumo?.conteudo === "objetos")?.id ?? "arvore";
 const PREFERENCIA = "jasao.aoAbrir";
 const opcoes = ["painel", "sugerido", ...disponiveis.filter((m) => m.sempre).map((m) => m.id)];
 
@@ -933,6 +982,8 @@ const inicioBtn = $<HTMLButtonElement>("inicio");
 const painelModos = $("painel-modos");
 const preferencia = $<HTMLSelectElement>("painel-pref");
 let resumo: Resumo | null = null;
+/** O "sugerido" escolheu o modo antes de a montagem dizer se a Tabela serve. */
+let palpite = false;
 
 function lerPreferencia(): string {
   let v: string | null = null;
@@ -945,7 +996,7 @@ function lerPreferencia(): string {
 
 function destinoAoAbrir(): Modo | "painel" {
   const p = lerPreferencia();
-  return p === "painel" ? "painel" : p === "sugerido" ? sugerido : (p as Modo);
+  return p === "painel" ? "painel" : p === "sugerido" ? sugerido() : (p as Modo);
 }
 
 const tamanho = (b: number) => {
@@ -971,12 +1022,15 @@ function desenharAndamento(): void {
 
 function desenharPainel(): void {
   desenharAndamento();
+  grade.inferiu(); // documento já inferido: a Tabela diz se serve (e o painel redesenha)
+  const sug = sugerido();
   painelModos.innerHTML = disponiveis
     .map((m, i) => {
       const [titulo, desc] = t.painel.modos[m.id];
-      const s = m.id === sugerido;
-      return `<button class="modo${s ? " sugerido" : ""}" type="button" data-modo="${m.id}" aria-keyshortcuts="${i + 1}">
-        ${icone(m.icone)}<b>${titulo}</b><span>${desc}</span>${s ? `<em>${t.painel.sugerido}</em>` : ""}<kbd>${i + 1}</kbd></button>`;
+      const s = m.id === sug;
+      const nao = aceita(m.id) === false; // indisponível para este arquivo: o cartão diz por quê
+      return `<button class="modo${s ? " sugerido" : ""}" type="button" data-modo="${m.id}" aria-keyshortcuts="${i + 1}"${nao ? " disabled" : ""}>
+        ${icone(m.icone)}<b>${titulo}</b><span>${nao ? esc(grade.motivo() ?? desc) : desc}</span>${s ? `<em>${t.painel.sugerido}</em>` : ""}<kbd>${i + 1}</kbd></button>`;
     })
     .join("");
 }
@@ -1020,8 +1074,8 @@ linhasEl.addEventListener("contextmenu", (e) => {
   menu.abrir(e.clientX, e.clientY, arvore);
 });
 copiar.addEventListener("click", () => {
-  if (modo === "estrutura") {
-    const c = estr?.[selE]?.caminho;
+  if (modo === "estrutura" || modo === "tabela") {
+    const c = modo === "tabela" ? grade.caminho() : estr?.[selE]?.caminho;
     // Caminho da Estrutura já é texto jq (vem do núcleo): copia direto, sem `caminhos`.
     if (c) confirmarCopia(navigator.clipboard.writeText(c).then(() => c), "jq", copiar);
   } else if (atual) copiarComo(sel, "jq", copiar);
@@ -1076,13 +1130,13 @@ document.addEventListener("keydown", (e) => {
   }
   if (cmd && !e.shiftKey && e.key.toLowerCase() === "j" && resumo) {
     e.preventDefault();
-    if (noPainel) trocarModo(sugerido);
+    if (noPainel) trocarModo(sugerido());
     consulta.focar();
     return;
   }
   if (cmd && !e.shiftKey && e.key.toLowerCase() === "f" && resumo) {
     e.preventDefault();
-    if (noPainel) trocarModo(sugerido);
+    if (noPainel) trocarModo(sugerido());
     busca.focar();
     return;
   }
@@ -1115,9 +1169,9 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return fecharAba(ativa);
   }
-  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura, ⌥⌘4 Exportar (`code`: com ⌥ o `key` vira outro caractere).
+  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura, ⌥⌘4 Tabela, ⌥⌘5 Exportar (`code`: com ⌥ o `key` vira outro caractere).
   if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && resumo) {
-    const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura", Digit4: "exportar" } as const)[e.code as "Digit1" | "Digit2" | "Digit3" | "Digit4"];
+    const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura", Digit4: "tabela", Digit5: "exportar" } as const)[e.code as "Digit1" | "Digit2" | "Digit3" | "Digit4" | "Digit5"];
     if (m) {
       e.preventDefault();
       trocarModo(m);
@@ -1131,9 +1185,10 @@ document.addEventListener("keydown", (e) => {
     const alvo = e.target as HTMLElement;
     if (!noPainel || alvo.closest("select, input, dialog")) return;
     const m =
-      e.key === "Enter" && !alvo.closest("button") ? sugerido
+      e.key === "Enter" && !alvo.closest("button") ? sugerido()
       : /^[1-9]$/.test(e.key) ? disponiveis[Number(e.key) - 1]?.id
       : undefined;
+    if (m && aceita(m) === false) return; // cartão desligado: o atalho também
     if (!m) return;
     e.preventDefault();
     trocarModo(m);
@@ -1170,11 +1225,14 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   desenharAndamento();
   if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
   if (p.inferiu && modo === "exportar" && !noPainel && !exportar.temCodigo()) void exportar.mostrar();
+  if (p.tabelou) grade.inferiu(); // colunas (ou o motivo) chegam; painel e Tabela redesenham
+
   regua.andamento(p);
 });
+void listen<Ordenacao>("ordenacao", ({ payload }) => grade.ordenacao(payload));
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
 async function focarRegistro(r: number): Promise<boolean> {
-  if (semRegistros()) trocarModo("arvore");
+  if (semRegistros()) trocarModo("arvore"); // Estrutura, Tabela e Exportar: na Árvore
   const v = await chamar<number | null>("ir_para", { registro: r });
   if (v === null) return false;
   if (modo === "texto") {
@@ -1198,6 +1256,9 @@ $("abrir").textContent = t.abrir;
 abas.arvore.firstChild!.textContent = t.arvore;
 abas.texto.firstChild!.textContent = t.texto;
 abas.estrutura.firstChild!.textContent = t.estrutura.aba;
+abas.tabela.firstChild!.textContent = t.tabela.aba;
+tabelaEl.setAttribute("aria-label", t.tabela.rotulo);
+$("tabela-ordem").querySelector("button")!.textContent = t.tabela.cancelar;
 abas.exportar.firstChild!.textContent = t.exportar.aba;
 exportarEl.setAttribute("aria-label", t.exportar.rotulo);
 estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);

@@ -128,7 +128,48 @@
       .estr .ep { flex: none; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
       .estr .ep.op { color: var(--bar-fg); }
       .vista:has(.estr:not([hidden]), .exp:not([hidden])) .regua { display: none; }
-      .exp { display: flex; flex-direction: column; padding: 0 12px 12px; font: 13px/1.5 system-ui, sans-serif; }
+      /* Tabela: grade virtual; cabeçalho e colunas fixadas grudam, o resto rola. */
+      .tabw { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+      .tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
+      .tocultas { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+      .tocultas .chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; background: none; color: var(--bar-fg); font: 11.5px var(--mono); overflow: hidden; white-space: nowrap; cursor: pointer; unicode-bidi: isolate; }
+      .tocultas .chip svg { width: 11px; height: 11px; flex: none; }
+      .tordem { display: inline-flex; align-items: center; gap: 8px; }
+      .tordem progress { width: 120px; }
+      .tordem .btn { padding: 1px 8px; }
+      .grade .rows { overflow-x: visible; overflow-y: clip; width: max-content; min-width: 100%; }
+      .grade .tr { display: grid; grid-template-columns: var(--cols); height: 26px; }
+      .grade .thead { position: relative; z-index: 2; background: var(--page-bg); border-bottom: 1px solid var(--border); }
+      .grade .thead .tr { height: 43px; }
+      .grade .tbody { overflow-y: clip; }
+      .grade .tbody .tr:hover > * { background-color: var(--hover); }
+      .grade .th, .grade .td { min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 26px; border-right: 1px solid color-mix(in srgb, var(--border) 60%, transparent); background: var(--page-bg); cursor: default; }
+      .grade .th { position: relative; display: flex; flex-direction: column; justify-content: center; line-height: 1.35; font-weight: 600; }
+      .grade .th .nm { overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; }
+      .grade .th .seta { margin-left: 4px; color: var(--accent); }
+      .grade .th .dt { overflow: hidden; text-overflow: ellipsis; color: var(--bar-muted); font: 400 10.5px/1.35 system-ui, sans-serif; }
+      .grade .th .acoes { position: absolute; top: 2px; right: 2px; display: flex; opacity: 0; background: var(--page-bg); }
+      .grade .th:hover .acoes, .grade .th.sel .acoes, .grade .th .acoes:has([aria-pressed="true"]) { opacity: 1; }
+      @media (hover: none) { .grade .th .acoes { opacity: 1; } }
+      .grade .th .ib { width: 18px; height: 18px; }
+      .grade .th .ib svg { width: 11px; height: 11px; }
+      .grade .th .ib[aria-pressed="true"] { color: var(--accent); }
+      .grade .n { position: sticky; left: 0; z-index: 1; color: var(--bar-muted); text-align: right; font-variant-numeric: tabular-nums; user-select: none; }
+      .grade .fix { position: sticky; z-index: 1; }
+      .grade .fix.ult { box-shadow: 2px 0 0 var(--border); }
+      .grade .sel { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+      .grade:focus-visible .sel { box-shadow: inset 0 0 0 2px var(--accent); }
+      .grade .td .v, .grade .td .cru { unicode-bidi: isolate; }
+      .grade .v.numero, .grade .v.booleano { color: var(--change); }
+      .grade .v.texto { color: var(--ok); }
+      .grade .v.nulo { color: var(--bar-muted); font-style: italic; }
+      .grade .aus { color: var(--bar-muted); opacity: .55; }
+      .grade .res { color: var(--accent); text-decoration: underline dotted; cursor: pointer; }
+      .grade .td.erro { grid-column: 2 / -1; display: flex; gap: 10px; }
+      .grade .td.erro .err { flex: none; color: var(--del); }
+      .grade .td.erro .cru { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bar-muted); }
+      .vista:has(.tabw:not([hidden])) .regua { display: none; }
+            .exp { display: flex; flex-direction: column; padding: 0 12px 12px; font: 13px/1.5 system-ui, sans-serif; }
       .exp .tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; margin: 12px 0 10px; }
       .exp .tools label { display: grid; gap: 4px; font-size: 12px; color: var(--bar-muted); }
       .exp .tools select { height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); color: var(--bar-fg); font-size: 13px; }
@@ -243,6 +284,7 @@
       <symbol id="binary-tree" viewBox="0 0 24 24"><path d="M6 20a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M16 4a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M16 20a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M11 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M21 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="m5.058 18.306 2.88-4.606"/><path d="m10.061 10.303 2.877-4.604"/><path d="m10.065 13.705 2.876 4.6"/><path d="m15.063 5.7 2.881 4.61"/></symbol>
       <symbol id="file-text" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><path d="M9 9h1"/><path d="M9 13h6"/><path d="M9 17h6"/></symbol>
       <symbol id="list-tree" viewBox="0 0 24 24"><path d="M9 6h11"/><path d="M12 12h8"/><path d="M15 18h5"/><path d="M5 6v.01"/><path d="M8 12v.01"/><path d="M11 18v.01"/></symbol>
+      <symbol id="pin" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
       <symbol id="table" viewBox="0 0 24 24"><path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5z"/><path d="M3 10h18"/><path d="M10 3v18"/></symbol>
       <symbol id="down" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
       <symbol id="alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
@@ -272,7 +314,8 @@
         <button role="tab" aria-selected="true" aria-controls="arvore" type="button" id="aba-arvore" aria-keyshortcuts="Alt+Meta+1 Alt+Control+1">Árvore<kbd>⌥⌘1</kbd></button>
         <button role="tab" aria-selected="false" aria-controls="texto" type="button" id="aba-texto" tabindex="-1" aria-keyshortcuts="Alt+Meta+2 Alt+Control+2">Texto<kbd>⌥⌘2</kbd></button>
         <button role="tab" aria-selected="false" aria-controls="estrutura" type="button" id="aba-estrutura" tabindex="-1" aria-keyshortcuts="Alt+Meta+3 Alt+Control+3">Estrutura<kbd>⌥⌘3</kbd></button>
-        <button role="tab" aria-selected="false" aria-controls="exportar" type="button" id="aba-exportar" tabindex="-1" aria-keyshortcuts="Alt+Meta+4 Alt+Control+4">Exportar<kbd>⌥⌘4</kbd></button>
+        <button role="tab" aria-selected="false" aria-controls="tabela" type="button" id="aba-tabela" tabindex="-1" aria-keyshortcuts="Alt+Meta+4 Alt+Control+4">Tabela<kbd>⌥⌘4</kbd></button>
+        <button role="tab" aria-selected="false" aria-controls="exportar" type="button" id="aba-exportar" tabindex="-1" aria-keyshortcuts="Alt+Meta+5 Alt+Control+5">Exportar<kbd>⌥⌘5</kbd></button>
       </div>
       <section class="painel" id="painel" aria-labelledby="painel-nome" hidden>
         <div>
@@ -332,6 +375,17 @@
         <div class="tree estr" id="estrutura" role="listbox" tabindex="0" aria-label="Estrutura inferida do arquivo" aria-describedby="estrutura-resumo" hidden>
           <p class="eres" id="estrutura-resumo" role="status" aria-live="polite"></p>
           <div id="estrutura-linhas" role="presentation"></div>
+        </div>
+        <div class="tabw" id="tabela-vista" hidden>
+          <div class="tbar">
+            <span id="tabela-resumo" role="status" aria-live="polite"></span>
+            <span class="tocultas" id="tabela-ocultas"></span>
+            <span class="tordem" id="tabela-ordem" role="status" aria-live="polite" hidden><progress max="100" value="0"></progress><span></span><button class="btn" type="button"></button></span>
+          </div>
+          <div class="tree grade" id="tabela" role="grid" tabindex="0" aria-describedby="tabela-resumo">
+            <div class="rows" role="presentation"></div>
+            <div class="alto"></div>
+          </div>
         </div>
         <section class="tree exp" id="exportar" tabindex="-1" aria-label="Exportar a estrutura como Zod ou JSON Schema" hidden></section>
         <div class="regua" id="regua" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="1" hidden></div>
