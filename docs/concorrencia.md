@@ -26,8 +26,8 @@ Legenda: ✅ faz · ◐ parcial · ❌ não faz · ? não confirmado
 | **GenSON / Skinfer / json-schema-inferrer** [34][35][36] | merge de schemas de várias amostras | Python / Java | open source (json-schema-inferrer Apache-2.0) | GenSON v1.4.0; Skinfer parado (último commit 2016) [35]; inferrer último push 01/2024 [36] | ◐ | ◐ Skinfer tem `--jsonlines` (draft-04) [35] | ❌ | ◐ só JSON Schema |
 | **jd / jsondiffpatch / Graphtage / json-diff** [19][20][21][22][23] | diff de valores | CLI / lib | MIT, LGPL etc. | jd e jsondiffpatch ativos; json-diff pouco mantido | ❌ | ❌ | ◐ diff estrutural de **valores**, sem classificação breaking | ❌ |
 | **oasdiff / json-schema-diff (Sentry) / json-schema-diff-validator / buf breaking** [25][26][27][28][29] | breaking change entre schemas | CLI | open source | oasdiff ativo; Sentry em WIP | ❌ | ❌ | ◐ classifica breaking, mas **exige schema existente** (OpenAPI, draft-07, proto) | ❌ |
-| **OK JSON** [7] | viewer macOS | macOS | grátis; Pro $17,99 | v2.10.2 (design macOS 26) | ❌ | ◐ abre JSONL; não infere | ❌ | ❌ |
-| **Dadroit** [8][37] | viewer de arquivos grandes | desktop + web | pago; $98/ano citado por terceiro **(não confirmado)** | ? | ❌ | JSONL **(não confirmado)** | ❌ | ❌ |
+| **OK JSON** [7][62] | viewer macOS | macOS | US$ 24,99 pagamento único, com teste grátis [62] (era Pro $17,99 em 21/11/2026) | 3.1.2 (App Store, 24/11/2026) [7] | ❌ | ◐ abre JSONL; não infere | ❌ | ❌ |
+| **Dadroit** [8][37] | viewer de arquivos grandes | desktop + web | pago; valor **não confirmado**: `https://dadroit.com/pricing` dá 404 em 24/11/2026; o $98/ano antes citado vinha de terceiro [37] | ? | ❌ | JSONL **(não confirmado)** | ❌ | ❌ |
 | **jless / fx** [38][39] | viewer TUI | terminal | open source | jless v0.9.0 (data não confirmada); fx v36 com streaming | ❌ | ◐ fx faz streaming | ❌ | ❌ |
 | **Firefox JSON viewer** [9][40] | viewer do navegador | browser | grátis | ativo; JSONL desde o Fx 155 [40] | ❌ | ◐ cada linha vira um nó; erro por linha [40] | ❌ | ❌ |
 | **VisiData / lnav / Miller** [41][42][43] | exploração tabular de logs | terminal | open source | ativos | ◐ Miller tem verbo `summary` (saída **não confirmada**) | ◐ leem JSONL | ❌ | ❌ |
@@ -185,5 +185,6 @@ Descartado: **Raio-J / JSON X-Ray**, porque existe o J-RAY, um visualizador JSON
 59. Busca "jsonda" sem resultado exato (busca web em 21/11/2026; sem URL de resultado positivo)
 60. npm laud – https://pkgstats.com/pkg:laud
 61. J-RAY – https://github.com/MauryDevIta/J-Ray
+62. OK JSON, site oficial (preço conferido em 24/11/2026) – https://okjson.app
 
 Outras fontes consultadas: a2z.tools inferrer (existência só parcialmente confirmada) – https://a2z.tools/json-schema-inferrer · jddf-infer – https://docs.rs/crate/jddf-infer/0.1.0 · datamodel-code-generator – https://pydantic.dev/docs/validation/latest/integrations/dev-tools/datamodel_code_generator/ · Transform Tool VS Code – https://dev.to/osonwa/convert-api-json-responses-to-typescript-types-and-zod-schemas-in-vscode-3d3p
