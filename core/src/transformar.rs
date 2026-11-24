@@ -33,7 +33,9 @@ pub struct Transformacao {
     pub manter: Vec<String>,
     #[serde(default)]
     pub tirar: Vec<String>,
-    /// (de, para). Se `para` já existe no registro, fica o valor renomeado.
+    /// (de, para). Se `para` já existe no registro (e não é renomeado também), fica o valor
+    /// renomeado, qualquer que seja a ordem dos campos. Dois pares com o mesmo `de` ou o mesmo
+    /// `para` são recusados em `conferir`.
     #[serde(default)]
     pub renomear: Vec<(String, String)>,
 }
@@ -48,6 +50,22 @@ fn conjunto(nomes: &[String]) -> String {
 }
 
 impl Transformacao {
+    /// Recusa o renomear ambíguo: o mesmo campo renomeado duas vezes, ou dois campos com o
+    /// mesmo nome novo (um dos valores sumiria).
+    pub fn conferir(&self) -> Result<(), String> {
+        let mut de = std::collections::HashSet::new();
+        let mut para = std::collections::HashSet::new();
+        for (d, p) in &self.renomear {
+            if !de.insert(d) {
+                return Err(format!("renomear: \"{d}\" aparece duas vezes"));
+            }
+            if !para.insert(p) {
+                return Err(format!("renomear: dois campos viram \"{p}\""));
+            }
+        }
+        Ok(())
+    }
+
     /// A expressão jq, ou `None` se não transforma nada.
     pub fn jq(&self) -> Option<String> {
         let mut passos = Vec::new();
@@ -69,6 +87,13 @@ impl Transformacao {
                 .iter()
                 .map(|(de, para)| format!("{}:{}", texto_json(de), texto_json(para)))
                 .collect();
+            // O campo que já tem o nome novo (e não sai dali renomeado) dá lugar ao renomeado,
+            // só quando o renomeado existe no registro.
+            let de: Vec<&String> = self.renomear.iter().map(|(d, _)| d).collect();
+            for (d, p) in self.renomear.iter().filter(|(_, p)| !de.contains(&p)) {
+                let (d, p) = (texto_json(d), texto_json(p));
+                passos.push(format!("if has({d}) then del(.[{p}]) else . end"));
+            }
             passos.push(format!(
                 "with_entries(.key |= ({{{}}}[.] // .))",
                 mapa.join(",")
@@ -362,18 +387,20 @@ pub fn temporario(
 }
 
 /// Troca o temporário pelo destino com `rename` (atômico na mesma pasta). Confere de novo os
-/// protegidos: o destino pode ter virado um deles enquanto gravava.
+/// protegidos: o destino pode ter virado um deles enquanto gravava. `cru` (sem máscara): o
+/// arquivo fica 0600, só do dono; mascarado ou anonimizado fica 0644, como um arquivo novo comum.
 pub fn persistir(
     tmp: tempfile::NamedTempFile,
     destino: &Path,
     protegidos: &[PathBuf],
+    cru: bool,
 ) -> Result<(), ErroSalvar> {
     if destino_protegido(destino, protegidos) {
         return Err(ErroSalvar::Protegido(destino.to_owned()));
     }
-    // O temporário nasce 0600; o salvo fica com as permissões de um arquivo novo comum.
+    // O temporário nasce 0600 (tempfile); só o mascarado abre para 0644.
     #[cfg(unix)]
-    {
+    if !cru {
         use std::os::unix::fs::PermissionsExt;
         let _ = tmp
             .as_file()
@@ -389,11 +416,12 @@ pub fn persistir(
 pub fn gravar_atomico<T>(
     destino: &Path,
     protegidos: &[PathBuf],
+    cru: bool,
     escrever: impl FnOnce(&mut File) -> Result<T, ErroSalvar>,
 ) -> Result<T, ErroSalvar> {
     let mut tmp = temporario(destino, protegidos)?;
     let r = escrever(tmp.as_file_mut())?;
-    persistir(tmp, destino, protegidos)?;
+    persistir(tmp, destino, protegidos, cru)?;
     Ok(r)
 }
 
@@ -503,6 +531,32 @@ mod testes {
         );
     }
 
+    /// `a=b` com `b` já no registro: fica o valor de `a`, em qualquer ordem dos campos; sem `a`
+    /// no registro, `b` fica como está. Pares ambíguos são recusados antes.
+    #[test]
+    fn renomear_sobre_campo_existente() {
+        let t = Transformacao {
+            renomear: vec![("a".into(), "b".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            jsonl(
+                b"{\"a\":1,\"b\":2}\n{\"b\":2,\"a\":1}\n{\"b\":3}\n",
+                Fonte::Tudo,
+                &t
+            ),
+            "{\"b\":1}\n{\"b\":1}\n{\"b\":3}\n"
+        );
+        assert!(t.conferir().is_ok());
+        let dois = |a: (&str, &str), b: (&str, &str)| Transformacao {
+            renomear: vec![(a.0.into(), a.1.into()), (b.0.into(), b.1.into())],
+            ..Default::default()
+        };
+        assert!(dois(("a", "x"), ("b", "x")).conferir().is_err());
+        assert!(dois(("a", "x"), ("a", "y")).conferir().is_err());
+        assert!(dois(("a", "b"), ("b", "a")).conferir().is_ok());
+    }
+
     #[test]
     fn nomes_com_aspas_e_barra_nao_injetam() {
         let t = Transformacao {
@@ -589,6 +643,29 @@ mod testes {
         );
     }
 
+    /// Chave e valor com `"` e `\(` (interpolação do jq) entram como texto JSON, não como código.
+    #[test]
+    fn filtro_escapa_chave_e_valor() {
+        // No arquivo: {"k\"\\(x":"v\"\\(y"} — chave k"\(x, valor v"\(y.
+        let dados = b"{\"k\\\"\\\\(x\":\"v\\\"\\\\(y\"}\n{\"k\\\"\\\\(x\":\"outro\"}\n{\"k\":1}\n";
+        let chave = [Seg::Campo(Box::from(&br#"k\"\\(x"#[..]))];
+        let t = Transformacao::default();
+        let linhas = |s: &str| s.lines().map(str::to_owned).collect::<Vec<_>>();
+        let todas = linhas(std::str::from_utf8(dados).unwrap());
+        assert_eq!(
+            linhas(&jsonl(dados, Fonte::filtro(&Criterio::Tem(&chave)), &t)),
+            todas[..2]
+        );
+        assert_eq!(
+            linhas(&jsonl(
+                dados,
+                Fonte::filtro(&Criterio::Igual(&chave, br#"v\"\\(y"#)),
+                &t
+            )),
+            todas[..1]
+        );
+    }
+
     #[test]
     fn documento_registros_sao_os_elementos() {
         let t = Transformacao {
@@ -664,14 +741,14 @@ mod testes {
         let fisico = d.path().join("fisico.jsonl");
         std::fs::hard_link(&orig, &fisico).unwrap();
         for destino in [&orig, &pela_pasta, &ligado, &fisico] {
-            let r = gravar_atomico(destino, &protegidos, |f| Ok(f.write_all(b"x")?));
+            let r = gravar_atomico(destino, &protegidos, false, |f| Ok(f.write_all(b"x")?));
             assert!(matches!(r, Err(ErroSalvar::Protegido(_))), "{destino:?}");
         }
         assert_eq!(std::fs::read(&orig).unwrap(), b"{\"a\":1}\n");
         assert!(residuos(d.path()).is_empty());
         // Outro nome na mesma pasta grava.
         let novo = d.path().join("novo.jsonl");
-        gravar_atomico(&novo, &protegidos, |f| Ok(f.write_all(b"x")?)).unwrap();
+        gravar_atomico(&novo, &protegidos, false, |f| Ok(f.write_all(b"x")?)).unwrap();
         assert_eq!(std::fs::read(&novo).unwrap(), b"x");
     }
 
@@ -690,7 +767,7 @@ mod testes {
         tmp.write_all(b"x").unwrap();
         std::fs::hard_link(&orig, &depois).unwrap();
         assert!(matches!(
-            persistir(tmp, &depois, &protegidos),
+            persistir(tmp, &depois, &protegidos, false),
             Err(ErroSalvar::Protegido(_))
         ));
         assert_eq!(std::fs::read(&orig).unwrap(), b"{\"a\":1}\n");
@@ -703,7 +780,7 @@ mod testes {
         let destino = d.path().join("saida.json");
         std::fs::write(&destino, b"antigo").unwrap();
         // Enquanto grava, o destino continua o antigo inteiro; o novo só aparece no fim.
-        gravar_atomico(&destino, &[], |f| {
+        gravar_atomico(&destino, &[], false, |f| {
             f.write_all(b"novo-parte-1")?;
             assert_eq!(std::fs::read(&destino).unwrap(), b"antigo");
             assert_eq!(residuos(d.path()).len(), 1, "grava no temporário ao lado");
@@ -714,13 +791,30 @@ mod testes {
         assert_eq!(std::fs::read(&destino).unwrap(), b"novo-parte-1-2");
         assert!(residuos(d.path()).is_empty());
         // Falha no meio: o antigo fica intacto e o temporário some.
-        let r = gravar_atomico(&destino, &[], |f| {
+        let r = gravar_atomico(&destino, &[], false, |f| {
             f.write_all(b"meio")?;
             Err::<(), _>(ErroSalvar::Io(io::Error::other("disco cheio")))
         });
         assert!(r.is_err());
         assert_eq!(std::fs::read(&destino).unwrap(), b"novo-parte-1-2");
         assert!(residuos(d.path()).is_empty());
+    }
+
+    /// Sem máscara o arquivo tem os segredos: fica só do dono (0600). Mascarado: 0644.
+    #[cfg(unix)]
+    #[test]
+    fn cru_fica_so_do_dono() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, _) = arquivo(b"");
+        let modo = |cru: bool, nome: &str| {
+            let p = d.path().join(nome);
+            gravar_atomico(&p, &[], cru, |f| Ok(f.write_all(b"x")?)).unwrap();
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777
+        };
+        assert_eq!(modo(true, "cru.jsonl"), 0o600);
+        assert_eq!(modo(false, "mascarado.jsonl"), 0o644);
+        // Sobrescrever um 0644 existente com cru também fecha.
+        assert_eq!(modo(true, "mascarado.jsonl"), 0o600);
     }
 
     #[test]
@@ -731,7 +825,7 @@ mod testes {
             .collect();
         let destino = d.path().join("grande.jsonl");
         let cancelar = AtomicBool::new(false);
-        let r = gravar_atomico(&destino, &[orig], |f| {
+        let r = gravar_atomico(&destino, &[orig], false, |f| {
             escrever(&dados, false, ".", Saida::Jsonl, &cancelar, f, |_, _, n| {
                 if n > 1000 {
                     cancelar.store(true, Relaxed);

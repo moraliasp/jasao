@@ -17,6 +17,8 @@ interface Andamento {
   cancelado: boolean;
   arquivo: string | null;
   falha: string | null;
+  erros: number; // registros descartados (linha inválida ou erro do jq)
+  primeiro_erro: [number, string] | null;
 }
 
 /** O que a aba ativa oferece como fonte. */
@@ -131,7 +133,11 @@ export function criarSalvarComo(dialogo: HTMLDialogElement, o: { fmt(n: number):
     }
     emCurso = null;
     ocupado(false);
-    const msg = p.falha ? `${t.erro}: ${erroDoRust(p.falha)}` : p.cancelado ? s.cancelado : s.salvo(p.arquivo ?? "");
+    let msg = p.falha ? `${t.erro}: ${erroDoRust(p.falha)}` : p.cancelado ? s.cancelado : s.salvo(p.arquivo ?? "");
+    if (p.arquivo && p.erros > 0) {
+      const [linha, motivo] = p.primeiro_erro ?? [0, ""];
+      msg += `. ${s.descartados(o.fmt(p.erros), linha + 1, motivo)}`;
+    }
     info.textContent = msg;
     if (!dialogo.open) o.avisar(msg);
   });

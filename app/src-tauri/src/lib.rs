@@ -2496,6 +2496,7 @@ async fn salvar_como<R: Runtime>(
     let caminho = autorizado(&app, &caminho)?;
     filho::arquivo_comum(&caminho)?;
     let doc = estado.doc(id)?;
+    pedido.transformacao.conferir()?;
     let fonte = match pedido.fonte {
         FonteSalvar::Tudo => Fonte::Tudo,
         FonteSalvar::Jq { filtro } => {
@@ -2540,7 +2541,8 @@ async fn salvar_como<R: Runtime>(
         );
         // Cancelado ou falhou: o temporário some no `drop`, o destino fica como estava.
         if fim.falha.is_none() && !fim.cancelado {
-            match transformar::persistir(tmp, &destino, &protegidos) {
+            let cru = pedido.mascara == Mascara::SemMascara;
+            match transformar::persistir(tmp, &destino, &protegidos, cru) {
                 Ok(()) => fim.arquivo = Some(destino.to_string_lossy().into_owned()),
                 Err(e) => fim.falha = Some(e.to_string()),
             }
@@ -2599,7 +2601,8 @@ fn gravar_resultado(
         let mut f = std::fs::File::open(origem).map_err(erro)?;
         std::io::copy(&mut f, tmp.as_file_mut()).map_err(erro)?;
     }
-    transformar::persistir(tmp, destino, protegidos).map_err(|e| e.to_string())
+    // O resultado da consulta já sai mascarado ou anonimizado.
+    transformar::persistir(tmp, destino, protegidos, false).map_err(|e| e.to_string())
 }
 
 /// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
@@ -3536,6 +3539,44 @@ mod testes {
             json!({"fonte": {"tipo": "tudo"}, "mascara": "sem_mascara"}),
         );
         assert_eq!(cru, conteudo);
+        // Sem máscara fica só do dono; mascarado, 0644.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let modo = |n: &str| {
+                std::fs::metadata(d.path().join(n))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777
+            };
+            assert_eq!((modo("c.jsonl"), modo("m.jsonl")), (0o600, 0o644));
+        }
+
+        // Erro do jq num registro: grava o resto e devolve a contagem e o primeiro.
+        *DESTINO_TESTE.lock().unwrap() = Some(d.path().join("e.jsonl"));
+        let filtro = "if .id == 2 then error(\"ruim\") else .id end";
+        salvar(
+            &d.path().join("e.jsonl"),
+            json!({"fonte": {"tipo": "jq", "filtro": filtro}}),
+        )
+        .unwrap();
+        let a = fim();
+        assert_eq!((&a["falha"], &a["erros"]), (&Value::Null, &json!(1)), "{a}");
+        assert_eq!(a["primeiro_erro"][0], json!(1), "{a}");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("e.jsonl")).unwrap(),
+            "1\n3\n"
+        );
+        // Renomear ambíguo: recusado antes do diálogo.
+        let e = salvar(
+            &d.path().join("r.jsonl"),
+            json!({"fonte": {"tipo": "tudo"},
+                   "transformacao": {"renomear": [["id", "x"], ["nome", "x"]]}}),
+        )
+        .unwrap_err();
+        assert!(e.as_str().unwrap().contains("dois campos viram"), "{e}");
+        assert!(!d.path().join("r.jsonl").exists());
 
         // Fonte jq + transformações, em JSON formatado.
         let t = gravar(

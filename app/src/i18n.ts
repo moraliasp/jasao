@@ -317,6 +317,8 @@ const pt = {
     andamento: (n: string, pct: number) => `Salvando: ${n} resultados · ${pct}%`,
     cancelado: "Cancelado: nada foi gravado",
     salvo: (c: string) => `Salvo em ${c}`,
+    descartados: (n: string, linha: number, motivo: string) =>
+      `${n} registro(s) descartado(s) (linha inválida ou erro do jq). Primeiro, linha ${linha}: ${motivo}`,
   },
   mascara: {
     rotulo: "Valor mascarado",
@@ -723,6 +725,8 @@ const en: Textos = {
     andamento: (n: string, pct: number) => `Saving: ${n} results · ${pct}%`,
     cancelado: "Cancelled: nothing was written",
     salvo: (c: string) => `Saved to ${c}`,
+    descartados: (n: string, linha: number, motivo: string) =>
+      `${n} record(s) dropped (invalid line or jq error). First, line ${linha}: ${motivo}`,
   },
   mascara: {
     rotulo: "Masked value",
