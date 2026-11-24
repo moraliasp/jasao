@@ -32,8 +32,24 @@ pub const CAP_COMUNS: usize = 1000;
 pub const LINHAS_MAX: usize = 1000;
 /// Quantos valores mais comuns saem no perfil.
 pub const TOP: usize = 10;
-/// Valor maior que isto é guardado cortado nos mais comuns (o resto conta junto).
-const VALOR_MAX: usize = 1024;
+/// Valor maior que isto sai cortado, com `…`, nos extremos e nos mais comuns (nos comuns, valores
+/// com o mesmo começo contam juntos). Guarda-se 1 byte a mais para saber que houve corte; cortar
+/// não muda a ordem, então mínimo e máximo continuam sendo os certos.
+pub const VALOR_MAX: usize = 1024;
+
+/// Começo do token guardado (memória por valor limitada, mesmo com texto de megabytes).
+fn corte(t: &[u8]) -> &[u8] {
+    &t[..t.len().min(VALOR_MAX + 1)]
+}
+
+/// Texto que sai no perfil: cortado em `VALOR_MAX` bytes, com `…` se havia mais.
+fn texto(b: &[u8]) -> String {
+    let mut s = String::from_utf8_lossy(&b[..b.len().min(VALOR_MAX)]).into_owned();
+    if b.len() > VALOR_MAX {
+        s.push('…');
+    }
+    s
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Perfil {
@@ -238,14 +254,14 @@ impl Acum {
         if self.ocultar {
             return;
         }
-        let chave = &token[..token.len().min(VALOR_MAX)];
-        match self.comuns.get_mut(chave) {
+        let curto = corte(token);
+        match self.comuns.get_mut(curto) {
             Some(n) => *n += 1,
             None => {
                 if self.comuns.len() >= 2 * CAP_COMUNS {
                     self.reduzir();
                 }
-                self.comuns.insert(chave.into(), 1);
+                self.comuns.insert(curto.into(), 1);
             }
         }
         match tipo {
@@ -255,9 +271,9 @@ impl Acum {
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
                 *self.faixas.entry(faixa(x)).or_default() += 1;
-                self.ver_num(((x, token.into()), (x, token.into())));
+                self.ver_num(((x, curto.into()), (x, curto.into())));
             }
-            Tipo::Texto => self.ver_txt((token.into(), token.into())),
+            Tipo::Texto => self.ver_txt((curto.into(), curto.into())),
             _ => {}
         }
     }
@@ -342,14 +358,13 @@ impl Acum {
         }
     }
 
-    fn fim(mut self) -> Perfil {
-        let texto = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    fn fim(self) -> Perfil {
         let distintos = match (self.cortou_hashes, self.hashes.last()) {
             // KMV: K hashes uniformes em [0, 2^64) cujo maior é m estimam (K-1)·2^64/m distintos.
             (true, Some(&m)) => ((K_DISTINTOS - 1) as f64 * (u64::MAX as f64 / m as f64)) as u64,
             _ => self.hashes.len() as u64,
         };
-        self.reduzir();
+        // Sem reduzir aqui: até 2·CAP distintos sem corte a contagem é exata.
         let mut comuns: Vec<(String, u64)> =
             self.comuns.iter().map(|(k, &n)| (texto(k), n)).collect();
         comuns.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -600,6 +615,91 @@ mod testes {
             "{n}"
         );
         assert!(p.comuns.len() <= TOP);
+    }
+
+    /// Acumulador de um bloco só, com os textos dados como valores.
+    fn acum_com(vals: impl IntoIterator<Item = String>) -> Acum {
+        let mut a = Acum::new(false);
+        for v in vals {
+            let b = format!("\"{v}\"");
+            a.valor(Ev::Texto(1, b.len() - 1), b.as_bytes());
+        }
+        a
+    }
+
+    #[test]
+    fn memoria_de_um_bloco_tem_teto() {
+        // Sem `combinar`: o teto tem de valer dentro do próprio bloco.
+        let a = acum_com((0..5000).map(|i| format!("u{i}")));
+        assert_eq!(a.hashes.len(), K_DISTINTOS);
+        assert!(a.cortou_hashes);
+        assert!(a.comuns.len() <= 2 * CAP_COMUNS, "{}", a.comuns.len());
+        assert!(a.reduziu_comuns);
+    }
+
+    #[test]
+    fn valor_enorme_e_guardado_cortado() {
+        // O que fica na memória do bloco (não só o que sai no perfil) tem teto por valor.
+        let a = acum_com(["a".repeat(100_000), "b".repeat(100_000)]);
+        let (lo, hi) = a.txt.as_ref().unwrap();
+        assert_eq!((lo.len(), hi.len()), (VALOR_MAX + 1, VALOR_MAX + 1));
+        assert!(a.comuns.keys().all(|k| k.len() == VALOR_MAX + 1));
+    }
+
+    #[test]
+    fn combinar_tambem_tem_teto() {
+        let mut a = acum_com((0..1500).map(|i| format!("a{i}")));
+        a.combinar(acum_com((0..1500).map(|i| format!("b{i}"))));
+        assert!(a.comuns.len() <= 2 * CAP_COMUNS, "{}", a.comuns.len());
+        assert!(a.reduziu_comuns);
+        let mut h = acum_com((0..3000).map(|i| format!("a{i}")));
+        h.combinar(acum_com((0..3000).map(|i| format!("b{i}"))));
+        assert_eq!(h.hashes.len(), K_DISTINTOS);
+        assert!(h.cortou_hashes);
+    }
+
+    #[test]
+    fn sem_corte_a_contagem_dos_comuns_e_exata() {
+        // 1500 distintos cabem no lote (2·CAP): nada é reduzido, nem no fim.
+        let mut d = String::new();
+        for i in 0..1500 {
+            d.push_str(&format!("{{\"v\":\"k{i}\"}}\n"));
+        }
+        d.push_str(&"{\"v\":\"k0\"}\n".repeat(50));
+        let p = perfil_de(d.as_bytes(), ".v", 4096);
+        assert!(!p.comuns_aprox);
+        assert_eq!(p.comuns[0], ("\"k0\"".to_string(), 51));
+    }
+
+    #[test]
+    fn valor_enorme_sai_cortado() {
+        let grande = |c: char| c.to_string().repeat(5_000_000);
+        let num = format!("1{}", "0".repeat(3000));
+        let d = format!(
+            "{{\"v\":\"{}\"}}\n{{\"v\":\"{}\"}}\n{{\"v\":{num}}}\n{{\"v\":-{num}}}\n",
+            grande('a'),
+            grande('b')
+        );
+        let p = perfil_de(d.as_bytes(), ".v", 1 << 20);
+        let t = p.textos.as_ref().unwrap();
+        let n = p.numeros.as_ref().unwrap();
+        for s in [&t.min, &t.max, &n.min, &n.max] {
+            assert!(s.len() <= VALOR_MAX + '…'.len_utf8(), "{}", s.len());
+            assert!(s.ends_with('…'));
+        }
+        // O corte não troca a ordem nem o valor do número.
+        assert!(t.min.starts_with("\"aaa") && t.max.starts_with("\"bbb"));
+        assert!(n.min.starts_with("-1000") && n.max.starts_with("1000"));
+        assert_eq!(
+            n.faixas.len(),
+            2,
+            "faixa pelo número inteiro: {:?}",
+            n.faixas
+        );
+        assert!(p.comuns.iter().all(|(v, _)| v.len() <= VALOR_MAX + 3));
+        // Valor curto não ganha `…`.
+        let p = perfil_de(BASE, ".v", 7);
+        assert!(!p.textos.unwrap().max.contains('…'));
     }
 
     #[test]

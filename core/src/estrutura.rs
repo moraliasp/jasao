@@ -276,10 +276,14 @@ fn opaco(v: &[u8]) -> bool {
 }
 
 /// Credencial pelo formato do valor: JWT, chave privada PEM, chave da AWS, tokens do GitHub, do
-/// Slack e chaves `sk-` (OpenAI, Anthropic, Stripe).
+/// Slack, chaves `sk-` (OpenAI, Anthropic, Stripe) e cabeçalho `Bearer …`/`Basic …`.
 fn parece_segredo(v: &[u8]) -> bool {
     let pontos = || memchr_iter(b'.', v).count() == 2;
     (v.starts_with(b"eyJ") && v.len() >= 20 && pontos())
+        || (v.len() >= 20
+            && [&b"Bearer "[..], b"Basic "]
+                .iter()
+                .any(|p| v.starts_with(p) && memchr(b' ', &v[p.len()..]).is_none()))
         || (v.starts_with(b"-----BEGIN") && memchr::memmem::find(v, b"PRIVATE KEY").is_some())
         || (v.len() == 20
             && v.starts_with(b"AKIA")
@@ -573,7 +577,7 @@ impl Resumo {
             ".".into(),
             Relacao::Registro,
             self.registros(),
-            (&[], None),
+            &[],
             &mut v,
         );
         v
@@ -706,9 +710,9 @@ impl Aviso {
     }
 }
 
-/// Avisos do nó, sendo `chave` a chave crua mais próxima (o próprio campo, ou o dono da lista
-/// ou do mapa).
-fn avisos(no: &No, chave: Option<&[u8]>) -> Vec<Aviso> {
+/// Avisos do nó em `segs`. Segredo pelo nome vale para qualquer escalar abaixo de uma chave de
+/// segredo (`.senha`, `.senha.valor`, `.senhas[]`): falso positivo aqui é o lado seguro.
+fn avisos(no: &No, segs: &[Seg]) -> Vec<Aviso> {
     let v = &no.valores;
     let texto = no.tipo(Tipo::Texto).n > 0;
     let escalares: u64 = [Tipo::Booleano, Tipo::Inteiro, Tipo::Decimal, Tipo::Texto]
@@ -729,15 +733,20 @@ fn avisos(no: &No, chave: Option<&[u8]>) -> Vec<Aviso> {
     if v.opaco {
         a.push(Aviso::Opaco);
     }
-    if v.segredo || (texto && chave.is_some_and(chave_de_segredo)) {
+    let sob_segredo = || {
+        segs.iter()
+            .any(|s| matches!(s, Seg::Campo(k) if chave_de_segredo(k)))
+    };
+    if v.segredo || (escalares > 0 && sob_segredo()) {
         a.push(Aviso::Segredo);
     }
     a
 }
 
-/// Nome de chave de credencial: a última palavra é `senha`, `password`, `secret`, `token`… ou as
-/// duas últimas são `api key`, `private key`, `chave privada`. Palavras separadas por `_`, `-`,
-/// `.`, espaço ou caixa (`accessToken`). Só a última: `token_type` e `password_hash` não são.
+/// Nome de chave de credencial: a última palavra é `senha`, `password`, `secret`, `token`, `pin`…
+/// (e plurais, menos `tokens`, que em `max_tokens` é contagem) ou as duas últimas são `api key`,
+/// `private key`, `chave privada`. Palavras separadas por `_`, `-`, `.`, espaço ou caixa
+/// (`accessToken`). Só a última: `token_type` e `password_hash` não são.
 pub fn chave_de_segredo(k: &[u8]) -> bool {
     let mut palavras: Vec<String> = Vec::new();
     let mut atual = String::new();
@@ -760,22 +769,39 @@ pub fn chave_de_segredo(k: &[u8]) -> bool {
         ult(1),
         Some(
             "senha"
+                | "senhas"
                 | "password"
+                | "passwords"
                 | "passwd"
                 | "pwd"
+                | "pass"
+                | "passcode"
+                | "passphrase"
+                | "pin"
                 | "secret"
+                | "secrets"
                 | "segredo"
+                | "segredos"
                 | "token"
                 | "apikey"
+                | "apikeys"
                 | "credential"
+                | "credentials"
                 | "credencial"
+                | "credenciais"
                 | "authorization"
                 | "privatekey"
+                | "privatekeys"
         )
     ) || matches!(
         (ult(2), ult(1)),
-        (Some("api" | "private" | "secret" | "access"), Some("key"))
-            | (Some("chave"), Some("privada" | "api"))
+        (
+            Some("api" | "private" | "secret" | "access"),
+            Some("key" | "keys")
+        ) | (
+            Some("chave" | "chaves"),
+            Some("privada" | "privadas" | "api")
+        )
     )
 }
 
@@ -822,19 +848,11 @@ pub(crate) fn juntar(caminho: &str, seg: &str) -> String {
     }
 }
 
-/// `pai`: segmentos até aqui e a chave crua mais próxima.
-fn listar(
-    no: &No,
-    caminho: String,
-    relacao: Relacao,
-    de: u64,
-    pai: (&[Seg], Option<&[u8]>),
-    v: &mut Vec<Caminho>,
-) {
+/// `segs`: segmentos de `.` até aqui.
+fn listar(no: &No, caminho: String, relacao: Relacao, de: u64, segs: &[Seg], v: &mut Vec<Caminho>) {
     let profundidade = v.last().map_or(0, |_| caminho.matches(['.', '[']).count());
     let objetos = no.tipo(Tipo::Objeto).n;
     let listas = no.tipo(Tipo::Lista).n;
-    let (segs, chave) = pai;
     v.push(Caminho {
         caminho: caminho.clone(),
         relacao,
@@ -843,7 +861,7 @@ fn listar(
         de,
         tipos: no.tipos,
         segs: segs.to_vec(),
-        avisos: avisos(no, chave),
+        avisos: avisos(no, segs),
     });
     let mais = |s: Seg| [segs, &[s]].concat();
     for (k, f) in no.campos() {
@@ -853,31 +871,17 @@ fn listar(
             juntar(&caminho, &segmento(k)),
             Relacao::Campo,
             objetos,
-            (&s, Some(k)),
+            &s,
             v,
         );
     }
     if let Some(m) = &no.mapa {
         let s = mais(Seg::Entrada);
-        listar(
-            m,
-            juntar(&caminho, ".*"),
-            Relacao::Entrada,
-            objetos,
-            (&s, chave),
-            v,
-        );
+        listar(m, juntar(&caminho, ".*"), Relacao::Entrada, objetos, &s, v);
     }
     if let Some(e) = &no.elementos {
         let s = mais(Seg::Elemento);
-        listar(
-            e,
-            juntar(&caminho, "[]"),
-            Relacao::Elemento,
-            listas,
-            (&s, chave),
-            v,
-        );
+        listar(e, juntar(&caminho, "[]"), Relacao::Elemento, listas, &s, v);
     }
 }
 
@@ -1935,6 +1939,7 @@ mod testes {
             "\"ghp_0123456789abcdefghij0123\"",
             "\"sk-ant-api03-abcdefghijklmnop\"",
             "\"xoxb-1234-5678-abcdefghij\"",
+            "\"Bearer abcdefghijklmnopqrstuvwxyz\"",
         ] {
             assert!(avisos_de(&["\"oi\"", sim]).contains(&a), "{sim}");
         }
@@ -1944,6 +1949,7 @@ mod testes {
             "\"AKIA pequeno\"",
             "\"sk-learn é uma biblioteca\"",
             "\"sk-x\"",
+            "\"Bearer de alguém que carrega coisas\"",
         ] {
             assert!(!avisos_de(&[nao]).contains(&a), "{nao}");
         }
@@ -1954,7 +1960,8 @@ mod testes {
         let i = inf(concat!(
             r#"{"password":"x","token_type":"Bearer","max_tokens":5,"secretaria":"Ana","#,
             r#""accessToken":"y","api_key":"z","senhas":["a"],"auth":{"senha":"w"},"#,
-            r#""password_hash":"h","segredo":null}"#,
+            r#""password_hash":"h","segredo":null,"pin":123456,"secret":{"valor":"v"},"#,
+            r#""passwords":["p"],"credentials":{"user":"u"}}"#,
             "\n"
         )
         .as_bytes());
@@ -1962,8 +1969,17 @@ mod testes {
         assert!(sim(".password") && sim(".accessToken") && sim(".api_key") && sim(".auth.senha"));
         assert!(!sim(".token_type") && !sim(".max_tokens") && !sim(".secretaria"));
         assert!(!sim(".password_hash") && !sim(".auth"));
-        assert!(!sim(".segredo"), "nunca foi texto");
-        assert!(!sim(".senhas[]"), "plural fica de fora");
+        assert!(!sim(".segredo"), "só nulo: nada a esconder");
+        assert!(sim(".senhas[]") && sim(".passwords[]"), "plural");
+        assert!(sim(".pin"), "número também");
+        assert!(
+            sim(".credentials.user") && sim(".secret.valor"),
+            "qualquer ancestral"
+        );
+        assert!(
+            !sim(".secret") && !sim(".credentials"),
+            "objeto não tem valor a esconder"
+        );
     }
 
     #[test]
@@ -1981,6 +1997,13 @@ mod testes {
             "x-api-key",
             "Authorization",
             "privateKey",
+            "senhas",
+            "passwords",
+            "credentials",
+            "secrets",
+            "pass",
+            "pin",
+            "api_keys",
         ] {
             assert!(chave_de_segredo(sim.as_bytes()), "{sim}");
         }
