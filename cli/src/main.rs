@@ -843,7 +843,7 @@ fn linha_do_tempo(pasta: &str, json: bool, out: &mut Terminal<impl Write>) -> Re
     let r = percorrer(
         lista,
         &LIMITES,
-        |c| abrir(&c.to_string_lossy()).map_err(|e| io::Error::other(e.to_string())),
+        |c| ArquivoLinhas::abrir_copia_com(c, &Opcoes::default()),
         &AtomicBool::new(false),
         |_, _| {},
     );

@@ -1575,7 +1575,7 @@ fn linha_do_tempo<R: Runtime>(
                 cancelar: Some(&cancelar),
                 ..Opcoes::default()
             };
-            ArquivoLinhas::abrir_com(c, &op)
+            ArquivoLinhas::abrir_copia_com(c, &op)
         };
         let mut aviso = None::<Instant>;
         let l = percorrer(lista, &LIMITES, abrir, &cancelar, |feitas, total| {

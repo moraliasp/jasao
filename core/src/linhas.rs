@@ -6,7 +6,7 @@
 //! - quebra final não cria linha vazia; arquivo vazio (ou só BOM) tem zero linhas.
 
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::Path;
 
@@ -117,13 +117,25 @@ impl ArquivoLinhas {
     /// Como `abrir`, com cache, limites, progresso e cancelamento escolhidos por quem chama.
     /// Compactado é descompactado para o cache e o cache é que é mapeado.
     pub fn abrir_com(caminho: impl AsRef<Path>, op: &Opcoes) -> io::Result<Self> {
-        let caminho = caminho.as_ref();
+        Self::abrir_(caminho.as_ref(), op, false)
+    }
+
+    /// Como `abrir_com`, mas nunca mapeia o arquivo do usuário: JSONL cru é copiado com `read`
+    /// para uma cópia só do app (a de `vivo`) e é a cópia que se mapeia. Arquivo que outro
+    /// processo trunca no meio volta curto, sem SIGBUS. Para varrer pasta, onde muitos arquivos
+    /// passam pela leitura e qualquer um pode mudar (achado 14). Custa uma cópia em disco.
+    pub fn abrir_copia_com(caminho: impl AsRef<Path>, op: &Opcoes) -> io::Result<Self> {
+        Self::abrir_(caminho.as_ref(), op, true)
+    }
+
+    fn abrir_(caminho: &Path, op: &Opcoes, copiar: bool) -> io::Result<Self> {
         arquivo_comum(caminho)?;
         let mut arquivo = File::open(caminho)?;
         let mut magico = [0u8; 4];
         let n = arquivo.by_ref().take(4).read(&mut magico)?;
         let arquivo = match compactado::detectar(&magico[..n]) {
             Formato::Cru => match formatos::detectar(caminho, &mut arquivo)? {
+                None if copiar => copia(arquivo, op)?,
                 None => arquivo,
                 Some(f) => File::open(formatos::para_cache(caminho, f, op)?)?,
             },
@@ -184,6 +196,20 @@ impl ArquivoLinhas {
             .filter_map(|i| self.indice.faixa(i, dados).map(|r| &dados[r]))
             .collect()
     }
+}
+
+/// Copia `arquivo` inteiro (até `op.max_saida`) para uma cópia anônima do app, só com `read`.
+fn copia(mut arquivo: File, op: &Opcoes) -> io::Result<File> {
+    let mut c = crate::vivo::criar_copia(&compactado::pasta_cache(op)?)?;
+    arquivo.seek(SeekFrom::Start(0))?;
+    let n = io::copy(&mut arquivo.take(op.max_saida + 1), &mut c)?;
+    if n > op.max_saida {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("arquivo maior que {} bytes", op.max_saida),
+        ));
+    }
+    Ok(c)
 }
 
 /// Recusa o que não é arquivo comum, sem abrir: `open` de um FIFO bloqueia até alguém escrever,

@@ -136,12 +136,17 @@ pub fn listar(pasta: &Path, lim: &Limites) -> Result<Lista, Erro> {
             },
         })
         .collect();
-    versoes.sort_by(|a, b| a.ms.cmp(&b.ms).then_with(|| a.nome.cmp(&b.nome)));
+    ordenar(&mut versoes);
     Ok(Lista {
         origem,
         versoes,
         ignorados,
     })
+}
+
+/// Por data; data igual (ou mtime igual), por nome.
+fn ordenar(versoes: &mut [Versao]) {
+    versoes.sort_by(|a, b| a.ms.cmp(&b.ms).then_with(|| a.nome.cmp(&b.nome)));
 }
 
 type Achado = ((PathBuf, String), i64, Option<i64>);
@@ -174,7 +179,8 @@ fn versao(base: &Path, e: &fs::DirEntry, nome: &str) -> Option<Achado> {
 /// A primeira data do nome, em ms desde 1970 (UTC): `AAAA-MM-DD`, `AAAA_MM_DD`, `AAAA.MM.DD` ou
 /// `AAAAMMDD`, entre 1970 e 2100, com hora opcional (`T`, `_`, `-` ou espaço, e então `HH`,
 /// `HHMM`, `HHMMSS` ou `HH:MM[:SS]`/`HH-MM[-SS]`). Componentes conferidos: `2024-02-30` não vale.
-/// Dígito colado antes ou depois não vale (id ou EAN não vira data).
+/// Dígito colado antes ou depois não vale (id ou EAN não vira data); sufixo numérico depois de
+/// `_` ou `-` vale, e então a data fica sem hora (`2024-01-01_001`).
 pub fn data_no_nome(nome: &str) -> Option<i64> {
     let b = nome.as_bytes();
     (0..b.len()).find_map(|i| {
@@ -228,9 +234,14 @@ fn data_em(b: &[u8]) -> Option<i64> {
         return None;
     }
     let (seg, depois) = hora(&b[fim..]);
-    if depois.first().is_some_and(u8::is_ascii_digit) {
+    let seg = if !depois.first().is_some_and(u8::is_ascii_digit) {
+        seg
+    } else if matches!(b.get(fim), Some(b'_' | b'-')) {
+        // Sufixo numérico separado (`export-2024-01-01_001`): a data vale, sem hora.
+        0
+    } else {
         return None;
-    }
+    };
     Some((dias_desde_1970(ano, mes, dia) * 86_400 + seg) * 1000)
 }
 
@@ -328,7 +339,9 @@ pub struct LinhaDoTempo {
 }
 
 /// Percorre as versões em ordem: abre (com `abrir`, que decide cache e progresso), infere e
-/// compara com a anterior. `progresso(feitas, total)` antes de cada versão. O prazo e `cancelar`
+/// compara com a anterior; versão que muda entre abrir e inferir vira passo com erro. Quem chama
+/// abre com `ArquivoLinhas::abrir_copia_com` (nunca o `mmap` do original: SIGBUS se truncar).
+/// `progresso(feitas, total)` antes de cada versão. O prazo e `cancelar`
 /// valem também no meio de uma inferência (a cada ~1% dela); a abertura em si não é interrompida.
 pub fn percorrer(
     lista: Lista,
@@ -374,6 +387,7 @@ pub fn percorrer(
             mudancas: Vec::new(),
             mais: 0,
         };
+        let antes = carimbo(&passo.versao.caminho);
         let inf = match abrir(&passo.versao.caminho) {
             Ok(a) => estrutura::inferir(a.bytes(), &parar, |_| {
                 if checar().is_some() {
@@ -389,6 +403,11 @@ pub fn percorrer(
         if inf.cancelado {
             r.parada = checar().or(Some(Parada::Cancelado));
             break;
+        }
+        if carimbo(&passo.versao.caminho) != antes {
+            passo.erro = Some("o arquivo mudou durante a leitura".into());
+            r.passos.push(passo);
+            continue;
         }
         passo.registros = inf.resumo.registros();
         passo.invalidas = inf.resumo.invalidas.n;
@@ -413,9 +432,15 @@ pub fn percorrer(
     r
 }
 
+/// Tamanho e `mtime`: mudou entre abrir e terminar a inferência, o passo sai como erro.
+fn carimbo(c: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    fs::metadata(c).ok().map(|m| (m.len(), m.modified().ok()))
+}
+
 #[cfg(test)]
 mod testes {
     use super::*;
+    use crate::Opcoes;
 
     fn escrever(p: &Path, nome: &str, conteudo: &str) {
         fs::write(p.join(nome), conteudo).unwrap();
@@ -466,6 +491,93 @@ mod testes {
             assert_eq!(data_texto(data_no_nome(n).unwrap()), n.replace('T', " "));
         }
         assert_eq!(d("2024-01-01.v2.json"), Some(1_704_067_200));
+        // Sufixo numérico depois de `_` ou `-`: data sem hora; colado continua não valendo.
+        assert_eq!(d("export-2024-01-01_001.jsonl"), Some(1_704_067_200));
+        assert_eq!(d("export-20240101-7.jsonl"), Some(1_704_067_200));
+        assert_eq!(d("2024-01-01-12345.json"), Some(1_704_067_200));
+        assert_eq!(d("2024-01-01001.json"), None);
+    }
+
+    #[test]
+    fn sufixo_apos_a_data_mantem_a_ordem_pelo_nome() {
+        let p = tempfile::tempdir().unwrap();
+        escrever(p.path(), "export-2024-01-02_001.jsonl", "{}");
+        escrever(p.path(), "export-2024-01-01_002.jsonl", "{}");
+        escrever(p.path(), "export-2024-01-01_001.jsonl", "{}");
+        let l = listar(p.path(), &LIMITES).unwrap();
+        assert_eq!(l.origem, Origem::Nome);
+        assert_eq!(
+            nomes(&l),
+            [
+                "export-2024-01-01_001.jsonl",
+                "export-2024-01-01_002.jsonl",
+                "export-2024-01-02_001.jsonl"
+            ]
+        );
+    }
+
+    #[test]
+    fn data_igual_desempata_pelo_nome() {
+        // `ordenar` direto: a ordem do `read_dir` (às vezes já alfabética) não mascara o desempate.
+        let v = |nome: &str, ms| Versao {
+            caminho: PathBuf::from(nome),
+            nome: nome.into(),
+            ms,
+        };
+        let mut vs = vec![v("c", 5), v("b", 1), v("a", 5), v("z", 0)];
+        ordenar(&mut vs);
+        let ns: Vec<&str> = vs.iter().map(|v| v.nome.as_str()).collect();
+        assert_eq!(ns, ["z", "b", "a", "c"]);
+        // Pela pasta: criados em ordem inversa à do nome, mesma data.
+        let p = tempfile::tempdir().unwrap();
+        for n in [
+            "z-2024-01-01.json",
+            "m-2024-01-01.json",
+            "a-2024-01-01.json",
+        ] {
+            escrever(p.path(), n, "{}");
+        }
+        assert_eq!(
+            nomes(&listar(p.path(), &LIMITES).unwrap()),
+            [
+                "a-2024-01-01.json",
+                "m-2024-01-01.json",
+                "z-2024-01-01.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn arquivo_truncado_no_percurso_vira_erro_sem_derrubar() {
+        let p = tempfile::tempdir().unwrap();
+        let linhas = "{\"a\":1,\"b\":\"x\"}\n".repeat(50_000);
+        escrever(p.path(), "2024-01-01.jsonl", "{\"a\":1}\n");
+        escrever(p.path(), "2024-01-02.jsonl", &linhas);
+        escrever(p.path(), "2024-01-03.jsonl", "{\"a\":2}\n");
+        let op = Opcoes {
+            dir_cache: Some(p.path().join("cache")),
+            ..Opcoes::default()
+        };
+        let lista = listar(p.path(), &LIMITES).unwrap();
+        // Trunca o original logo depois de abrir, antes da inferência: com `mmap` do original
+        // isto seria SIGBUS e o processo de teste morreria.
+        let abrir = |c: &Path| {
+            let a = ArquivoLinhas::abrir_copia_com(c, &op)?;
+            if c.ends_with("2024-01-02.jsonl") {
+                fs::File::create(c)?;
+            }
+            Ok(a)
+        };
+        let r = percorrer(lista, &LIMITES, abrir, &AtomicBool::new(false), |_, _| {});
+        assert_eq!(r.passos.len(), 3);
+        assert!(r.passos[0].erro.is_none());
+        assert_eq!(
+            r.passos[1].erro.as_deref(),
+            Some("o arquivo mudou durante a leitura")
+        );
+        // O seguinte compara com a última que abriu inteira.
+        assert_eq!(r.passos[2].contra, Some(0));
+        assert!(r.passos[2].erro.is_none());
     }
 
     #[test]
