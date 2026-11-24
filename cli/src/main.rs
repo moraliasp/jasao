@@ -11,8 +11,13 @@
 //!   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>
 //!                                         Zod 4 ou JSON Schema 2020-12 no stdout; valida o
 //!                                         arquivo contra ele e sai com 1 se algum registro falhar
+//!   diff <antes> <depois> [--json] [--falha-em quebra|qualquer]
+//!                                         mudanças de estrutura, quebra × compatível; sai com 1
+//!                                         se `--falha-em` pegar quebra (ou qualquer), 2 em uso
+//!                                         errado, 3 se não deu para comparar (arquivo não abre,
+//!                                         ou registro inválido com `--falha-em`)
 //!
-//! Com o stdout num terminal, `janela`, `buscar`, `consultar` e `inferir` trocam controles (C0
+//! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir` e `diff` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
 //! hostil não manda sequência ESC/CSI/OSC ao terminal nem inverte o texto. O mesmo vale para os
 //! erros do jq no stderr, se ele for terminal. Redirecionada (arquivo, pipe), a saída é fiel byte
@@ -35,7 +40,10 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]\n  \
-                   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>";
+                   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>\n  \
+                   diff <antes> <depois> [--json] [--falha-em quebra|qualquer]\n\
+                   \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
+                   \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -87,6 +95,24 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         },
+        ["diff", resto @ ..] => match opcoes_diff(resto) {
+            Some(op) => match diff(op, &mut tela()) {
+                Ok(c) => {
+                    saida = ExitCode::from(c);
+                    Ok(())
+                }
+                // Erro de execução não pode sair como "quebra" (1) num gate de CI.
+                Err(e) if !pipe_fechado(&*e) => {
+                    eprintln!("erro: {e}");
+                    return ExitCode::from(DIFF_SEM_COMPARAR);
+                }
+                Err(e) => Err(e),
+            },
+            None => {
+                eprintln!("{USO}");
+                return ExitCode::from(2);
+            }
+        },
         _ => {
             eprintln!("{USO}");
             return ExitCode::from(2);
@@ -95,12 +121,7 @@ fn main() -> ExitCode {
     match resultado {
         Ok(()) => saida,
         // Pipe fechado (ex.: `| head`) não é erro.
-        Err(e)
-            if e.downcast_ref::<io::Error>().map(io::Error::kind)
-                == Some(io::ErrorKind::BrokenPipe) =>
-        {
-            ExitCode::SUCCESS
-        }
+        Err(e) if pipe_fechado(&*e) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("erro: {e}");
             ExitCode::FAILURE
@@ -592,6 +613,148 @@ fn exportar(
     Ok(v.falham == 0 && v.invalidas == 0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FalhaEm {
+    Nunca,
+    Quebra,
+    Qualquer,
+}
+
+struct OpcoesDiff<'a> {
+    antes: &'a str,
+    depois: &'a str,
+    json: bool,
+    falha_em: FalhaEm,
+}
+
+fn opcoes_diff<'a>(args: &[&'a str]) -> Option<OpcoesDiff<'a>> {
+    let (mut arquivos, mut json, mut falha_em) = (Vec::new(), false, FalhaEm::Nunca);
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--json" => json = true,
+            "--falha-em" => {
+                falha_em = match *it.next()? {
+                    "quebra" => FalhaEm::Quebra,
+                    "qualquer" => FalhaEm::Qualquer,
+                    _ => return None,
+                }
+            }
+            _ if !a.starts_with("--") => arquivos.push(a),
+            _ => return None,
+        }
+    }
+    let [antes, depois] = arquivos[..] else {
+        return None;
+    };
+    Some(OpcoesDiff {
+        antes,
+        depois,
+        json,
+        falha_em,
+    })
+}
+
+/// Imprime as mudanças de estrutura. `Ok(true)` se `--falha-em` pegou alguma.
+fn pipe_fechado(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<io::Error>().map(io::Error::kind) == Some(io::ErrorKind::BrokenPipe)
+}
+
+/// Saída do `diff` quando não deu para comparar com confiança.
+const DIFF_SEM_COMPARAR: u8 = 3;
+
+/// Código de saída: 0, 1 (`--falha-em` pegou) ou `DIFF_SEM_COMPARAR` (registro inválido com
+/// `--falha-em`: linhas ignoradas podem esconder uma quebra).
+fn diff(op: OpcoesDiff, out: &mut Terminal<impl Write>) -> Result<u8, Box<dyn std::error::Error>> {
+    use nucleo::diff::{Classe, Detalhe, diff};
+    use nucleo::estrutura;
+    let nada = AtomicBool::new(false);
+    let (a, b) = (abrir(op.antes)?, abrir(op.depois)?);
+    let (ia, ib) = (
+        estrutura::inferir(a.bytes(), &nada, |_| {}),
+        estrutura::inferir(b.bytes(), &nada, |_| {}),
+    );
+    let mudancas = diff(&ia.resumo, &ib.resumo);
+    let quebras = mudancas
+        .iter()
+        .filter(|m| m.regra.classe() == Classe::Quebra)
+        .count();
+    let invalidas = ia.resumo.invalidas.n > 0 || ib.resumo.invalidas.n > 0;
+    let aviso = format!(
+        "aviso: registros inválidos ignorados (antes: {}, depois: {}); o diff não os vê",
+        ia.resumo.invalidas.n, ib.resumo.invalidas.n
+    );
+    if op.json {
+        let itens: Vec<String> = mudancas
+            .iter()
+            .map(|m| {
+                let detalhe = match &m.detalhe {
+                    Detalhe::Nenhum => String::new(),
+                    Detalhe::Tipos(x, y) => {
+                        let l = |ts: &[nucleo::estrutura::Tipo]| {
+                            ts.iter()
+                                .map(|t| format!("\"{}\"", t.nome()))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        };
+                        format!(r#","tipos":{{"antes":[{}],"depois":[{}]}}"#, l(x), l(y))
+                    }
+                    Detalhe::Variante(v) => format!(r#","variante":{}"#, texto_json(v)),
+                };
+                format!(
+                    r#"{{"caminho":{},"regra":"{}","classe":"{}","antes":{{"n":{},"de":{}}},"depois":{{"n":{},"de":{}}}{detalhe}}}"#,
+                    texto_json(&m.caminho),
+                    m.regra.nome(),
+                    m.regra.classe().nome(),
+                    m.antes.n,
+                    m.antes.de,
+                    m.depois.n,
+                    m.depois.de,
+                )
+            })
+            .collect();
+        writeln!(
+            out,
+            r#"{{"quebras":{quebras},"compativeis":{},"invalidas":{{"antes":{},"depois":{}}},"mudancas":[{}]}}"#,
+            mudancas.len() - quebras,
+            ia.resumo.invalidas.n,
+            ib.resumo.invalidas.n,
+            itens.join(",")
+        )?;
+    } else {
+        for m in &mudancas {
+            writeln!(out, "{m}")?;
+        }
+        if invalidas {
+            writeln!(out, "{aviso}")?;
+        }
+    }
+    out.flush()?;
+    let resumo = |i: &estrutura::Inferencia| {
+        format!(
+            "{} registros, {} inválidas",
+            i.resumo.registros(),
+            i.resumo.invalidas.n
+        )
+    };
+    eprintln!(
+        "{quebras} quebras · {} compatíveis · antes: {} · depois: {}",
+        mudancas.len() - quebras,
+        resumo(&ia),
+        resumo(&ib)
+    );
+    if invalidas && op.falha_em != FalhaEm::Nunca {
+        eprintln!("erro: {aviso}; `--falha-em` não confia no resultado (rode `jasao erros`)");
+        return Ok(DIFF_SEM_COMPARAR);
+    }
+    let falhou = match op.falha_em {
+        FalhaEm::Nunca => false,
+        FalhaEm::Quebra => quebras > 0,
+        FalhaEm::Qualquer => !mudancas.is_empty(),
+    };
+    Ok(u8::from(falhou))
+}
+
 fn opcoes_erros<'a>(args: &[&'a str]) -> Option<(&'a str, bool, usize)> {
     let (mut arquivo, mut json, mut max) = (None, false, 100);
     let mut it = args.iter();
@@ -798,6 +961,70 @@ mod testes {
         let inf = no_terminal(|t| inferir(f.0.to_str().unwrap(), false, t));
         assert!(inf.contains("a\\u{202e}b\\u{9b}"), "{inf:?}");
         assert!(!inf.chars().any(perigoso), "{inf:?}");
+    }
+
+    #[test]
+    fn opcoes_do_diff() {
+        fn ok<'a>(a: &[&'a str]) -> Option<(&'a str, &'a str, bool, FalhaEm)> {
+            opcoes_diff(a).map(|o| (o.antes, o.depois, o.json, o.falha_em))
+        }
+        assert_eq!(ok(&["a", "b"]), Some(("a", "b", false, FalhaEm::Nunca)));
+        assert_eq!(
+            ok(&["--falha-em", "quebra", "a", "--json", "b"]),
+            Some(("a", "b", true, FalhaEm::Quebra))
+        );
+        assert_eq!(
+            ok(&["a", "b", "--falha-em", "qualquer"]).map(|o| o.3),
+            Some(FalhaEm::Qualquer)
+        );
+        for ruim in [
+            &["a"][..],
+            &["a", "b", "c"],
+            &["a", "b", "--falha-em"],
+            &["a", "b", "--falha-em", "sempre"],
+            &["a", "b", "--x"],
+        ] {
+            assert!(opcoes_diff(ruim).is_none(), "{ruim:?}");
+        }
+    }
+
+    #[test]
+    fn diff_neutraliza_e_falha_em() {
+        let a = Temporario::novo("diff-a", "{\"a\u{202e}b\u{9b}\":1,\"x\":1}\n");
+        let b = Temporario::novo("diff-b", "{\"x\":1}\n{\"x\":2,\"n\":true}\n");
+        let (pa, pb) = (a.0.to_str().unwrap(), b.0.to_str().unwrap());
+        let rodar = |antes, depois, json, falha_em| {
+            let mut t = Terminal {
+                out: Vec::new(),
+                neutralizar: true,
+            };
+            let op = OpcoesDiff {
+                antes,
+                depois,
+                json,
+                falha_em,
+            };
+            let c = diff(op, &mut t).unwrap();
+            (String::from_utf8(t.out).unwrap(), c == 1)
+        };
+        let (texto, falhou) = rodar(pa, pb, false, FalhaEm::Quebra);
+        assert!(falhou);
+        assert_eq!(
+            texto,
+            "quebra      .a\\u{202e}b\\u{9b}  campo removido  (1 de 1 → 0 de 2)\n\
+             compatível  .n  campo novo opcional  (0 de 1 → 1 de 2)\n"
+        );
+        let (json, _) = rodar(pa, pb, true, FalhaEm::Nunca);
+        assert!(json.starts_with(r#"{"quebras":1,"compativeis":1,"invalidas":{"antes":0,"depois":0},"mudancas":[{"caminho":".a"#));
+        assert!(json.contains(r#""regra":"campo_novo_opcional","classe":"compativel","antes":{"n":0,"de":1},"depois":{"n":1,"de":2}}"#), "{json}");
+        assert!(!json.chars().any(perigoso));
+        // Só compatível: `quebra` passa, `qualquer` falha; sem `--falha-em` nunca falha.
+        assert!(!rodar(pb, pb, false, FalhaEm::Qualquer).1);
+        let c = Temporario::novo("diff-c", "{\"x\":1}\n{\"x\":2,\"n\":true,\"m\":null}\n");
+        let pc = c.0.to_str().unwrap();
+        assert!(!rodar(pb, pc, false, FalhaEm::Quebra).1);
+        assert!(rodar(pb, pc, false, FalhaEm::Qualquer).1);
+        assert!(!rodar(pa, pb, false, FalhaEm::Nunca).1);
     }
 
     /// O erro do jq cita o valor do arquivo: no stderr de terminal, sai neutralizado.

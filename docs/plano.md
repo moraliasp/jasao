@@ -83,7 +83,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - **Registros que fogem:** da estrutura para a lista de linhas que têm (ou não têm) um campo.
 
 ### Fase 3: diff
-- Diff de estrutura com quebra × compatível, usando a taxonomia do oasdiff/buf.
+- Diff de estrutura com quebra × compatível, usando a taxonomia do oasdiff/buf. Feito no núcleo e na CLI (`jasao diff a b [--json] [--falha-em quebra|qualquer]`, 23/11/2026; ver decisoes.md); falta a interface.
 - Diff de valores entre dois registros ou dois arquivos.
 - Linha do tempo de uma pasta de arquivos datados.
 
