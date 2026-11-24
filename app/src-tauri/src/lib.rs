@@ -88,6 +88,8 @@ struct Doc {
     consulta: Mutex<EstadoConsulta>,
     exportar: Mutex<EstadoExportar>,
     ordem: Mutex<EstadoOrdem>,
+    /// Cancela o perfil em curso quando outro caminho é pedido.
+    perfil: Mutex<Arc<AtomicBool>>,
 }
 
 /// Ordenação da Tabela: a pronta (com a direção) e a que roda em 2º plano.
@@ -323,6 +325,9 @@ impl Doc {
         }
         if let Ok(mut o) = self.ordem.lock() {
             o.reiniciar();
+        }
+        if let Ok(p) = self.perfil.lock() {
+            p.store(true, Relaxed);
         }
     }
 }
@@ -613,6 +618,7 @@ async fn abrir<R: Runtime>(
                 consulta: Default::default(),
                 exportar: Default::default(),
                 ordem: Default::default(),
+                perfil: Default::default(),
             });
             let mut docs = estado.docs.lock().map_err(|e| e.to_string())?;
             docs.insert(id, Arc::clone(&doc));
@@ -766,6 +772,7 @@ struct CaminhoUi {
     presenca: u64,
     de: u64,
     tipos: Vec<TipoVisto>,
+    avisos: Vec<&'static str>,
 }
 
 #[derive(Clone, Serialize)]
@@ -803,6 +810,7 @@ impl Estrutura {
                     .filter(|(_, x)| x.n > 0)
                     .map(|(nome, x)| (nome, x.n, x.primeira()))
                     .collect(),
+                avisos: c.avisos.iter().map(|a| a.nome()).collect(),
                 caminho: c.caminho,
                 profundidade: c.profundidade,
                 presenca: c.presenca,
@@ -853,6 +861,39 @@ fn estrutura(id: u32, estado: State<'_, Estado>) -> Result<Option<Estrutura>, St
         .clone();
     // Clona fora da trava: são centenas de caminhos, não o arquivo.
     Ok(e.map(|e| (*e).clone()))
+}
+
+/// Estatísticas e registros com e sem o caminho `indice` (a posição em `estrutura().caminhos`),
+/// numa varredura do arquivo inteiro fora da thread da interface. Pedido novo cancela o
+/// anterior; `None` se a inferência não acabou ou o pedido foi substituído.
+#[tauri::command]
+async fn perfil(
+    id: u32,
+    indice: usize,
+    estado: State<'_, Estado>,
+) -> Result<Option<nucleo::perfil::Perfil>, String> {
+    let Some((inf, arquivo)) = inferencia(&estado, id)? else {
+        return Ok(None);
+    };
+    let c = inf
+        .resumo
+        .caminhos()
+        .into_iter()
+        .nth(indice)
+        .ok_or_else(|| format!("caminho {indice} não existe"))?;
+    let cancelar = Arc::new(AtomicBool::new(false));
+    {
+        let doc = estado.doc(id)?;
+        let mut atual = doc.perfil.lock().map_err(|e| e.to_string())?;
+        atual.store(true, Relaxed);
+        *atual = Arc::clone(&cancelar);
+    }
+    let p = tauri::async_runtime::spawn_blocking(move || {
+        nucleo::perfil::perfil(&inf, arquivo.bytes(), &c, &cancelar)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok((!p.cancelado).then_some(p))
 }
 
 /// Inferência crua e o arquivo de onde veio (Exportar gera e valida a partir dela).
@@ -1658,6 +1699,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             regua,
             marcas,
             estrutura,
+            perfil,
             tabela,
             tabela_linhas,
             ordenar,
@@ -1993,11 +2035,11 @@ mod testes {
             Ok(
                 json!({"entrada": "jsonl", "registros": 1, "invalidas": 1, "caminhos": [
                 {"caminho": ".", "relacao": "registro", "profundidade": 0, "presenca": 1,
-                 "de": 1, "tipos": [["objeto", 1, 0]]},
+                 "de": 1, "tipos": [["objeto", 1, 0]], "avisos": []},
                 {"caminho": ".a", "relacao": "campo", "profundidade": 1, "presenca": 1,
-                 "de": 1, "tipos": [["lista", 1, 0]]},
+                 "de": 1, "tipos": [["lista", 1, 0]], "avisos": []},
                 {"caminho": ".a[]", "relacao": "elemento", "profundidade": 2, "presenca": 2,
-                 "de": 1, "tipos": [["inteiro", 2, 0]]}
+                 "de": 1, "tipos": [["inteiro", 2, 0]], "avisos": []}
             ], "discriminadores": []})
             )
         );
@@ -2175,6 +2217,18 @@ mod testes {
             ),
             (json!(2), json!(3))
         );
+        assert_eq!(e["caminhos"][2]["avisos"], json!([]));
+        // Perfil de `.x`: varre o arquivo; linhas com e sem o campo.
+        let p = em(2, "perfil", json!({"indice": 2})).unwrap();
+        assert_eq!(
+            (
+                p["com"].clone(),
+                p["linhas_sem"].clone(),
+                p["oculto"].clone()
+            ),
+            (json!(2), json!([1]), json!(false))
+        );
+        assert!(em(2, "perfil", json!({"indice": 99})).is_err());
 
         // Copiar: caminho nos três formatos e valor (texto decodificado).
         assert_eq!(em(2, "alternar", json!({"v": 0})), Ok(json!(6)));

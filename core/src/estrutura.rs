@@ -136,6 +136,15 @@ pub struct Valores {
     pub texto_nao_numerico: bool,
     /// Algum inteiro fora de ±(2^53 − 1), que o JavaScript não representa exato.
     pub inteiro_grande: bool,
+    /// Algum texto que é número e não parece código (ver `codigo`): base do aviso de número
+    /// como texto.
+    pub texto_quantidade: bool,
+    /// Algum texto que é, inteiro, uma data fora do ISO 8601 (`24/11/2026`).
+    pub data_fora_iso: bool,
+    /// Algum texto opaco: JSON serializado dentro do texto ou base64 longo.
+    pub opaco: bool,
+    /// Algum texto com cara de credencial (JWT, chave privada PEM, tokens com prefixo conhecido).
+    pub segredo: bool,
 }
 
 impl Valores {
@@ -148,7 +157,7 @@ impl Valores {
             _ => self.unico = Unico::Varios,
         }
         match t {
-            Tipo::Texto if !self.texto_nao_numerico => self.texto_nao_numerico = !eh_numero(v),
+            Tipo::Texto => self.ver_texto(v),
             Tipo::Inteiro if v.len() > 15 => {
                 let d = v.strip_prefix(b"-").unwrap_or(v);
                 self.inteiro_grande |= std::str::from_utf8(d)
@@ -160,6 +169,18 @@ impl Valores {
         }
     }
 
+    /// Cada sinal só é testado enquanto não foi visto: o custo some depois do 1º achado.
+    fn ver_texto(&mut self, v: &[u8]) {
+        if !self.texto_nao_numerico {
+            let num = eh_numero(v);
+            self.texto_nao_numerico = !num;
+            self.texto_quantidade |= num && !codigo(v);
+        }
+        self.data_fora_iso = self.data_fora_iso || data_fora_iso(v);
+        self.opaco = self.opaco || opaco(v);
+        self.segredo = self.segredo || parece_segredo(v);
+    }
+
     fn combinar(&mut self, o: Valores) {
         self.unico = match (std::mem::take(&mut self.unico), o.unico) {
             (Unico::Nenhum, u) | (u, Unico::Nenhum) => u,
@@ -168,7 +189,119 @@ impl Valores {
         };
         self.texto_nao_numerico |= o.texto_nao_numerico;
         self.inteiro_grande |= o.inteiro_grande;
+        self.texto_quantidade |= o.texto_quantidade;
+        self.data_fora_iso |= o.data_fora_iso;
+        self.opaco |= o.opaco;
+        self.segredo |= o.segredo;
     }
+}
+
+/// Só dígitos, sem sinal nem fração, com 8 ou mais: CEP, telefone, CPF, CNPJ, cartão, código de
+/// barras. É identificador, não quantidade (ver `docs/decisoes.md`, "Avisos da estrutura").
+fn codigo(v: &[u8]) -> bool {
+    v.len() >= 8 && v.iter().all(u8::is_ascii_digit)
+}
+
+/// O texto inteiro é uma data com dia, mês e ano fora do ISO 8601: `d/m/aaaa`, `d-m-aa`,
+/// `d.m.aaaa`, `aaaa/m/d`, com hora opcional depois de espaço ou `T`. `aaaa-mm-dd` não entra.
+fn data_fora_iso(v: &[u8]) -> bool {
+    if !(6..=30).contains(&v.len()) || !v[0].is_ascii_digit() {
+        return false;
+    }
+    let mut p = 0;
+    let grupo = |p: &mut usize| {
+        let i = *p;
+        while v.get(*p).is_some_and(u8::is_ascii_digit) {
+            *p += 1;
+        }
+        let n = std::str::from_utf8(&v[i..*p]).ok()?.parse::<u32>().ok()?;
+        Some((n, *p - i))
+    };
+    let Some((a, la)) = grupo(&mut p) else {
+        return false;
+    };
+    let Some(&sep @ (b'/' | b'-' | b'.')) = v.get(p) else {
+        return false;
+    };
+    p += 1;
+    let Some((b, lb)) = grupo(&mut p) else {
+        return false;
+    };
+    if v.get(p) != Some(&sep) {
+        return false;
+    }
+    p += 1;
+    let Some((c, lc)) = grupo(&mut p) else {
+        return false;
+    };
+    let dia_mes = |x: u32, y: u32| (1..=31).contains(&x) && (1..=12).contains(&y);
+    let data = match (la, lb, lc) {
+        // aaaa/m/d e aaaa.m.d (aaaa-m-d é ISO, ou quase).
+        (4, 1..=2, 1..=2) => sep != b'-' && dia_mes(c, b),
+        // d/m/aaaa ou m/d/aaaa; com ponto só ano de 4 dígitos (`1.2.30` é versão).
+        (1..=2, 1..=2, 4) => dia_mes(a, b) || dia_mes(b, a),
+        (1..=2, 1..=2, 2) => sep != b'.' && (dia_mes(a, b) || dia_mes(b, a)),
+        _ => false,
+    };
+    if !data {
+        return false;
+    }
+    match v.get(p) {
+        None => true,
+        Some(b' ' | b'T') => {
+            let h = &v[p + 1..];
+            h.len() >= 5
+                && h[..2].iter().all(u8::is_ascii_digit)
+                && h[2] == b':'
+                && h[3..5].iter().all(u8::is_ascii_digit)
+        }
+        _ => false,
+    }
+}
+
+/// JSON serializado num texto (`"{\"a\":1}"`, com as aspas escapadas como estão no arquivo),
+/// `data:…;base64,` ou base64 de 100 ou mais caracteres que não é só hexadecimal (hash em hex é
+/// identificador, não conteúdo).
+fn opaco(v: &[u8]) -> bool {
+    let json = (v.starts_with(b"{\\\"") && v.ends_with(b"}"))
+        || ((v.starts_with(b"[{\\\"") || v.starts_with(b"[\\\"")) && v.ends_with(b"]"));
+    if json || (v.starts_with(b"data:") && memchr::memmem::find(v, b";base64,").is_some()) {
+        return true;
+    }
+    v.len() >= 100
+        && v.iter().all(|&c| {
+            c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=' | b'_' | b'-' | b'\\')
+        })
+        && !v.iter().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Credencial pelo formato do valor: JWT, chave privada PEM, chave da AWS, tokens do GitHub, do
+/// Slack e chaves `sk-` (OpenAI, Anthropic, Stripe).
+fn parece_segredo(v: &[u8]) -> bool {
+    let pontos = || memchr_iter(b'.', v).count() == 2;
+    (v.starts_with(b"eyJ") && v.len() >= 20 && pontos())
+        || (v.starts_with(b"-----BEGIN") && memchr::memmem::find(v, b"PRIVATE KEY").is_some())
+        || (v.len() == 20
+            && v.starts_with(b"AKIA")
+            && v[4..]
+                .iter()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        || (v.len() >= 20
+            && memchr(b' ', v).is_none()
+            && [
+                &b"ghp_"[..],
+                b"gho_",
+                b"ghs_",
+                b"github_pat_",
+                b"xoxb-",
+                b"xoxp-",
+                b"xoxa-",
+                b"sk-",
+                b"sk_live_",
+                b"rk_live_",
+            ]
+            .iter()
+            .any(|p| v.starts_with(p)))
 }
 
 /// O texto inteiro é um número JSON: `-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`.
@@ -440,6 +573,7 @@ impl Resumo {
             ".".into(),
             Relacao::Registro,
             self.registros(),
+            (&[], None),
             &mut v,
         );
         v
@@ -530,6 +664,119 @@ pub struct Caminho {
     pub presenca: u64,
     pub de: u64,
     pub tipos: [Contagem; 7],
+    /// Segmentos crus desde a raiz (para achar os valores do caminho num registro: `perfil`).
+    pub segs: Vec<Seg>,
+    pub avisos: Vec<Aviso>,
+}
+
+/// Um passo de `Caminho::segs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seg {
+    /// Chave crua, como está no arquivo.
+    Campo(Box<[u8]>),
+    /// `.*`: qualquer chave do objeto-mapa.
+    Entrada,
+    /// `[]`: qualquer elemento.
+    Elemento,
+}
+
+/// Avisos por caminho. Critérios e falsos positivos evitados: `docs/decisoes.md`, "Avisos da
+/// estrutura". Nenhum carrega o valor: o de segredo só aponta o caminho.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aviso {
+    /// Texto que sempre é número (e não parece código).
+    NumeroComoTexto,
+    DataForaIso,
+    /// Sempre o mesmo valor escalar, visto pelo menos 2 vezes.
+    ValorUnico,
+    Opaco,
+    /// Pelo nome da chave ou pelo formato do valor.
+    Segredo,
+}
+
+impl Aviso {
+    pub fn nome(self) -> &'static str {
+        match self {
+            Aviso::NumeroComoTexto => "numero_como_texto",
+            Aviso::DataForaIso => "data_fora_iso",
+            Aviso::ValorUnico => "valor_unico",
+            Aviso::Opaco => "opaco",
+            Aviso::Segredo => "segredo",
+        }
+    }
+}
+
+/// Avisos do nó, sendo `chave` a chave crua mais próxima (o próprio campo, ou o dono da lista
+/// ou do mapa).
+fn avisos(no: &No, chave: Option<&[u8]>) -> Vec<Aviso> {
+    let v = &no.valores;
+    let texto = no.tipo(Tipo::Texto).n > 0;
+    let escalares: u64 = [Tipo::Booleano, Tipo::Inteiro, Tipo::Decimal, Tipo::Texto]
+        .iter()
+        .map(|&t| no.tipo(t).n)
+        .sum();
+    let compostos = no.tipo(Tipo::Objeto).n + no.tipo(Tipo::Lista).n;
+    let mut a = Vec::new();
+    if texto && !v.texto_nao_numerico && v.texto_quantidade {
+        a.push(Aviso::NumeroComoTexto);
+    }
+    if v.data_fora_iso {
+        a.push(Aviso::DataForaIso);
+    }
+    if matches!(v.unico, Unico::Um(..)) && escalares >= 2 && compostos == 0 {
+        a.push(Aviso::ValorUnico);
+    }
+    if v.opaco {
+        a.push(Aviso::Opaco);
+    }
+    if v.segredo || (texto && chave.is_some_and(chave_de_segredo)) {
+        a.push(Aviso::Segredo);
+    }
+    a
+}
+
+/// Nome de chave de credencial: a última palavra é `senha`, `password`, `secret`, `token`… ou as
+/// duas últimas são `api key`, `private key`, `chave privada`. Palavras separadas por `_`, `-`,
+/// `.`, espaço ou caixa (`accessToken`). Só a última: `token_type` e `password_hash` não são.
+pub fn chave_de_segredo(k: &[u8]) -> bool {
+    let mut palavras: Vec<String> = Vec::new();
+    let mut atual = String::new();
+    let mut ant_minuscula = false;
+    for &c in k {
+        if matches!(c, b'_' | b'-' | b'.' | b' ') {
+            palavras.extend((!atual.is_empty()).then(|| std::mem::take(&mut atual)));
+            ant_minuscula = false;
+            continue;
+        }
+        if c.is_ascii_uppercase() && ant_minuscula {
+            palavras.push(std::mem::take(&mut atual));
+        }
+        ant_minuscula = c.is_ascii_lowercase() || c.is_ascii_digit();
+        atual.push(c.to_ascii_lowercase() as char);
+    }
+    palavras.extend((!atual.is_empty()).then_some(atual));
+    let ult = |i: usize| palavras.len().checked_sub(i).map(|j| palavras[j].as_str());
+    matches!(
+        ult(1),
+        Some(
+            "senha"
+                | "password"
+                | "passwd"
+                | "pwd"
+                | "secret"
+                | "segredo"
+                | "token"
+                | "apikey"
+                | "credential"
+                | "credencial"
+                | "authorization"
+                | "privatekey"
+        )
+    ) || matches!(
+        (ult(2), ult(1)),
+        (Some("api" | "private" | "secret" | "access"), Some("key"))
+            | (Some("chave"), Some("privada" | "api"))
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -575,10 +822,19 @@ pub(crate) fn juntar(caminho: &str, seg: &str) -> String {
     }
 }
 
-fn listar(no: &No, caminho: String, relacao: Relacao, de: u64, v: &mut Vec<Caminho>) {
+/// `pai`: segmentos até aqui e a chave crua mais próxima.
+fn listar(
+    no: &No,
+    caminho: String,
+    relacao: Relacao,
+    de: u64,
+    pai: (&[Seg], Option<&[u8]>),
+    v: &mut Vec<Caminho>,
+) {
     let profundidade = v.last().map_or(0, |_| caminho.matches(['.', '[']).count());
     let objetos = no.tipo(Tipo::Objeto).n;
     let listas = no.tipo(Tipo::Lista).n;
+    let (segs, chave) = pai;
     v.push(Caminho {
         caminho: caminho.clone(),
         relacao,
@@ -586,21 +842,42 @@ fn listar(no: &No, caminho: String, relacao: Relacao, de: u64, v: &mut Vec<Camin
         presenca: no.presenca,
         de,
         tipos: no.tipos,
+        segs: segs.to_vec(),
+        avisos: avisos(no, chave),
     });
+    let mais = |s: Seg| [segs, &[s]].concat();
     for (k, f) in no.campos() {
+        let s = mais(Seg::Campo(k.into()));
         listar(
             f,
             juntar(&caminho, &segmento(k)),
             Relacao::Campo,
             objetos,
+            (&s, Some(k)),
             v,
         );
     }
     if let Some(m) = &no.mapa {
-        listar(m, juntar(&caminho, ".*"), Relacao::Entrada, objetos, v);
+        let s = mais(Seg::Entrada);
+        listar(
+            m,
+            juntar(&caminho, ".*"),
+            Relacao::Entrada,
+            objetos,
+            (&s, chave),
+            v,
+        );
     }
     if let Some(e) = &no.elementos {
-        listar(e, juntar(&caminho, "[]"), Relacao::Elemento, listas, v);
+        let s = mais(Seg::Elemento);
+        listar(
+            e,
+            juntar(&caminho, "[]"),
+            Relacao::Elemento,
+            listas,
+            (&s, chave),
+            v,
+        );
     }
 }
 
@@ -608,7 +885,7 @@ fn listar(no: &No, caminho: String, relacao: Relacao, de: u64, v: &mut Vec<Camin
 // Leitor: valida um valor JSON e o converte numa lista plana de eventos.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ev {
+pub(crate) enum Ev {
     Obj,
     FimObj,
     Lista,
@@ -619,8 +896,8 @@ enum Ev {
 }
 
 #[derive(Default)]
-struct Leitor {
-    p: usize,
+pub(crate) struct Leitor {
+    pub(crate) p: usize,
     /// Quebras de linha atravessadas (JSON único com várias linhas).
     linha: u64,
     /// `true` = objeto aberto, `false` = lista aberta.
@@ -639,13 +916,13 @@ impl Leitor {
         }
     }
 
-    fn resto_vazio(&mut self, b: &[u8]) -> bool {
+    pub(crate) fn resto_vazio(&mut self, b: &[u8]) -> bool {
         self.ws(b);
         self.p == b.len()
     }
 
     /// Lê um valor completo a partir de `p`, sem recursão. `false` = inválido.
-    fn valor(&mut self, b: &[u8], evs: &mut Vec<Ev>) -> bool {
+    pub(crate) fn valor(&mut self, b: &[u8], evs: &mut Vec<Ev>) -> bool {
         self.pilha.clear();
         'valor: loop {
             self.ws(b);
@@ -1554,5 +1831,197 @@ mod testes {
                 }
             }
         }
+    }
+
+    // ---- Avisos ----
+
+    /// Avisos de `.v` num JSONL com um registro `{"v": x}` por valor.
+    fn avisos_de(valores: &[&str]) -> Vec<Aviso> {
+        let dados: String = valores.iter().map(|v| format!("{{\"v\":{v}}}\n")).collect();
+        caminho(&inf(dados.as_bytes()), ".v").avisos
+    }
+
+    #[test]
+    fn aviso_numero_como_texto() {
+        let a = Aviso::NumeroComoTexto;
+        assert!(avisos_de(&["\"42\"", "\"3.5\""]).contains(&a));
+        assert!(avisos_de(&["\"-1e3\"", "\"0\""]).contains(&a));
+        // Código com 8+ dígitos (CEP sem zero à esquerda, telefone, CPF) não é quantidade.
+        assert!(!avisos_de(&["\"20040020\"", "\"11987654321\""]).contains(&a));
+        // Zero à esquerda (CEP 01310-100 sem traço) nem é número JSON.
+        assert!(!avisos_de(&["\"01310100\""]).contains(&a));
+        // Um código e uma quantidade: avisa (a quantidade é número como texto).
+        assert!(avisos_de(&["\"20040020\"", "\"7\""]).contains(&a));
+        // Algum texto que não é número: é texto mesmo.
+        assert!(!avisos_de(&["\"42\"", "\"abc\""]).contains(&a));
+        assert!(!avisos_de(&["\"01310-100\"", "\"(11) 98765-4321\""]).contains(&a));
+        assert!(!avisos_de(&["42", "7"]).contains(&a));
+    }
+
+    #[test]
+    fn aviso_data_fora_do_iso() {
+        let a = Aviso::DataForaIso;
+        for sim in [
+            "\"24/11/2026\"",
+            "\"1/2/2026\"",
+            "\"11-24-26\"",
+            "\"24.11.2026\"",
+            "\"2026/11/24\"",
+            "\"24/11/2026 10:30\"",
+            "\"24/11/2026T10:30:00\"",
+        ] {
+            assert!(avisos_de(&[sim]).contains(&a), "{sim}");
+        }
+        for nao in [
+            "\"2026-11-24\"",
+            "\"2026-11-24T10:00:00Z\"",
+            "\"1.2.30\"",
+            "\"10.11.12\"",
+            "\"13/13/2026\"",
+            "\"24/11\"",
+            "\"nasci em 24/11/2026\"",
+            "\"24/11/2026 tarde\"",
+            "\"11-98765-4321\"",
+            "\"24/11-2026\"",
+            "20261124",
+        ] {
+            assert!(!avisos_de(&[nao]).contains(&a), "{nao}");
+        }
+    }
+
+    #[test]
+    fn aviso_valor_unico() {
+        let a = Aviso::ValorUnico;
+        assert!(avisos_de(&["1", "1", "null"]).contains(&a));
+        assert!(avisos_de(&["\"x\"", "\"x\""]).contains(&a));
+        assert!(avisos_de(&["true", "true"]).contains(&a));
+        assert!(!avisos_de(&["1"]).contains(&a), "visto uma vez só");
+        assert!(!avisos_de(&["1", "2"]).contains(&a));
+        assert!(!avisos_de(&["1", "\"1\""]).contains(&a));
+        assert!(!avisos_de(&["null", "null"]).contains(&a));
+        let i = inf(b"{\"v\":[1]}\n{\"v\":[1]}\n");
+        assert!(
+            !caminho(&i, ".v").avisos.contains(&a),
+            "lista não é escalar"
+        );
+        assert!(caminho(&i, ".v[]").avisos.contains(&a));
+    }
+
+    #[test]
+    fn aviso_opaco() {
+        let a = Aviso::Opaco;
+        assert!(avisos_de(&[r#""{\"x\":1}""#]).contains(&a));
+        assert!(avisos_de(&[r#""[{\"x\":1}]""#]).contains(&a));
+        assert!(avisos_de(&[r#""[\"a\",\"b\"]""#]).contains(&a));
+        assert!(avisos_de(&["\"data:image/png;base64,iVBORw0KGgo=\""]).contains(&a));
+        let b64 = format!("\"{}\"", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=".repeat(4));
+        assert!(avisos_de(&[&b64]).contains(&a));
+        let hex = format!("\"{}\"", "0123456789abcdef".repeat(8)); // SHA-512 em hex
+        assert!(!avisos_de(&[&hex]).contains(&a));
+        let curto = format!("\"{}\"", "QUJD".repeat(20));
+        assert!(!avisos_de(&[&curto]).contains(&a));
+        assert!(!avisos_de(&["\"[INFO] subiu\"", "\"{nome}\""]).contains(&a));
+        let frase = format!("\"{}\"", "palavra ".repeat(20));
+        assert!(!avisos_de(&[&frase]).contains(&a));
+    }
+
+    #[test]
+    fn aviso_segredo_pelo_valor() {
+        let a = Aviso::Segredo;
+        for sim in [
+            "\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJh\"",
+            "\"-----BEGIN RSA PRIVATE KEY-----\\nMIIE\"",
+            "\"AKIAIOSFODNN7EXAMPLE\"",
+            "\"ghp_0123456789abcdefghij0123\"",
+            "\"sk-ant-api03-abcdefghijklmnop\"",
+            "\"xoxb-1234-5678-abcdefghij\"",
+        ] {
+            assert!(avisos_de(&["\"oi\"", sim]).contains(&a), "{sim}");
+        }
+        for nao in [
+            "\"eyJ curto\"",
+            "\"-----BEGIN CERTIFICATE-----\"",
+            "\"AKIA pequeno\"",
+            "\"sk-learn é uma biblioteca\"",
+            "\"sk-x\"",
+        ] {
+            assert!(!avisos_de(&[nao]).contains(&a), "{nao}");
+        }
+    }
+
+    #[test]
+    fn aviso_segredo_pelo_nome() {
+        let i = inf(concat!(
+            r#"{"password":"x","token_type":"Bearer","max_tokens":5,"secretaria":"Ana","#,
+            r#""accessToken":"y","api_key":"z","senhas":["a"],"auth":{"senha":"w"},"#,
+            r#""password_hash":"h","segredo":null}"#,
+            "\n"
+        )
+        .as_bytes());
+        let sim = |c: &str| caminho(&i, c).avisos.contains(&Aviso::Segredo);
+        assert!(sim(".password") && sim(".accessToken") && sim(".api_key") && sim(".auth.senha"));
+        assert!(!sim(".token_type") && !sim(".max_tokens") && !sim(".secretaria"));
+        assert!(!sim(".password_hash") && !sim(".auth"));
+        assert!(!sim(".segredo"), "nunca foi texto");
+        assert!(!sim(".senhas[]"), "plural fica de fora");
+    }
+
+    #[test]
+    fn chave_de_segredo_por_palavra() {
+        for sim in [
+            "senha",
+            "Password",
+            "client_secret",
+            "accessToken",
+            "refresh-token",
+            "API_KEY",
+            "apiKey",
+            "private.key",
+            "chave_privada",
+            "x-api-key",
+            "Authorization",
+            "privateKey",
+        ] {
+            assert!(chave_de_segredo(sim.as_bytes()), "{sim}");
+        }
+        for nao in [
+            "token_type",
+            "tokens",
+            "max_tokens",
+            "secretaria",
+            "senha_hash",
+            "key",
+            "chave",
+            "",
+            "tokenizer",
+            "monkey",
+            "keys",
+        ] {
+            assert!(!chave_de_segredo(nao.as_bytes()), "{nao}");
+        }
+    }
+
+    #[test]
+    fn avisos_combinam_entre_blocos() {
+        // Cada sinal aparece num bloco diferente (blocos de 7 bytes): o OR tem de sobreviver.
+        let i = inf(b"{\"v\":\"1\"}\n{\"v\":\"2\"}\n{\"d\":\"1/2/2026\"}\n{\"s\":\"AKIAIOSFODNN7EXAMPLE\"}\n");
+        assert!(caminho(&i, ".v").avisos.contains(&Aviso::NumeroComoTexto));
+        assert!(caminho(&i, ".d").avisos.contains(&Aviso::DataForaIso));
+        assert!(caminho(&i, ".s").avisos.contains(&Aviso::Segredo));
+    }
+
+    #[test]
+    fn segs_do_caminho() {
+        let i = inf(b"{\"a b\":{\"c\":[1]}}\n");
+        let c = caminho(&i, ".[\"a b\"].c[]");
+        assert_eq!(
+            c.segs,
+            [
+                Seg::Campo((*b"a b").into()),
+                Seg::Campo((*b"c").into()),
+                Seg::Elemento
+            ]
+        );
+        assert!(caminho(&i, ".").segs.is_empty());
     }
 }
