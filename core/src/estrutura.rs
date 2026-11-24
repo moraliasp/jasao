@@ -1302,15 +1302,19 @@ fn jsonl(
     }
 }
 
-/// `Some` quando o arquivo é um valor JSON só: começa com `[` ou `{` e tem uma linha só, ou a
-/// primeira linha sozinha não é JSON válido. Lido em sequência, elemento a elemento.
-fn json_unico(
-    dados: &[u8],
-    base: usize,
-    total: u64,
-    cancelar: &AtomicBool,
-    ao_progresso: &mut impl FnMut(Progresso),
-) -> Option<Inferencia> {
+/// Leitura que `inferir` tenta primeiro, olhando só o começo do arquivo (ver `json_unico`). Num
+/// JSON único quebrado `inferir` pode acabar lendo como JSONL; quem já tem a inferência usa a
+/// `entrada` dela.
+pub fn entrada_provavel(dados: &[u8]) -> Entrada {
+    let base = if dados.starts_with(BOM) { BOM.len() } else { 0 };
+    match inicio_unico(dados, base) {
+        Some(_) => Entrada::JsonUnico,
+        None => Entrada::Jsonl,
+    }
+}
+
+/// O leitor parado no `[`/`{` do topo e esse byte, se o arquivo parece um JSON único.
+fn inicio_unico(dados: &[u8], base: usize) -> Option<(Leitor, u8)> {
     let mut l = Leitor {
         p: base,
         ..Leitor::default()
@@ -1333,7 +1337,19 @@ fn json_unico(
             return None;
         }
     }
+    Some((l, topo))
+}
 
+/// `Some` quando o arquivo é um valor JSON só: começa com `[` ou `{` e tem uma linha só, ou a
+/// primeira linha sozinha não é JSON válido. Lido em sequência, elemento a elemento.
+fn json_unico(
+    dados: &[u8],
+    base: usize,
+    total: u64,
+    cancelar: &AtomicBool,
+    ao_progresso: &mut impl FnMut(Progresso),
+) -> Option<Inferencia> {
+    let (mut l, topo) = inicio_unico(dados, base)?;
     let mut r = Resumo::default();
     let mut evs = Vec::new();
     let inf = |r: Resumo, varridas: u64, cancelado| Inferencia {
