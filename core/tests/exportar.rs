@@ -244,6 +244,7 @@ fn todo_caractere_perigoso_sai_escapado() {
     ];
     let soltos = [
         '&',
+        '\u{7f}',
         '<',
         '>',
         'é',
