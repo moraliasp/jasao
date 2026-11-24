@@ -374,3 +374,38 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Conferido no app (ponte HTTP + navegador, dados fictícios gerados na hora):** união discriminada, número como texto, campo opcional, `null` e linha quebrada (3.000 registros: 2.999 passam, 1 linha inválida à parte); chaves hostis escapadas na tela, com "Travar no valor"; pt-BR, inglês e tema escuro; Copiar (texto igual ao mostrado); Esc. Arquivo de 1 GB (6.306.549 registros, build release, arquivo em cache, 18 núcleos): validação de 1,0 a 2,9 s quando tudo passa (Zod, Schema e literal) e 2,8 a 3,3 s quando reprova; CLI 1,3 a 2,7 s.
 
 **Pendências:** formatos (`date-time`, `email`, `uuid`) não são inferidos; uniões discriminadas só no topo (objetos aninhados com `tipo` saem como objeto com campos opcionais); `enum` para campo de poucos valores; tipos TS puros, Pydantic e afins ficam fora desta fase.
+
+## Diff estrutural (Fase 3, 23/11/2026)
+
+**Escolha:** `nucleo::diff` compara duas inferências já prontas (`estrutura::inferir` em cada arquivo, sem leitor novo) andando as duas árvores de `No` juntas. Cada mudança traz caminho (mesmo formato do `inferir`), regra, classe e evidência "N de M" antes e depois. Comparar a árvore, e não a lista achatada de caminhos, deixa cortar o ruído: quando um campo some ou o pai deixa de ser objeto, os filhos dele não viram mudanças à parte.
+
+**Taxonomia** (oasdiff/buf; quebra = um consumidor ou validador escrito para o arquivo de antes pode falhar com o de depois):
+
+| Regra | Classe | Evidência |
+|---|---|---|
+| campo removido | quebra | presença antes → 0 |
+| campo novo obrigatório (em todo objeto-pai) | quebra | 0 → presença |
+| virou obrigatório (antes faltava em algum objeto, agora em todos) | quebra | presença de objetos-pai |
+| tipo estreitado (os tipos de depois são subconjunto estrito) | quebra | valores dos tipos que mudaram, de todos os valores do caminho |
+| tipo trocado (perdeu um tipo e ganhou outro, ex.: inteiro → texto) | quebra | idem |
+| variante removida (valor do discriminador que sumiu) | quebra | registros da variante, de registros-objeto |
+| campo novo opcional | compatível | 0 → presença |
+| virou opcional | compatível | presença de objetos-pai |
+| tipo alargado (os tipos de depois contêm os de antes; `null` novo também) | compatível | como em tipo |
+| variante nova | compatível | como em variante |
+
+Decimal aceita inteiro (como `number` no JSON Schema): inteiro → decimal é alargado, decimal → inteiro é estreitado, e `{inteiro, decimal}` → `{decimal}` não é mudança. "Campo novo obrigatório" e "virou opcional" não estão na lista do oasdiff para dados: seguem a mesma regra de "virou obrigatório" (estreitar a presença quebra, alargar é compatível).
+
+**Variantes:** valem para campos que são discriminador (critério da inferência) em pelo menos um lado. No outro lado, o campo conta se também for discriminador ou se tiver um valor só, texto, em todo registro-objeto (o caso de um arquivo com uma variante só).
+
+**CLI:** `jasao diff antes depois [--json] [--falha-em quebra|qualquer]`. Uma linha por mudança (`quebra      .a.b  campo removido  (3 de 5 → 0 de 4)`), resumo no stderr; `--json` dá `{"quebras","compativeis","mudancas":[{caminho, regra, classe, antes:{n,de}, depois:{n,de}, tipos?|variante?}]}`. Sai com 1 se `--falha-em` pegar alguma mudança da classe pedida, com 2 em uso errado. A saída passa pelo mesmo `Terminal` do `inferir` (chave hostil não manda controle ao terminal).
+
+**Limites conhecidos:**
+- Lista ou mapa vazio de um lado: `[]`/`.*` que só existem do outro lado não são comparados (lista que ficou vazia não é campo removido).
+- Objeto que vira mapa (ou o contrário) entre os arquivos: os campos de um lado aparecem como removidos ou novos, sem uma regra "virou mapa".
+- Discriminador que deixou de sê-lo com vários valores (ex.: as variantes pararam de se separar por chave) não é comparado por variante; os campos continuam comparados um a um.
+- Só a união discriminada do topo; chaves obrigatórias por variante não são comparadas (os campos são, no caminho geral).
+- Formato, faixa de valores e enum não entram: não são inferidos ainda.
+- Custo: duas inferências completas (a comparação é linear no número de caminhos).
+
+**Testado:** dourados por regra da taxonomia (a linha exata de cada uma, em `core/src/diff.rs`), aninhado/elemento/mapa e a regra do decimal; proptest de que A contra A não tem mudanças e de que acrescentar registros a A nunca quebra; CLI com chave hostil no terminal, `--json` e os três modos de `--falha-em`; alvo de fuzz `diff` (A contra A vazio, `n ≤ de` e B→A espelho de A→B). O fuzz curto passou de 25 para 23 s por alvo para o alvo novo caber no tempo do job (14 × 23 s ≈ 13 × 25 s).

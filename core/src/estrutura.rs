@@ -203,7 +203,7 @@ impl No {
     }
 
     /// Conjunto de tipos vistos, como máscara de bits.
-    fn conjunto(&self) -> u8 {
+    pub(crate) fn conjunto(&self) -> u8 {
         (0..7).fold(0, |m, i| m | (u8::from(self.tipos[i].n > 0) << i))
     }
 
@@ -548,7 +548,7 @@ fn texto(b: &[u8]) -> String {
 }
 
 /// `.chave` se for identificador, senão `["chave"]` (como está no arquivo).
-fn segmento(k: &[u8]) -> String {
+pub(crate) fn segmento(k: &[u8]) -> String {
     let ident = |c: u8, inicio: bool| {
         c == b'_' || c >= 0x80 || c.is_ascii_alphabetic() || (!inicio && c.is_ascii_digit())
     };
@@ -560,7 +560,7 @@ fn segmento(k: &[u8]) -> String {
     }
 }
 
-fn juntar(caminho: &str, seg: &str) -> String {
+pub(crate) fn juntar(caminho: &str, seg: &str) -> String {
     match (caminho, seg.starts_with('[')) {
         (".", true) => format!(".{seg}"),
         (".", false) => seg.to_string(),
