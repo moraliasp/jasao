@@ -3,9 +3,16 @@
 //!   janela <arquivo> <inicio> <quantidade> imprime as linhas cruas pedidas
 //!   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]
 //!                                         imprime linha:coluna (em bytes, a partir de 1) e trecho
-//!   consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]
+//!   jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]
+//!              [--max-resultados N] [--max-mb N] [--max-memoria-mb N]
 //!                                         roda o filtro jq em cada linha (ou no documento inteiro);
-//!                                         resultados em JSONL no stdout, erros por linha no stderr
+//!                                         resultados em JSONL (ou CSV achatado, ver `nucleo::csv`)
+//!                                         no stdout, erros por linha no stderr. Passar de um teto
+//!                                         de saída imprime o parcial e sai com 1. O CSV junta o
+//!                                         resultado em memória: sem `--max-mb`, o teto é 256 MiB.
+//!                                         Roda num processo filho com teto de heap (4096 MiB sem
+//!                                         `--max-memoria-mb`) e de relógio (300 s sem `--tempo-max`);
+//!                                         passar de um deles, ou recursão sem fundo, sai com 3
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
 //!   exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>
@@ -49,7 +56,8 @@ use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
 const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
-                   consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]\n  \
+                   jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]\n\
+                   \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]\n  \
                    exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>\n  \
@@ -61,9 +69,20 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
                    \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
 
+/// Conta o heap: o filho da consulta liga o teto (ver `supervisionar`).
+#[global_allocator]
+static ALOCADOR: nucleo::memoria::Contador = nucleo::memoria::Contador;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let ["consultar" | "jq", resto @ ..] = args.as_slice() {
+        match opcoes_consulta(resto) {
+            Some(op) if std::env::var_os(VAR_FILHO).is_none() => return supervisionar(&op),
+            Some(op) => nucleo::memoria::limitar(op.max_memoria),
+            None => {}
+        }
+    }
     let mut saida = ExitCode::SUCCESS;
     let resultado = match args.as_slice() {
         ["linhas", arquivo] => linhas(arquivo),
@@ -78,7 +97,7 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         },
-        ["consultar", resto @ ..] => match opcoes_consulta(resto) {
+        ["consultar" | "jq", resto @ ..] => match opcoes_consulta(resto) {
             Some(op) => consultar(op, &mut tela(), &mut erro()),
             None => {
                 eprintln!("{USO}");
@@ -342,21 +361,52 @@ fn buscar(op: OpcoesBusca, out: &mut Terminal<impl Write>) -> Resultado {
     Ok(())
 }
 
+#[derive(Default)]
 struct OpcoesConsulta<'a> {
     filtro: &'a str,
     arquivo: &'a str,
     documento: bool,
     tempo_max: Option<Duration>,
+    csv: bool,
+    max_resultados: Option<u64>,
+    max_bytes: Option<u64>,
+    max_memoria: usize,
 }
 
+/// Teto de bytes do CSV sem `--max-mb`: o CSV precisa do resultado inteiro (as colunas vêm de
+/// todos os registros) e o junta em memória.
+const TETO_CSV: u64 = 256 << 20;
+
+/// Teto de heap do filho sem `--max-memoria-mb`.
+const TETO_MEMORIA: usize = 4096 << 20;
+/// Relógio de parede do filho sem `--tempo-max`: `until(false; .)` não entrega nada e nunca
+/// chega ao teto de tempo do núcleo, que só é visto entre resultados.
+const TEMPO_PADRAO: Duration = Duration::from_secs(300);
+
 fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
-    let (mut posicionais, mut documento, mut tempo_max) = (Vec::new(), false, None);
+    let mut op = OpcoesConsulta {
+        max_memoria: TETO_MEMORIA,
+        ..Default::default()
+    };
+    let mut posicionais = Vec::new();
     let mut it = args.iter();
     while let Some(&a) = it.next() {
         match a {
-            "--documento" => documento = true,
+            "--documento" => op.documento = true,
             "--tempo-max" => {
-                tempo_max = Some(Duration::try_from_secs_f64(it.next()?.parse().ok()?).ok()?)
+                op.tempo_max = Some(Duration::try_from_secs_f64(it.next()?.parse().ok()?).ok()?)
+            }
+            "--saida" => match *it.next()? {
+                "jsonl" => op.csv = false,
+                "csv" => op.csv = true,
+                _ => return None,
+            },
+            "--max-resultados" => op.max_resultados = Some(it.next()?.parse().ok()?),
+            "--max-mb" => {
+                op.max_bytes = Some(it.next()?.parse::<u64>().ok()?.checked_mul(1 << 20)?)
+            }
+            "--max-memoria-mb" => {
+                op.max_memoria = it.next()?.parse::<usize>().ok()?.checked_mul(1 << 20)?
             }
             _ => posicionais.push(a),
         }
@@ -364,36 +414,82 @@ fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
     let [filtro, arquivo] = posicionais[..] else {
         return None;
     };
+    if op.csv {
+        op.max_bytes.get_or_insert(TETO_CSV);
+    }
     Some(OpcoesConsulta {
         filtro,
         arquivo,
-        documento,
-        tempo_max,
+        ..op
     })
 }
 
-/// Folga depois do teto de tempo antes de derrubar o processo: o núcleo só vê o teto entre
+/// Folga depois do teto de tempo antes de matar o filho: o núcleo só vê o teto entre
 /// resultados, e filtro que não produz nada (`last(range(1e12))`, `def f: f; f`) nunca devolve.
 const FOLGA_TEMPO: Duration = Duration::from_secs(2);
+/// Marca o processo filho da consulta (ver `supervisionar`).
+const VAR_FILHO: &str = "JASAO_CLI_FILHO";
+
+/// Reexecuta o próprio binário como filho (mesmos argumentos, stdio herdado) e o vigia: mata no
+/// relógio de parede e troca a morte por sinal (teto de heap, pilha estourada) por mensagem e
+/// código 3, em vez de o processo abortar.
+fn supervisionar(op: &OpcoesConsulta) -> ExitCode {
+    let falhar = |m: String| {
+        eprintln!("erro: {m}");
+        ExitCode::from(3)
+    };
+    let mut filho = match std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env(VAR_FILHO, "1")
+            .spawn()
+    }) {
+        Ok(f) => f,
+        Err(e) => return falhar(format!("não deu para iniciar a consulta: {e}")),
+    };
+    let limite = op.tempo_max.map_or(TEMPO_PADRAO, |t| t + FOLGA_TEMPO);
+    let prazo = Instant::now() + limite;
+    let status = loop {
+        match filho.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if Instant::now() >= prazo => {
+                let _ = filho.kill();
+                let _ = filho.wait();
+                return falhar(format!(
+                    "a consulta passou de {limite:.0?} e foi parada (filtro não respondeu)"
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return falhar(format!("não deu para acompanhar a consulta: {e}")),
+        }
+    };
+    match status.code() {
+        Some(c) => ExitCode::from(u8::try_from(c).unwrap_or(3)),
+        None => falhar(format!(
+            "a consulta parou sem terminar: passou do teto de memória ({} MiB) ou recursão sem fundo",
+            op.max_memoria >> 20
+        )),
+    }
+}
 
 fn consultar(
     op: OpcoesConsulta,
     out: &mut Terminal<impl Write>,
     err: &mut Terminal<impl Write>,
 ) -> Resultado {
-    let consulta = Consulta::nova(op.filtro)?.com_tempo_max(op.tempo_max);
+    let consulta = Consulta::nova(op.filtro)?
+        .com_tempo_max(op.tempo_max)
+        .com_teto_saida(op.max_resultados, op.max_bytes);
     let a = abrir(op.arquivo)?;
-    if let Some(t) = op.tempo_max {
-        std::thread::spawn(move || {
-            std::thread::sleep(t + FOLGA_TEMPO);
-            eprintln!("erro: tempo máximo de {t:.1?} esgotado (filtro não respondeu)");
-            std::process::exit(3);
-        });
-    }
     let t = Instant::now();
     let cancelar = AtomicBool::new(false);
     let mut erro = None;
+    let mut para_csv = Vec::new();
     let ao_lote = |lote: nucleo::consulta::LoteConsulta| {
+        if op.csv {
+            para_csv.extend(lote.resultados.into_iter().map(|r| r.json));
+            return;
+        }
         for r in lote.resultados {
             if let Err(e) = writeln!(out, "{}", r.json) {
                 erro = Some(e);
@@ -409,6 +505,9 @@ fn consultar(
     };
     if let Some(e) = erro {
         return Err(e.into());
+    }
+    if op.csv {
+        nucleo::csv::de_jsonl(para_csv.iter().map(|j| j.as_bytes()), out)?;
     }
     out.flush()?;
     for e in &resumo.primeiros_erros {
@@ -434,6 +533,17 @@ fn consultar(
     err.flush()?;
     if resumo.tempo_esgotado {
         return Err("tempo máximo esgotado; resultado parcial".into());
+    }
+    if resumo.cortado {
+        return Err(format!(
+            "a saída passou do teto ({}); resultado parcial",
+            match (op.max_resultados, op.max_bytes) {
+                (Some(n), Some(b)) => format!("{n} resultados ou {} MiB", b >> 20),
+                (Some(n), None) => format!("{n} resultados"),
+                (None, b) => format!("{} MiB", b.unwrap_or_default() >> 20),
+            }
+        )
+        .into());
     }
     Ok(())
 }
@@ -1167,8 +1277,7 @@ mod testes {
         let op = OpcoesConsulta {
             filtro: ".k",
             arquivo,
-            documento: false,
-            tempo_max: None,
+            ..OpcoesConsulta::default()
         };
         let con = no_terminal(|t| {
             consultar(
@@ -1339,8 +1448,7 @@ mod testes {
         let op = OpcoesConsulta {
             filtro: "error(.k)",
             arquivo: f.0.to_str().unwrap(),
-            documento: false,
-            tempo_max: None,
+            ..OpcoesConsulta::default()
         };
         let mut err = Terminal {
             out: Vec::new(),
@@ -1350,6 +1458,59 @@ mod testes {
         let s = String::from_utf8(err.out).unwrap();
         assert!(s.contains("\\u{9b}\\u{202e} ok"), "{s:?}");
         assert!(!s.chars().any(perigoso), "{s:?}");
+    }
+
+    fn jq(op: OpcoesConsulta) -> (String, Result<(), String>) {
+        let mut t = Terminal {
+            out: Vec::new(),
+            neutralizar: false,
+        };
+        let mut err = Terminal {
+            out: io::sink(),
+            neutralizar: false,
+        };
+        let r = consultar(op, &mut t, &mut err).map_err(|e| e.to_string());
+        (String::from_utf8(t.out).unwrap(), r)
+    }
+
+    #[test]
+    fn jq_em_csv() {
+        let f = Temporario::novo("jq-csv", "{\"a\":1,\"b\":\"=x\"}\n{\"a\":2,\"c\":[]}\n");
+        let arquivo = f.0.to_str().unwrap();
+        let op = opcoes_consulta(&[".", arquivo, "--saida", "csv"]).unwrap();
+        assert_eq!(jq(op), (".a,.b,.c\r\n1,'=x,\r\n2,,[]\r\n".into(), Ok(())));
+        assert!(opcoes_consulta(&[".", arquivo, "--saida", "xml"]).is_none());
+    }
+
+    #[test]
+    fn jq_teto_de_saida() {
+        let f = Temporario::novo("jq-teto", "1\n2\n3\n");
+        let arquivo = f.0.to_str().unwrap();
+        // `--tempo-max`: sem o teto de saída, o teste falha em vez de girar para sempre.
+        let op = opcoes_consulta(&[
+            "range(1e12)",
+            arquivo,
+            "--max-resultados",
+            "4",
+            "--tempo-max",
+            "2",
+        ])
+        .unwrap();
+        let (out, r) = jq(op);
+        assert_eq!(out, "0\n1\n2\n3\n");
+        assert!(r.unwrap_err().contains("teto (4 resultados)"));
+        // CSV sem `--max-mb` tem teto (junta em memória); com `--max-mb`, vale o pedido.
+        let op = opcoes_consulta(&[".", arquivo, "--saida", "csv"]).unwrap();
+        assert_eq!(op.max_bytes, Some(TETO_CSV));
+        let op = opcoes_consulta(&[".", arquivo, "--saida", "csv", "--max-mb", "1"]).unwrap();
+        assert_eq!(op.max_bytes, Some(1 << 20));
+        let op = OpcoesConsulta {
+            max_bytes: Some(4),
+            ..opcoes_consulta(&[".", arquivo, "--saida", "csv"]).unwrap()
+        };
+        let (out, r) = jq(op);
+        assert_eq!(out, ".\r\n1\r\n2\r\n");
+        assert!(r.unwrap_err().contains("resultado parcial"));
     }
 
     #[test]

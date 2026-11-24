@@ -86,6 +86,11 @@ impl Concedidos {
     pub fn tem(&self, canonico: &Path) -> bool {
         self.0.lock().unwrap().contains(canonico)
     }
+
+    /// Tudo o que foi concedido: o que salvar não pode sobrescrever (ver `salvar_consulta`).
+    pub fn todos(&self) -> Vec<PathBuf> {
+        self.0.lock().unwrap().iter().cloned().collect()
+    }
 }
 
 /// Argumentos que são caminhos (não opções), resolvidos contra `cwd`: o de quem chamou, que na
