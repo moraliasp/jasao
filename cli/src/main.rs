@@ -1,10 +1,12 @@
-//! Comandos (o arquivo pode ser JSONL cru, gzip ou zstd):
+//! Comandos (o arquivo pode ser JSONL cru, gzip ou zstd). Segredos (senha, token, cpf, cartão…)
+//! saem mascarados em todo comando; `--sem-mascara`, em qualquer posição, mostra como está no
+//! arquivo (ver `nucleo::mascara`):
 //!   linhas <arquivo>                      conta as linhas e mostra o tempo do índice
 //!   janela <arquivo> <inicio> <quantidade> imprime as linhas cruas pedidas
 //!   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]
 //!                                         imprime linha:coluna (em bytes, a partir de 1) e trecho
 //!   jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]
-//!              [--max-resultados N] [--max-mb N] [--max-memoria-mb N]
+//!              [--max-resultados N] [--max-mb N] [--max-memoria-mb N] [--anonimizar]
 //!                                         roda o filtro jq em cada linha (ou no documento inteiro);
 //!                                         resultados em JSONL (ou CSV achatado, ver `nucleo::csv`)
 //!                                         no stdout, erros por linha no stderr. Passar de um teto
@@ -13,6 +15,8 @@
 //!                                         Roda num processo filho com teto de heap (4096 MiB sem
 //!                                         `--max-memoria-mb`) e de relógio (300 s sem `--tempo-max`);
 //!                                         passar de um deles, ou recursão sem fundo, sai com 3
+//!                                         `--anonimizar` troca cada segredo por um código estável
+//!                                         nesta execução (`anon:…`), não criptográfico
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
 //!   exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>
@@ -63,10 +67,10 @@ use nucleo::consulta::Consulta;
 use nucleo::erros::{self, OpcoesErros};
 use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
-const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
+const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]\n\
-                   \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N]\n  \
+                   \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N] [--anonimizar]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]\n  \
                    exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>\n  \
@@ -88,7 +92,11 @@ static ALOCADOR: nucleo::memoria::Contador = nucleo::memoria::Contador;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Some(i) = args.iter().position(|a| *a == "--sem-mascara") {
+        args.remove(i);
+        SEM_MASCARA.store(true, Relaxed);
+    }
     if let ["consultar" | "jq", resto @ ..] = args.as_slice() {
         match opcoes_consulta(resto) {
             Some(op) if std::env::var_os(VAR_FILHO).is_none() => return supervisionar(&op),
@@ -208,6 +216,9 @@ fn main() -> ExitCode {
 
 type Resultado = Result<(), Box<dyn std::error::Error>>;
 
+/// `--sem-mascara`: abre sem a máscara de segredos.
+static SEM_MASCARA: AtomicBool = AtomicBool::new(false);
+
 fn abrir(arquivo: &str) -> Result<ArquivoLinhas, Box<dyn std::error::Error>> {
     // Progresso só aparece para compactado (o núcleo só chama ao descompactar), em stderr.
     let mostrou = std::cell::Cell::new(false);
@@ -218,6 +229,7 @@ fn abrir(arquivo: &str) -> Result<ArquivoLinhas, Box<dyn std::error::Error>> {
     };
     let op = Opcoes {
         progresso: Some(&progresso),
+        sem_mascara: SEM_MASCARA.load(Relaxed),
         ..Opcoes::default()
     };
     let r = ArquivoLinhas::abrir_com(arquivo, &op);
@@ -257,7 +269,7 @@ fn linhas(arquivo: &str) -> Resultado {
     let t = Instant::now();
     let a = abrir(arquivo)?;
     let dt = t.elapsed();
-    let mb = a.bytes().len() as f64 / 1e6;
+    let mb = a.cru().len() as f64 / 1e6;
     println!("{} linhas · {mb:.1} MB · índice em {dt:.2?}", a.linhas());
     Ok(())
 }
@@ -417,6 +429,7 @@ struct OpcoesConsulta<'a> {
     arquivo: &'a str,
     documento: bool,
     tempo_max: Option<Duration>,
+    anonimizar: bool,
     csv: bool,
     max_resultados: Option<u64>,
     max_bytes: Option<u64>,
@@ -443,6 +456,7 @@ fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
     while let Some(&a) = it.next() {
         match a {
             "--documento" => op.documento = true,
+            "--anonimizar" => op.anonimizar = true,
             "--tempo-max" => {
                 op.tempo_max = Some(Duration::try_from_secs_f64(it.next()?.parse().ok()?).ok()?)
             }
@@ -548,10 +562,14 @@ fn consultar(
             }
         }
     };
+    let anonimo = op
+        .anonimizar
+        .then(|| nucleo::mascara::anonimizar(a.cru(), a.indice(), nucleo::mascara::sal_novo()));
+    let entrada = anonimo.as_deref().unwrap_or(a.bytes());
     let resumo = if op.documento {
-        consulta.executar_documento(a.bytes(), &cancelar, ao_lote)
+        consulta.executar_documento(entrada, &cancelar, ao_lote)
     } else {
-        consulta.executar_jsonl(a.bytes(), &cancelar, ao_lote)
+        consulta.executar_jsonl(entrada, &cancelar, ao_lote)
     };
     if let Some(e) = erro {
         return Err(e.into());
@@ -577,7 +595,7 @@ fn consultar(
         resumo.erros,
         resumo.linhas,
         resumo.total_linhas,
-        a.bytes().len() as f64 / 1e6,
+        a.cru().len() as f64 / 1e6,
         t.elapsed()
     )?;
     err.flush()?;
@@ -739,7 +757,7 @@ fn inferir(arquivo: &str, json: bool, out: &mut Terminal<impl Write>) -> Resulta
         r.vazias,
         inf.varridas,
         inf.total,
-        a.bytes().len() as f64 / 1e6,
+        a.cru().len() as f64 / 1e6,
     );
     Ok(())
 }
@@ -878,7 +896,7 @@ fn validar(
     // detector leve se o tempo do `validar` em arquivo grande incomodar.
     let entrada = estrutura::inferir(a.bytes(), &nada, |_| {}).entrada;
     let t = Instant::now();
-    let v = validar::validar(a.bytes(), entrada, &schema, &nada, |_| {})?;
+    let v = validar::validar(a.cru(), entrada, &schema, &nada, |_| {})?;
     // O motivo cita caminho de chave do arquivo: sai neutralizado no terminal.
     for f in &v.falhas {
         writeln!(out, "linha {}: {}", f.linha + 1, f.motivo)?;
@@ -1270,7 +1288,8 @@ fn erros(arquivo: &str, json: bool, max: usize) -> Result<bool, Box<dyn std::err
         ..OpcoesErros::default()
     };
     let mut lista = Vec::new();
-    let r = erros::varrer(a.bytes(), &op, &AtomicBool::new(false), |l| {
+    // Só posição e motivo saem: lido do arquivo cru, o erro é o do arquivo, não o da máscara.
+    let r = erros::varrer(a.cru(), &op, &AtomicBool::new(false), |l| {
         lista.extend(l.erros)
     });
     let dt = t.elapsed();

@@ -16,6 +16,7 @@ pub mod gerador;
 pub mod laudo;
 pub mod linha_do_tempo;
 pub mod linhas;
+pub mod mascara;
 pub mod memoria;
 pub mod perfil;
 pub mod regua;

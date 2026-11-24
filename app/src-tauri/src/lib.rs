@@ -679,7 +679,7 @@ async fn abrir<R: Runtime>(
     let novo = id.is_none();
     // Lida depois do mapa: se o arquivo mudar entre os dois, o 1º `seguir` reabre à toa, mas
     // nunca acrescenta a um arquivo trocado.
-    let marca = nucleo::Marca::ler(&caminho, arvore.arquivo().bytes().len() as u64).ok();
+    let marca = nucleo::Marca::ler(&caminho, arvore.arquivo().cru().len() as u64).ok();
     let aberto = instalar(Some(arvore), id, &app, &estado)?;
     // Reabrir no mesmo documento (resultado de jq) sai do modo seguir.
     let doc = estado.doc(aberto.id)?;
@@ -930,7 +930,7 @@ struct Resumo {
 #[tauri::command]
 fn resumo(id: u32, estado: State<'_, Estado>) -> Result<Resumo, String> {
     let doc = estado.doc(id)?;
-    let (bytes, registros) = doc.com(|a| (a.arquivo().bytes().len(), a.arquivo().linhas()))?;
+    let (bytes, registros) = doc.com(|a| (a.arquivo().cru().len(), a.arquivo().linhas()))?;
     let v = doc.varredura.lock().map_err(|e| e.to_string())?;
     let (Some(conteudo), Some(andamento)) = (v.conteudo, v.andamento()) else {
         return Err("nenhum arquivo aberto".into());
@@ -1250,7 +1250,7 @@ fn validar_em_fundo<R: Runtime>(
             nucleo::estrutura::inferir(arquivo.bytes(), &cancelar, |_| {}).entrada
         });
         let mut aviso = Instant::now();
-        let r = nucleo::validar::validar(arquivo.bytes(), entrada, &schema, &cancelar, |p| {
+        let r = nucleo::validar::validar(arquivo.cru(), entrada, &schema, &cancelar, |p| {
             if aviso.elapsed() >= INTERVALO {
                 aviso = Instant::now();
                 avisar(vazio(p.varridas, p.total, false));
@@ -2342,6 +2342,28 @@ fn valor(id: u32, v: usize, estado: State<'_, Estado>) -> Result<Option<String>,
     }
 }
 
+/// Sal da anonimização (`nucleo::mascara::anonimizar`): um por execução do app, só na memória.
+/// Mesmo valor, mesmo código enquanto o app está aberto; outro código depois de reabrir.
+fn sal_da_sessao() -> u64 {
+    static SAL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SAL.get_or_init(nucleo::mascara::sal_novo)
+}
+
+/// O valor da linha visível `v` sem a máscara de segredos: só no clique em "Mostrar valor", só
+/// esse campo; a interface não guarda.
+#[tauri::command]
+fn valor_cru(id: u32, v: usize, estado: State<'_, Estado>) -> Result<Option<String>, String> {
+    let valor = estado.com(id, |a| a.valor_cru(v))?;
+    match valor {
+        Some(s) if s.len() > MAX_FORMATADO => Err(format!(
+            "valor de {} MB passa do limite de {} MB para mostrar",
+            s.len() >> 20,
+            MAX_FORMATADO >> 20
+        )),
+        v => Ok(v),
+    }
+}
+
 /// Abre `url` no navegador do sistema, nunca dentro do app. A interface só chama no clique ou no
 /// Enter do link e manda o `href` normalizado; aqui se recusa o que não for http(s) em ASCII
 /// visível, então nada vira argumento de outro programa nem de outro esquema (`file:`, `javascript:`).
@@ -2383,6 +2405,7 @@ async fn consultar<R: Runtime>(
     id: u32,
     filtro: String,
     caminho: String,
+    anonimizar: Option<bool>,
     app: AppHandle<R>,
     estado: State<'_, Estado>,
 ) -> Result<u64, ErroConsulta> {
@@ -2429,7 +2452,8 @@ async fn consultar<R: Runtime>(
     let doc = Arc::downgrade(&doc);
     std::thread::spawn(move || {
         let avisar = |a: AndamentoConsulta| emitir(&app, "consulta", id, a);
-        let mut fim = filho::rodar(&filtro, &caminho, &destino, &cancelar, |a| {
+        let sal = anonimizar.unwrap_or(false).then(sal_da_sessao);
+        let mut fim = filho::rodar(&filtro, &caminho, &destino, sal, &cancelar, |a| {
             avisar(AndamentoConsulta { geracao, ..a })
         });
         // Consulta mais nova, fechada ou documento fechado: o resultado não serve a ninguém.
@@ -2755,6 +2779,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             regua_busca,
             caminhos,
             valor,
+            valor_cru,
             abrir_link,
             consultar,
             fechar_consulta,
@@ -3182,10 +3207,247 @@ mod testes {
         );
     }
 
+    /// Os temporários de consulta levam pid e geração (por documento) no nome: dois testes que
+    /// consultam no mesmo processo se confundiriam na conferência do temporário da velha.
+    static CONSULTAS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Garantia da máscara: nenhum caminho de saída do IPC devolve o valor de um campo sensível
+    /// (dados sintéticos). Só `valor_cru`, pedido campo a campo, mostra o original.
+    #[test]
+    fn segredo_nao_sai_pelo_ipc() {
+        use tauri::Listener;
+        const SEGREDOS: [&str; 5] = ["S3NT1N3LA", "111.444.777", "4821", "4111", "8T0K3N"];
+        let vaza = |v: &Value| {
+            let s = v.to_string();
+            SEGREDOS
+                .iter()
+                .find(|x| s.contains(*x))
+                .map(|x| format!("{x} em {s}"))
+        };
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut f,
+            concat!(
+                r#"{"id":1,"nome":"ana","senha":"S3NT1N3LA-1","cvv":4821,"obs":"111.444.777-35","#,
+                r#""pagamento":{"cartao":{"numero":"4111 1111 1111 1111"}}}"#,
+                "\n",
+                r#"{"id":2,"nome":"bia","senha":"S3NT1N3LA-2","cvv":4821,"obs":"ok","#,
+                r#""pagamento":{"cartao":{"numero":"4111 1111 1111 1111"}}}"#,
+                "\n",
+                r#"{"id":3,"token":"8T0K3N" oops}"#,
+                "\n",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let app = comandos(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let pedido = |cmd: &str, args: Value| InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        };
+        let chamar = |cmd: &str, args: Value| -> Result<Value, Value> {
+            get_ipc_response(&janela, pedido(cmd, args)).map(|b| b.deserialize::<Value>().unwrap())
+        };
+        // Toda resposta passa pelo crivo, inclusive as de erro.
+        let em = |cmd: &str, mut args: Value| {
+            args["id"] = json!(1);
+            let r = chamar(cmd, args);
+            let v = r.clone().unwrap_or_else(|e| e);
+            assert_eq!(vaza(&v), None, "{cmd}");
+            r
+        };
+        app.state::<abertura::Concedidos>().conceder(f.path());
+        let caminho = f.path().to_str().unwrap();
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": caminho })),
+            Ok(json!({"id": 1, "total": 3}))
+        );
+        (0..200)
+            .map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                em("resumo", json!({})).unwrap()
+            })
+            .find(|r| r["coloriu"] == true)
+            .expect("varredura não terminou");
+
+        // Árvore toda aberta: prévias, valor e copiar; a linha marcada revela pelo valor_cru.
+        let mut linhas = em("linhas", json!({"inicio": 0, "quantidade": 99})).unwrap();
+        while let Some(v) = linhas
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|l| l["expansivel"] == true && l["aberto"] == false)
+        {
+            em("alternar", json!({ "v": v })).unwrap();
+            linhas = em("linhas", json!({"inicio": 0, "quantidade": 99})).unwrap();
+        }
+        let linhas = linhas.as_array().unwrap().clone();
+        let mut revelados = Vec::new();
+        for (v, l) in linhas.iter().enumerate() {
+            em("valor", json!({ "v": v })).unwrap();
+            em("formatado", json!({ "registro": l["registro"] })).ok();
+            let cru = chamar("valor_cru", json!({"id": 1, "v": v})).unwrap();
+            if l["expansivel"] == true || !l["erro"].is_null() {
+                // Contêiner e linha inválida não revelam nada: só folha, campo a campo.
+                assert_eq!(cru, Value::Null, "{l}");
+            } else if l["mascarado"] == true {
+                revelados.push(cru);
+            } else {
+                assert_eq!(
+                    chamar("valor_cru", json!({"id": 1, "v": v})),
+                    em("valor", json!({ "v": v }))
+                );
+            }
+        }
+        // O que a máscara escondeu é exatamente o que vazaria: prova que o crivo não é vazio.
+        assert_eq!(
+            revelados.iter().collect::<Vec<_>>(),
+            [
+                json!("S3NT1N3LA-1"),
+                json!("4821"),
+                json!("111.444.777-35"),
+                json!("4111 1111 1111 1111"),
+                json!("S3NT1N3LA-2"),
+                json!("4821"),
+                json!("4111 1111 1111 1111"),
+            ]
+            .iter()
+            .collect::<Vec<_>>()
+        );
+        match get_ipc_response(
+            &janela,
+            pedido("texto", json!({"id": 1, "inicio": 0, "quantidade": 9})),
+        ) {
+            Ok(InvokeResponseBody::Raw(b)) => {
+                let t = String::from_utf8(b).unwrap();
+                assert_eq!(vaza(&json!(t)), None);
+                assert!(t.contains("\"ana\""), "{t}");
+            }
+            outro => panic!("esperava bytes, veio {outro:?}"),
+        }
+
+        // Estrutura, perfil de cada caminho, tabela.
+        let e = em("estrutura", json!({})).unwrap();
+        for i in 0..e["caminhos"].as_array().unwrap().len() {
+            em("perfil", json!({ "indice": i })).unwrap();
+        }
+        let t = em("tabela", json!({})).unwrap();
+        let colunas: Vec<usize> = (0..t["colunas"].as_array().unwrap().len()).collect();
+        em(
+            "tabela_linhas",
+            json!({"inicio": 0, "quantidade": 9, "colunas": colunas}),
+        )
+        .unwrap();
+
+        // Exportar com literais: o valor sensível não vira exemplo nem discriminador.
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        let tx2 = tx.clone();
+        app.listen_any("validacao", move |e| {
+            let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+        });
+        let fim = |geracao: &Value| {
+            std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
+                .find(|v| v["fim"] == true && &v["geracao"] == geracao)
+                .expect("não terminou")
+        };
+        for formato in ["schema", "zod", "ts"] {
+            let r = em(
+                "exportar",
+                json!({"pedido": {"formato": formato, "literal": true, "numero": true}}),
+            )
+            .unwrap();
+            assert_eq!(vaza(&fim(&r["geracao"])), None, "{formato}");
+        }
+        // Validar contra schema de fora: a falha diz onde, não o valor.
+        let mut s = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut s,
+            br#"{"properties":{"senha":{"type":"number"},"obs":{"enum":["x"]}}}"#,
+        )
+        .unwrap();
+        let v = validar_com_schema_em(app.handle().clone(), &app.state::<Estado>(), 1, s.path())
+            .unwrap();
+        let r = fim(&json!(v.geracao));
+        assert_eq!(r["falham"], json!(2), "{r}");
+        assert_eq!(vaza(&r), None);
+
+        // Busca roda sobre o mascarado: o segredo não acha nada, o nome acha.
+        app.listen_any("busca", move |e| {
+            let _ = tx2.send(serde_json::from_str(e.payload()).unwrap());
+        });
+        for (termo, esperado) in [("S3NT1N3LA", 0), ("4111", 0), ("8T0K3N", 0), ("bia", 1)] {
+            let g = em(
+                "buscar",
+                json!({"padrao": termo, "regex": false, "ignorarCaixa": true}),
+            )
+            .unwrap();
+            assert_eq!(fim(&g)["achados"], json!(esperado), "{termo}");
+        }
+
+        // Consulta jq: resultado mascarado por padrão; anonimizado troca por código estável.
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        app.listen("consulta", move |e| {
+            let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+        });
+        let _so_um = CONSULTAS.lock().unwrap_or_else(|e| e.into_inner());
+        let saidas = tempfile::tempdir().unwrap();
+        let consulta_de = |filtro: &str, anonimizar: bool| {
+            em(
+                "consultar",
+                json!({"filtro": filtro, "caminho": caminho, "anonimizar": anonimizar}),
+            )
+            .unwrap();
+            let a = std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
+                .find(|a| a["fim"] == true)
+                .expect("consulta não terminou");
+            assert_eq!(vaza(&a), None);
+            let origem = Path::new(a["arquivo"].as_str().unwrap());
+            let saida = std::fs::read_to_string(origem).unwrap();
+            assert_eq!(vaza(&json!(saida)), None);
+            // Exportar o resultado (o que `salvar_consulta` grava depois do diálogo).
+            for csv in [false, true].into_iter().filter(|_| filtro == ".") {
+                let destino = saidas.path().join(if csv { "r.csv" } else { "r.jsonl" });
+                gravar_resultado(origem, &destino, csv, &[]).unwrap();
+                let gravado = std::fs::read_to_string(&destino).unwrap();
+                assert!(gravado.contains("ana"), "exportou vazio: {gravado}");
+                assert_eq!(vaza(&json!(gravado)), None);
+            }
+            saida
+        };
+        let consulta = |anonimizar: bool| {
+            consulta_de(".", anonimizar);
+            consulta_de(".senha", anonimizar)
+        };
+        assert_eq!(consulta(false), "\"***********\"\n\"***********\"\n");
+        let anon = consulta(true);
+        let codigos: Vec<&str> = anon.lines().collect();
+        assert!(
+            codigos[0].starts_with("\"anon:") && codigos[0] != codigos[1],
+            "{anon}"
+        );
+        assert_eq!(
+            consulta(true),
+            anon,
+            "o sal é da sessão: mesmo valor, mesmo código"
+        );
+        assert_eq!(em("fechar_consulta", json!({})), Ok(Value::Null));
+    }
+
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
 
     #[test]
     fn comandos_pelo_ipc() {
+        let _so_um = CONSULTAS.lock().unwrap_or_else(|e| e.into_inner());
         let mut f = tempfile::NamedTempFile::new().unwrap();
         std::io::Write::write_all(&mut f, b"{\"a\":[1,2]}\n{\"b\":tru}\n").unwrap();
         let mut tipos = tempfile::NamedTempFile::new().unwrap();

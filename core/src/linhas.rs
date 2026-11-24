@@ -9,11 +9,14 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use memmap2::Mmap;
+use rayon::prelude::*;
 
 use crate::compactado::{self, Formato, Opcoes};
 use crate::formatos;
+use crate::mascara;
 
 pub(crate) const BOM: &[u8] = b"\xEF\xBB\xBF";
 
@@ -105,6 +108,118 @@ pub struct ArquivoLinhas {
     /// Bytes embutidos no binário (`estatico`); vazio quando há `mapa`.
     estatico: &'static [u8],
     indice: IndiceLinhas,
+    /// Cópia com os segredos mascarados (`mascara`), mesmo tamanho e mesmas posições; `None` com
+    /// `sem_mascara` ou arquivo vazio.
+    mascara: Option<Mascara>,
+}
+
+/// Linhas por bloco da máscara preguiçosa.
+const BLOCO: usize = 1 << 14;
+
+/// Cópia mascarada feita por blocos de linhas, sob demanda: a 1ª tela (`janela`) só mascara os
+/// blocos que mostra; `bytes()` mascara o resto antes de devolver o arquivo inteiro. JSONL tem
+/// blocos independentes (em paralelo); documento em várias linhas é lido em ordem, cada bloco
+/// continuando de onde o anterior parou (`mascara::Estado`): a 1ª tela mascara só o 1º bloco.
+/// Do mapa é cópia privada (copy-on-write): só as páginas com segredo ocupam memória.
+struct Mascara {
+    /// Dono da cópia; só é lida e escrita por `ptr` (memória estável: mapa ou heap).
+    _dono: Box<dyn Send + Sync>,
+    ptr: *mut u8,
+    len: usize,
+    /// Documento em várias linhas (não `mascara::por_linha`): o próximo bloco a ler e onde a
+    /// leitura parou.
+    documento: Option<Box<Mutex<(usize, mascara::Estado)>>>,
+    /// Por bloco: já mascarado, e se algo mudou.
+    blocos: Vec<OnceLock<bool>>,
+    /// Todos os blocos mascarados, e se algo mudou.
+    tudo: OnceLock<bool>,
+}
+
+// SAFETY: cada bloco da cópia é escrito uma vez só, antes do seu `OnceLock` (um escritor: o
+// `get_or_init` dele no JSONL, o `Mutex` no documento), e só é lido depois dele (o `OnceLock`
+// ordena a escrita antes da leitura); blocos não se sobrepõem.
+unsafe impl Send for Mascara {}
+unsafe impl Sync for Mascara {}
+
+impl Mascara {
+    fn nova<C>(mut copia: C, dados: &[u8], indice: &IndiceLinhas) -> Self
+    where
+        C: std::ops::DerefMut<Target = [u8]> + Send + Sync + 'static,
+    {
+        let documento = (!mascara::por_linha(dados, indice)).then(Box::default);
+        Self {
+            ptr: copia.as_mut_ptr(),
+            len: copia.len(),
+            _dono: Box::new(copia),
+            documento,
+            blocos: (0..indice.len().div_ceil(BLOCO))
+                .map(|_| OnceLock::new())
+                .collect(),
+            tudo: OnceLock::new(),
+        }
+    }
+
+    fn bloco_de(&self, linha: usize) -> usize {
+        linha / BLOCO
+    }
+
+    /// Mascara o bloco `b` (uma vez só); `true` se algo mudou nele.
+    fn bloco(&self, b: usize, dados: &[u8], indice: &IndiceLinhas) -> bool {
+        if let Some(&feito) = self.blocos[b].get() {
+            return feito;
+        }
+        let Some(doc) = &self.documento else {
+            return *self.blocos[b].get_or_init(|| self.escrever(b, dados, indice, None));
+        };
+        // Pânico no meio de um bloco deixa o estado pela metade: envenenado não se reaproveita.
+        let mut g = doc.lock().expect("máscara do documento interrompida");
+        while g.0 <= b {
+            let k = g.0;
+            let algo = self.escrever(k, dados, indice, Some(&mut g.1));
+            let _ = self.blocos[k].set(algo);
+            g.0 += 1;
+        }
+        self.blocos[b].get().copied().unwrap_or(true)
+    }
+
+    /// Escreve na cópia a máscara das linhas do bloco `b`; `true` se algo mudou.
+    fn escrever(
+        &self,
+        b: usize,
+        dados: &[u8],
+        indice: &IndiceLinhas,
+        estado: Option<&mut mascara::Estado>,
+    ) -> bool {
+        let a = b * BLOCO;
+        let e = (a + BLOCO).min(indice.len());
+        let inicio = |i| indice.faixa(i, dados).map_or(self.len, |f| f.start);
+        let (de, ate) = (inicio(a), inicio(e));
+        // SAFETY: bytes das linhas `a..e`, que só este bloco escreve; ver `unsafe impl Sync`.
+        let saida = unsafe { std::slice::from_raw_parts_mut(self.ptr.add(de), ate - de) };
+        mascara::mascarar_bloco(dados, indice, a..e, estado, saida, de)
+    }
+
+    /// Mascara todos os blocos (JSONL em paralelo, documento em ordem); `true` se algo mudou.
+    fn tudo(&self, dados: &[u8], indice: &IndiceLinhas) -> bool {
+        *self.tudo.get_or_init(|| {
+            let n = self.blocos.len();
+            match self.documento {
+                // `|` e não `||`: todo bloco tem de ser escrito.
+                Some(_) => (0..n).fold(false, |x, b| x | self.bloco(b, dados, indice)),
+                None => (0..n)
+                    .into_par_iter()
+                    .map(|b| self.bloco(b, dados, indice))
+                    .reduce(|| false, |x, y| x || y),
+            }
+        })
+    }
+
+    /// As linhas do bloco `b` saem da cópia? Sim se algo mudou nele; depois de `tudo`, se algo
+    /// mudou no arquivo (a mesma base de `bytes()`, para quem mede posição entre os dois).
+    fn da_copia(&self, b: usize, dados: &[u8], indice: &IndiceLinhas) -> bool {
+        let bloco = self.bloco(b, dados, indice);
+        self.tudo.get().copied().unwrap_or(bloco)
+    }
 }
 
 impl ArquivoLinhas {
@@ -150,34 +265,88 @@ impl ArquivoLinhas {
             Some(unsafe { Mmap::map(&arquivo)? })
         };
         let indice = IndiceLinhas::construir(mapa.as_deref().unwrap_or_default());
+        let mascara = match &mapa {
+            Some(m) if !op.sem_mascara => Some(mascarar_mapa(&arquivo, m, &indice)?),
+            _ => None,
+        };
         Ok(Self {
             mapa,
             estatico: &[],
             indice,
+            mascara,
         })
     }
 
     /// Bytes que já estão na memória do programa (os exemplos embutidos no app): sem disco nem
     /// `mmap`, mesmo índice e mesmas janelas de um arquivo aberto.
     pub fn estatico(dados: &'static [u8]) -> Self {
+        let indice = IndiceLinhas::construir(dados);
+        let mascara = Mascara::nova(dados.to_vec(), dados, &indice);
         Self {
             mapa: None,
             estatico: dados,
-            indice: IndiceLinhas::construir(dados),
+            indice,
+            mascara: Some(mascara),
         }
     }
 
-    /// Mapa e índice já prontos (arquivo vivo: o índice cresce fora, ver `vivo`).
-    pub(crate) fn de_mapa(mapa: Option<Mmap>, indice: IndiceLinhas) -> Self {
-        Self {
+    /// Mapa e índice já prontos (arquivo vivo: o índice cresce fora, ver `vivo`); `arquivo` é o
+    /// que foi mapeado, para a cópia mascarada.
+    // shortcut: remascara o arquivo inteiro a cada crescimento; mascarar só o pedaço novo se
+    // seguir arquivo grande ficar lento.
+    pub(crate) fn de_mapa(
+        arquivo: &File,
+        mapa: Option<Mmap>,
+        indice: IndiceLinhas,
+    ) -> io::Result<Self> {
+        let mascara = match &mapa {
+            Some(m) => Some(mascarar_mapa(arquivo, m, &indice)?),
+            None => None,
+        };
+        Ok(Self {
             mapa,
             estatico: &[],
             indice,
+            mascara,
+        })
+    }
+
+    /// O arquivo com os segredos mascarados: é o que sai para tela, busca, consulta e exportação.
+    /// Na 1ª chamada mascara o que a `janela` ainda não mascarou (o arquivo inteiro).
+    pub fn bytes(&self) -> &[u8] {
+        // Sem segredo nenhum, o arquivo mesmo: ler a cópia mapearia as mesmas páginas de novo.
+        match &self.mascara {
+            // SAFETY: todos os blocos já foram escritos (`tudo`); ninguém mais escreve neles.
+            Some(m) if m.tudo(self.cru(), &self.indice) => unsafe {
+                std::slice::from_raw_parts(m.ptr, m.len)
+            },
+            _ => self.cru(),
         }
     }
 
-    pub fn bytes(&self) -> &[u8] {
+    /// O arquivo como está no disco, sem máscara. Só para o que não devolve valor (validar) ou
+    /// o que o usuário pediu campo a campo (`Arvore::valor_cru`, anonimizar).
+    pub fn cru(&self) -> &[u8] {
         self.mapa.as_deref().unwrap_or(self.estatico)
+    }
+
+    /// O mesmo trecho de `bytes()` (um pedaço dele) no arquivo cru. Para diagnóstico de linha
+    /// inválida (byte e motivo, nunca o valor): a máscara troca o pedaço estranho e mudaria o erro.
+    pub fn cru_de<'a>(&'a self, trecho: &'a [u8]) -> &'a [u8] {
+        let p = trecho.as_ptr() as usize;
+        let base = match &self.mascara {
+            Some(m) if (m.ptr as usize..m.ptr as usize + m.len).contains(&p) => m.ptr as usize,
+            _ => self.cru().as_ptr() as usize,
+        };
+        let inicio = p.wrapping_sub(base);
+        self.cru()
+            .get(inicio..inicio.saturating_add(trecho.len()))
+            .unwrap_or(trecho)
+    }
+
+    /// Índice de linhas (para `mascara::anonimizar`).
+    pub fn indice(&self) -> &IndiceLinhas {
+        &self.indice
     }
 
     pub fn linhas(&self) -> usize {
@@ -187,15 +356,34 @@ impl ArquivoLinhas {
     /// Linha que contém o byte `b` do arquivo e o byte onde ela começa.
     pub fn linha_do_byte(&self, b: usize) -> Option<(usize, usize)> {
         let l = self.indice.linha_do_byte(b)?;
-        Some((l, self.indice.faixa(l, self.bytes())?.start))
+        Some((l, self.indice.faixa(l, self.cru())?.start))
+    }
+
+    /// Linha `i` como está no disco, sem máscara (ver `cru`).
+    pub fn linha_crua(&self, i: usize) -> &[u8] {
+        let d = self.cru();
+        self.indice.faixa(i, d).map_or(&[][..], |r| &d[r])
     }
 
     /// Até `quantidade` linhas cruas a partir de `inicio`; vazio se `inicio` passar do fim.
     pub fn janela(&self, inicio: usize, quantidade: usize) -> Vec<&[u8]> {
-        let dados = self.bytes();
+        let cru = self.cru();
         let fim = inicio.saturating_add(quantidade).min(self.indice.len());
+        let Some(m) = self.mascara.as_ref().filter(|_| inicio < fim) else {
+            return (inicio..fim)
+                .filter_map(|i| self.indice.faixa(i, cru).map(|r| &cru[r]))
+                .collect();
+        };
+        let copia: Vec<bool> = (m.bloco_de(inicio)..=m.bloco_de(fim - 1))
+            .map(|b| m.da_copia(b, cru, &self.indice))
+            .collect();
         (inicio..fim)
-            .filter_map(|i| self.indice.faixa(i, dados).map(|r| &dados[r]))
+            .filter_map(|i| Some((i, self.indice.faixa(i, cru)?)))
+            .map(|(i, r)| match copia[m.bloco_de(i) - m.bloco_de(inicio)] {
+                // SAFETY: a linha está num bloco já escrito (`da_copia` acima).
+                true => unsafe { std::slice::from_raw_parts(m.ptr.add(r.start), r.len()) },
+                false => &cru[r],
+            })
             .collect()
     }
 }
@@ -232,6 +420,18 @@ fn convertido_da_copia(arquivo: File, f: formatos::Entrada, op: &Opcoes) -> io::
         op,
     )?;
     Ok(saida)
+}
+
+/// Cópia privada (copy-on-write) de `arquivo`, mascarada sob demanda (`Mascara`).
+fn mascarar_mapa(arquivo: &File, mapa: &Mmap, indice: &IndiceLinhas) -> io::Result<Mascara> {
+    // SAFETY: mapeamento privado do mesmo arquivo e do mesmo tamanho de `mapa`; escrever nele
+    // não chega ao disco (MAP_PRIVATE). Sem escrita nenhuma página é copiada.
+    let copia = unsafe {
+        memmap2::MmapOptions::new()
+            .len(mapa.len())
+            .map_copy(arquivo)?
+    };
+    Ok(Mascara::nova(copia, mapa, indice))
 }
 
 /// Recusa o que não é arquivo comum, sem abrir: `open` de um FIFO bloqueia até alguém escrever,
@@ -312,6 +512,70 @@ mod testes {
         for (entrada, esperado) in casos {
             assert_eq!(&linhas(entrada), esperado, "entrada {entrada:?}");
         }
+    }
+
+    #[test]
+    fn mascara_por_blocos_sob_demanda() {
+        // Segredo em vários blocos; a janela mascara só o bloco que mostra, `bytes()` o resto.
+        let n = 3 * BLOCO + 10;
+        let mut d = String::new();
+        for i in 0..n {
+            d += &format!("{{\"i\":{i},\"senha\":\"S3NT1N3LA{i}\"}}\n");
+        }
+        let pasta = tempfile::tempdir().unwrap();
+        let p = pasta.path().join("a.jsonl");
+        std::fs::write(&p, &d).unwrap();
+        let a = ArquivoLinhas::abrir(&p).unwrap();
+        let alvo = 2 * BLOCO + 5;
+        let l = a.janela(alvo, 1)[0];
+        assert_eq!(
+            l,
+            format!("{{\"i\":{alvo},\"senha\":\"{}\"}}", "*".repeat(9 + 5)).as_bytes()
+        );
+        assert_eq!(a.cru_de(l), a.linha_crua(alvo));
+        let m = a.mascara.as_ref().unwrap();
+        assert!(m.documento.is_none());
+        assert_eq!(m.blocos.len(), 4);
+        assert_eq!(m.blocos.iter().filter(|b| b.get().is_some()).count(), 1);
+        assert!(
+            !a.janela(n - 2, 2)
+                .concat()
+                .windows(9)
+                .any(|w| w == b"S3NT1N3LA")
+        );
+        assert!(!a.bytes().windows(9).any(|w| w == b"S3NT1N3LA"));
+        assert!(m.blocos.iter().all(|b| b.get() == Some(&true)));
+        assert_eq!(a.cru(), d.as_bytes());
+    }
+
+    #[test]
+    fn documento_mascara_so_os_blocos_ate_a_janela() {
+        // Documento formatado: a 1ª tela lê só o 1º bloco; o segredo aberto lá em cima
+        // continua valendo nos blocos seguintes.
+        let n = 3 * BLOCO;
+        let mut d = String::from("{\"senha\": [\n");
+        for i in 0..n {
+            d += &format!("  \"S3NT1N3LA{i}\",\n");
+        }
+        d += "  0\n]}\n";
+        let a = ArquivoLinhas::estatico(Box::leak(d.into_bytes().into_boxed_slice()));
+        let m = a.mascara.as_ref().unwrap();
+        assert!(m.documento.is_some());
+        assert!(
+            !a.janela(0, 50)
+                .concat()
+                .windows(9)
+                .any(|w| w == b"S3NT1N3LA")
+        );
+        assert_eq!(m.blocos.iter().filter(|b| b.get().is_some()).count(), 1);
+        let l = a.janela(2 * BLOCO + 7, 1)[0];
+        assert!(
+            !l.windows(9).any(|w| w == b"S3NT1N3LA"),
+            "{}",
+            String::from_utf8_lossy(l)
+        );
+        assert_eq!(m.blocos.iter().filter(|b| b.get().is_some()).count(), 3);
+        assert!(!a.bytes().windows(9).any(|w| w == b"S3NT1N3LA"));
     }
 
     #[test]
