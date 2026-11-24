@@ -374,3 +374,30 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Conferido no app (ponte HTTP + navegador, dados fictícios gerados na hora):** união discriminada, número como texto, campo opcional, `null` e linha quebrada (3.000 registros: 2.999 passam, 1 linha inválida à parte); chaves hostis escapadas na tela, com "Travar no valor"; pt-BR, inglês e tema escuro; Copiar (texto igual ao mostrado); Esc. Arquivo de 1 GB (6.306.549 registros, build release, arquivo em cache, 18 núcleos): validação de 1,0 a 2,9 s quando tudo passa (Zod, Schema e literal) e 2,8 a 3,3 s quando reprova; CLI 1,3 a 2,7 s.
 
 **Pendências:** formatos (`date-time`, `email`, `uuid`) não são inferidos; uniões discriminadas só no topo (objetos aninhados com `tipo` saem como objeto com campos opcionais); `enum` para campo de poucos valores; tipos TS puros, Pydantic e afins ficam fora desta fase.
+
+## Medidas de desempenho, 23/11/2026
+
+Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB do gerador (`gerar … 1024 1`: 1.073.741.850 bytes, 6.456.439 linhas), com o arquivo já no cache de páginas.
+
+**Máquina:** MacBook com Apple M5 Pro, 18 núcleos, 48 GB, macOS 27.2.1. É mais forte que a de referência do plano (8 núcleos): estes números não valem para ela. **Versão:** `cf7cc7f` + esta fatia, Rust 1.99.1. **Comando:** `scripts/medir.sh` (mediana de 5 rodadas; memória é o maior *peak memory footprint* do `/usr/bin/time -l`, que não conta as páginas limpas do `mmap`). **Carga:** load average entre 187 e 211 durante a medida (outras sessões compilando na mesma máquina): os tempos são pessimistas e variam de uma rodada para outra.
+
+| Medida | Meta | Medido | Pico alocado | RSS máximo (com `mmap`) |
+|---|---|---|---|---|
+| Primeira tela (`janela arquivo 0 50`) | < 300 ms | 0,28 s | 51 MB | 1076 MB |
+| Índice de linhas (`linhas`) | < 2 s | 0,29 s | 51 MB | 1076 MB |
+| Estrutura completa (`inferir`) | < 5 s | 3,41 s | 62 MB | 1085 MB |
+| Busca até o fim, literal ausente | < 3 s | 0,73 s | 52 MB | 1076 MB |
+| Busca até o fim, regex ausente | < 3 s | 0,59 s | 53 MB | 1078 MB |
+| Exportar Schema + validar o arquivo | sem meta | 6,49 s | 63 MB | 1089 MB |
+
+**Memória além do `mmap`:** < 300 MB batida com folga em todas as linhas (no máximo 63 MB).
+
+**Primeira tela no limite:** numa rodada anterior, com 3 rodadas por medida e a mesma carga, deu 0,34 s, e a meta não passou. O motivo é estrutural: `ArquivoLinhas::abrir_com` constrói o índice de linhas inteiro antes da primeira janela, e o app abre pelo mesmo caminho. Assim, a primeira tela custa o índice de 1 GB (cerca de 0,29 s) mais a janela, e a folga até 300 ms some com qualquer carga na máquina. A correção seria mostrar a primeira janela antes do índice completo (índice parcial ou progressivo); não foi feita nesta fatia. A medida é do processo CLI, sem a renderização do webview: no app, o número real é maior.
+
+**Não medidos aqui:** estrutura parcial em < 500 ms, primeiro resultado da busca em < 200 ms (o bench `busca` mede, mas não entrou na tabela), rolagem e expandir em 60 fps (bench `arvore`, em 64 MB) e o teto de 10 GB.
+
+**Benchmarks:** `cargo bench -p nucleo` cobre índice (`indice`), estrutura (`estrutura`), busca até o primeiro achado e até o fim (`busca`), árvore (`arvore`) e, desde esta fatia, exportar Schema/Zod e validar (`exportar`). O tamanho vem de `NUCLEO_BENCH_MB`. Os arquivos ficam em memória ou em `target/medir/`, fora do git.
+
+**Regressão de 10% no CI: não ligada.** O CI roda no mesmo runner, nesta mesma máquina carregada, e a variação observada entre rodadas iguais passou de 20% (primeira tela: 0,28 s contra 0,34 s). Um limite de 10% reprovaria por ruído. Além disso, os benches de 1 GB levam minutos e não cabem no tempo do runner único.
+
+**Dadroit:** não está instalado nesta máquina, então a comparação de abertura do mesmo arquivo fica pendente.
