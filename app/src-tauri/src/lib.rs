@@ -50,6 +50,8 @@ struct Estado {
     abrindo: Aberturas,
     /// Diff de valores em curso (envolve dois documentos, então fica fora de `Doc`).
     diff: Mutex<EstadoExportar>,
+    /// Linha do tempo em curso (uma pasta, nenhum documento aberto).
+    linha: Mutex<EstadoExportar>,
 }
 
 /// Flags de cancelamento por abertura. A chave é um id por abertura, não o caminho: o mesmo
@@ -1389,7 +1391,7 @@ fn cancelar_validacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> 
 
 // ---- Diff entre dois documentos abertos (antes × depois). ----
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct MudancaUi {
     caminho: String,
     regra: &'static str,
@@ -1418,35 +1420,37 @@ fn diff_estrutura(
     depois: u32,
     estado: State<'_, Estado>,
 ) -> Result<Option<DiffEstrutura>, String> {
-    use nucleo::diff::{Detalhe, diff, iguais};
+    use nucleo::diff::{diff, iguais};
     let (Some((a, _)), Some((b, _))) = (inferencia(&estado, antes)?, inferencia(&estado, depois)?)
     else {
         return Ok(None);
     };
     let ms = diff(&a.resumo, &b.resumo);
-    let nomes = |ts: &[nucleo::estrutura::Tipo]| ts.iter().map(|t| t.nome()).collect();
     Ok(Some(DiffEstrutura {
         iguais: iguais(&a.resumo, &b.resumo, &ms),
         invalidas: [a.resumo.invalidas.n, b.resumo.invalidas.n],
-        mudancas: ms
-            .into_iter()
-            .map(|m| MudancaUi {
-                regra: m.regra.nome(),
-                classe: m.regra.classe().nome(),
-                antes: [m.antes.n, m.antes.de],
-                depois: [m.depois.n, m.depois.de],
-                tipos: match &m.detalhe {
-                    Detalhe::Tipos(x, y) => Some([nomes(x), nomes(y)]),
-                    _ => None,
-                },
-                variante: match m.detalhe {
-                    Detalhe::Variante(v) => Some(v),
-                    _ => None,
-                },
-                caminho: m.caminho,
-            })
-            .collect(),
+        mudancas: ms.into_iter().map(mudanca_ui).collect(),
     }))
+}
+
+fn mudanca_ui(m: nucleo::diff::Mudanca) -> MudancaUi {
+    use nucleo::diff::Detalhe;
+    let nomes = |ts: &[nucleo::estrutura::Tipo]| ts.iter().map(|t| t.nome()).collect();
+    MudancaUi {
+        regra: m.regra.nome(),
+        classe: m.regra.classe().nome(),
+        antes: [m.antes.n, m.antes.de],
+        depois: [m.depois.n, m.depois.de],
+        tipos: match &m.detalhe {
+            Detalhe::Tipos(x, y) => Some([nomes(x), nomes(y)]),
+            _ => None,
+        },
+        variante: match m.detalhe {
+            Detalhe::Variante(v) => Some(v),
+            _ => None,
+        },
+        caminho: m.caminho,
+    }
 }
 
 /// Evento `diff_valores`: progresso e, no fim, o resultado.
@@ -1530,6 +1534,168 @@ fn diff_valores<R: Runtime>(
 #[tauri::command]
 fn cancelar_diff_valores(estado: State<'_, Estado>) -> Result<(), String> {
     let mut e = estado.diff.lock().map_err(|e| e.to_string())?;
+    e.cancelar.store(true, Relaxed);
+    e.geracao += 1;
+    Ok(())
+}
+
+// ---- Linha do tempo de uma pasta de versões datadas. ----
+
+#[derive(Clone, Serialize)]
+struct PassoUi {
+    /// Canônico e já concedido: a interface abre direto para comparar dois pontos.
+    caminho: String,
+    nome: String,
+    /// "AAAA-MM-DD HH:MM:SS" UTC (do nome ou do mtime).
+    data: String,
+    erro: Option<String>,
+    registros: u64,
+    invalidas: u64,
+    contra: Option<usize>,
+    quebras: usize,
+    compativeis: usize,
+    mudancas: Vec<MudancaUi>,
+    mais: usize,
+}
+
+#[derive(Clone, Serialize)]
+struct LinhaUi {
+    /// "nome" ou "mtime".
+    origem: &'static str,
+    ignorados: usize,
+    /// "prazo" quando parou no prazo (cancelada não chega à interface).
+    parada: Option<&'static str>,
+    passos: Vec<PassoUi>,
+}
+
+/// Evento `linha_do_tempo`: progresso em versões e, no fim, o resultado.
+#[derive(Clone, Serialize)]
+struct AndamentoLinha {
+    geracao: u64,
+    feitas: usize,
+    total: usize,
+    resultado: Option<LinhaUi>,
+}
+
+fn linha_ui(l: nucleo::linha_do_tempo::LinhaDoTempo) -> LinhaUi {
+    use nucleo::linha_do_tempo::{Origem, Parada, data_texto};
+    LinhaUi {
+        origem: match l.origem {
+            Origem::Nome => "nome",
+            Origem::Mtime => "mtime",
+        },
+        ignorados: l.ignorados,
+        parada: l.parada.map(|p| match p {
+            Parada::Prazo => "prazo",
+            Parada::Cancelado => "cancelado",
+        }),
+        passos: l
+            .passos
+            .into_iter()
+            .map(|p| PassoUi {
+                caminho: p.versao.caminho.to_string_lossy().into_owned(),
+                data: data_texto(p.versao.ms),
+                nome: p.versao.nome,
+                erro: p.erro,
+                registros: p.registros,
+                invalidas: p.invalidas,
+                contra: p.contra,
+                quebras: p.quebras,
+                compativeis: p.compativeis,
+                mudancas: p.mudancas.into_iter().map(mudanca_ui).collect(),
+                mais: p.mais,
+            })
+            .collect(),
+    }
+}
+
+/// Diálogo de escolher pasta no backend: a escolhida fica concedida (não o que está dentro).
+#[tauri::command]
+async fn escolher_pasta<R: Runtime>(janela: tauri::WebviewWindow<R>) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let p = janela
+        .dialog()
+        .file()
+        .set_parent(&janela)
+        .blocking_pick_folder()?
+        .into_path()
+        .ok()?;
+    conceder_escolhidos(janela.app_handle(), std::iter::once(p)).pop()
+}
+
+/// Linha do tempo da pasta concedida `pasta`, numa thread própria que emite `linha_do_tempo`
+/// (no máximo a cada `INTERVALO`, e no fim); a anterior é cancelada. Os tetos do núcleo
+/// (`LIMITES`) valem aqui; passar deles é erro antes de abrir qualquer arquivo. Cada versão
+/// listada fica concedida, para a interface abrir os dois pontos que o usuário comparar: a
+/// listagem só aceita arquivo regular dentro da pasta (link para fora não entra).
+#[tauri::command]
+fn linha_do_tempo<R: Runtime>(
+    pasta: String,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<u64, String> {
+    use nucleo::linha_do_tempo::{LIMITES, listar, percorrer};
+    let base = autorizado(&app, &pasta)?;
+    if !Path::new(&base).is_dir() {
+        return Err(NEGADO.into());
+    }
+    let lista = listar(Path::new(&base), &LIMITES).map_err(|e| e.to_string())?;
+    let concedidos = app.state::<abertura::Concedidos>();
+    lista
+        .versoes
+        .iter()
+        .for_each(|v| concedidos.conceder(&v.caminho));
+    let (geracao, cancelar) = {
+        let mut e = estado.linha.lock().map_err(|e| e.to_string())?;
+        e.cancelar.store(true, Relaxed);
+        e.cancelar = Arc::new(AtomicBool::new(false));
+        e.geracao += 1;
+        (e.geracao, Arc::clone(&e.cancelar))
+    };
+    std::thread::spawn(move || {
+        let avisar = |a: AndamentoLinha| {
+            let vale = app
+                .state::<Estado>()
+                .linha
+                .lock()
+                .ok()
+                .map(|e| e.geracao == geracao);
+            if vale == Some(true) {
+                let _ = app.emit("linha_do_tempo", a);
+            }
+        };
+        let op = Opcoes {
+            cancelar: Some(&cancelar),
+            ..Opcoes::default()
+        };
+        let mut aviso = None::<Instant>;
+        let l = percorrer(lista, &LIMITES, &op, &cancelar, |feitas, total| {
+            if feitas < total && aviso.is_some_and(|t| t.elapsed() < INTERVALO) {
+                return;
+            }
+            aviso = Some(Instant::now());
+            avisar(AndamentoLinha {
+                geracao,
+                feitas,
+                total,
+                resultado: None,
+            });
+        });
+        let total = l.passos.len();
+        avisar(AndamentoLinha {
+            geracao,
+            feitas: total,
+            total,
+            resultado: Some(linha_ui(l)),
+        });
+    });
+    Ok(geracao)
+}
+
+/// Para a linha do tempo em curso (Esc, trocar de vista).
+#[tauri::command]
+fn cancelar_linha_do_tempo(estado: State<'_, Estado>) -> Result<(), String> {
+    let mut e = estado.linha.lock().map_err(|e| e.to_string())?;
     e.cancelar.store(true, Relaxed);
     e.geracao += 1;
     Ok(())
@@ -2625,7 +2791,10 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             salvar_consulta,
             diff_estrutura,
             diff_valores,
-            cancelar_diff_valores
+            cancelar_diff_valores,
+            escolher_pasta,
+            linha_do_tempo,
+            cancelar_linha_do_tempo
         ])
 }
 
@@ -4380,6 +4549,74 @@ mod testes {
 
         // Recente reaberto (lista em disco, sem concessão nesta execução): abre.
         assert!(abrir(&recente).is_ok());
+    }
+
+    /// Linha do tempo: só de pasta concedida; concede as versões listadas (e só elas), e o teto
+    /// de arquivos recusa antes de conceder qualquer uma.
+    #[test]
+    fn linha_do_tempo_concede_so_as_versoes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let raiz = std::fs::canonicalize(tmp.path()).unwrap();
+        let pasta = raiz.join("versoes");
+        let grande = raiz.join("grande");
+        std::fs::create_dir(&pasta).unwrap();
+        std::fs::create_dir(&grande).unwrap();
+        for n in ["2024-01-01.jsonl", "2024-01-02.jsonl"] {
+            std::fs::write(pasta.join(n), b"{\"a\":1}\n").unwrap();
+        }
+        std::fs::write(pasta.join("notas.txt"), b"x").unwrap();
+        let fora = raiz.join("fora.jsonl");
+        std::fs::write(&fora, b"{}\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&fora, pasta.join("2024-01-03.jsonl")).unwrap();
+        for i in 0..=nucleo::linha_do_tempo::LIMITES.max_arquivos {
+            std::fs::write(grande.join(format!("{i}.jsonl")), b"{}\n").unwrap();
+        }
+        let app = comandos(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let chamar = |cmd: &str, args: Value| -> Result<Value, Value> {
+            let pedido = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            };
+            get_ipc_response(&janela, pedido).map(|b| b.deserialize::<Value>().unwrap())
+        };
+        let linha = |p: &Path| chamar("linha_do_tempo", json!({ "pasta": p.to_str().unwrap() }));
+        let abrir = |c: &Path| chamar("abrir", json!({ "caminho": c.to_str().unwrap() }));
+        let negado = Err(json!(NEGADO));
+        let a = pasta.join("2024-01-01.jsonl");
+
+        // Pasta não concedida: negado, e nada dentro dela passa a abrir.
+        assert_eq!(linha(&pasta), negado);
+        assert_eq!(abrir(&a), negado);
+        let concedidos = app.state::<abertura::Concedidos>();
+        concedidos.conceder(&pasta);
+        concedidos.conceder(&grande);
+        // Arquivo concedido não é pasta.
+        concedidos.conceder(&a.with_file_name("2024-01-02.jsonl"));
+        assert_eq!(linha(&pasta.join("2024-01-02.jsonl")), negado);
+
+        // Teto de arquivos: erro, e nenhum dos 501 fica concedido.
+        let e = linha(&grande).unwrap_err();
+        assert!(e.as_str().unwrap().contains("mais de 500 arquivos"), "{e}");
+        assert_eq!(abrir(&grande.join("0.jsonl")), negado);
+
+        // Pasta concedida: as versões listadas abrem; o que não é versão e o link para fora, não.
+        assert_eq!(linha(&pasta), Ok(json!(1)));
+        assert!(abrir(&a).is_ok());
+        assert_eq!(abrir(&pasta.join("notas.txt")), negado);
+        assert_eq!(abrir(&fora), negado);
+        #[cfg(unix)]
+        assert_eq!(abrir(&pasta.join("2024-01-03.jsonl")), negado);
     }
 
     /// Cada porta de concessão concede de fato: soltar, pedido do sistema, argv e diálogo.

@@ -670,6 +670,35 @@ O teto de saída é imposto no receptor, na ordem do arquivo: o resultado parcia
 
 **Limites conhecidos:** YAML/TOML/binários compactados (`.yaml.gz`) não abrem (compactado só JSON/JSONL; dá para somar depois encadeando as duas conversões). A mensagem de progresso do app ainda diz "descompactando" durante a conversão. Posição no erro do YAML é em caracteres, nos binários em bytes.
 
+## Linha do tempo de uma pasta (Fase 3, 24/11/2026)
+
+**O que é.** Uma pasta com versões datadas do mesmo arquivo (`export-2024-01-01.jsonl`, `export-2024-01-02.jsonl`…): o núcleo (`nucleo::linha_do_tempo`) lista as versões em ordem, infere a estrutura de cada uma e compara com a anterior que abriu, usando o mesmo diff de estrutura (quebra × compatível) da visão Diff. Na CLI: `jasao linha-do-tempo <pasta> [--json]`. No app: visão Diff, tipo "Linha do tempo", botão Pasta… (diálogo no Rust) ou soltar uma pasta na janela com um arquivo aberto; marcar duas versões e "Comparar os dois marcados" abre as duas em abas e mostra o diff de estrutura delas (a mais velha como antes). Histórico git fica fora (decisão 4 do plano).
+
+**Ordem.** Data no nome quando *todos* os nomes têm uma: `AAAA-MM-DD`, `AAAA_MM_DD`, `AAAA.MM.DD` ou `AAAAMMDD` (anos 1970–2100, dia validado pelo mês), com hora opcional `[T_- ]HH[:MM[:SS]]`, lida como UTC; dígito colado antes ou depois não conta (`120240101` não é data), mas sufixo numérico depois de `_` ou `-` vale e a data fica sem hora (`export-2024-01-01_001.jsonl`, achado do verificador: um nome assim derrubava a pasta inteira para o `mtime`). Se algum nome não tem data, a pasta inteira vai pelo `mtime` (misturar as duas origens daria uma ordem que ninguém consegue conferir). Empate: pelo nome. A interface diz qual origem valeu.
+
+**A pasta é entrada não confiável.**
+- Só o nível da pasta (sem descer em subpastas), só arquivo comum com extensão que o app abre (a mesma lista de `abas.ts`), sem ocultos.
+- Link simbólico só entra se o alvo canônico mora dentro da pasta e é arquivo comum; link para fora conta como ignorado (teste no núcleo, na CLI e no IPC).
+- No app, a pasta precisa estar concedida (diálogo ou arraste). Pasta concedida não concede o que está dentro dela: o comando `linha_do_tempo` concede só as versões que listou, depois de passar nos tetos, para a interface abrir os dois pontos escolhidos. Teste de IPC: pasta não concedida é negada; acima do teto nenhum arquivo fica concedido; `notas.txt` e o link para fora continuam negados.
+
+**Tetos (`LIMITES`, cada um com teste no ponto de chamada real).**
+- 100 mil entradas lidas da pasta, de qualquer tipo: passar é erro, não lista parcial.
+- 500 versões: passar é erro antes de abrir qualquer arquivo (teste na CLI com 500 e 501, e no IPC com 501).
+- Prazo de 10 minutos para o percurso: estourou, o resultado sai parcial com aviso (`parada: "prazo"`). O prazo e o cancelamento (Esc, trocar de vista) valem entre versões e no meio de uma inferência (a cada ~1% dela); a abertura em si (descompactar, converter) só é interrompida pelo cancelamento, não pelo prazo.
+- 200 mudanças guardadas por versão; o resto só conta ("… e mais N").
+- Memória: só dois `Resumo` vivos (o anterior e o atual), não um por versão.
+
+**Nunca mapeia o arquivo do usuário.** Na pasta qualquer versão pode ser truncada por outro processo durante a varredura, e `mmap` do original dá SIGBUS e derruba o processo (no app, o Tauri inteiro; achado 14, reproduzido pelo verificador com `: > arquivo` no meio da inferência de um JSONL de 3 GB e da conversão de um MessagePack de 6 GB). `percorrer` abre cada versão sempre com `ArquivoLinhas::abrir_copia_com` (quem chama não escolhe a abertura):
+- JSONL cru é copiado com `read` para uma cópia anônima do app (a mesma de `vivo`, apagada do diretório ao criar) e é a cópia que se mapeia;
+- MessagePack, CBOR, BSON, YAML e TOML também: a conversão lê dessa cópia e escreve em outra cópia anônima, sem passar pelo cache de conversões (que mapeia o original, como ao abrir avulso);
+- gzip e zstd já eram lidos em fluxo com `read` e descompactados para o cache.
+
+Tamanho e `mtime` são conferidos antes de abrir e depois de inferir: se algum mudou, o passo sai "o arquivo mudou durante a leitura" e o seguinte compara com a última que abriu. Custo: uma cópia em disco por vez (duas para formato convertido) e o tempo de copiar; convertido é convertido de novo a cada percurso. Teto da cópia: `Opcoes::max_saida` (10 GiB). Na linha do tempo, uma versão acima disso vira passo com erro ("arquivo maior que …"), embora o mesmo arquivo abra avulso (avulso ele é mapeado, não copiado). Testes, cada um com a mutação conferida: JSONL truncado depois de abrir e MessagePack truncado no meio da conversão deixam o processo vivo e o passo com erro (com o `mmap` do original os dois morrem de SIGBUS); reescrita com o mesmo tamanho e outro `mtime` vira erro; teto da cópia com 8 e 9 bytes.
+
+**Versão que não abre** (sem permissão, formato quebrado) vira um item "não abriu: …" e a seguinte compara com a última que abriu (o item diz "contra X" quando não é a vizinha).
+
+**Limites conhecidos.** Compactados passam pelo cache em disco, como ao abrir um a um (convertidos, por cópias anônimas; ver acima): 500 `.gz` grandes ocupam o disco do cache. Soltar uma pasta sem arquivo aberto ainda só avisa (a visão Diff precisa de uma aba com documento). Entre listar e abrir há a mesma janela de troca de arquivo (TOCTOU) já registrada para os arquivos concedidos. Nome que não é UTF-8 vira texto com `to_string_lossy` (no núcleo e em `PassoUi.caminho`): aparece com `�` e o caminho mandado à interface não reabre esse arquivo; fatia futura (levar o caminho como bytes ou por índice da lista).
+
 ## Máscara de segredos (Fase 5, 24/11/2026)
 
 **Escolha: um ponto só.** `ArquivoLinhas::bytes()` devolve os bytes já mascarados, do mesmo tamanho do original e ainda JSON válido. Árvore, Texto, formatado, valor/copiar, busca, Estrutura, perfil, Tabela, Exportar, jq, Diff e o CLI leem dali, então nenhum caminho de saída precisa lembrar de mascarar: o que esquece, mascara assim mesmo. O original sai só por `cru()`/`cru_de()`, em lugares que não devolvem valor: o motivo e o byte do erro de sintaxe na Árvore, na Tabela e no `jasao erros` (a máscara mudaria o erro), a marca `mascarado` da linha (compara os dois), o `validar` (a regra do schema vale para o valor de verdade; a mensagem usa `masked()` do `jsonschema`, sem o valor) e a anonimização. E pelo `valor_cru`, que a interface só chama no clique de "Mostrar valor".

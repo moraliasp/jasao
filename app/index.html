@@ -223,6 +223,14 @@
       .dif .dgrupo ul { margin: 0; padding-left: 0; list-style: none; font: 12px/1.6 var(--mono); }
       .dif .dgrupo b { font: 600 12px system-ui, sans-serif; }
       .dif .dev, .dif .dtipos, .dif .dmais { color: var(--bar-muted); }
+      .dif .linha { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 13px; }
+      .dif .lpasso { padding: 4px 0; border-bottom: 1px solid var(--border); }
+      .dif .lpasso time, .dif .lpasso code { font: 12px var(--mono); }
+      .dif .lpasso.quebra .lsoma { color: var(--change); }
+      .dif .lpasso.erro { color: var(--bar-muted); }
+      .dif .lpasso ul { margin: 4px 0 0 24px; padding-left: 0; list-style: none; font: 12px/1.6 var(--mono); }
+      .dif .lpasso summary { margin-left: 24px; color: var(--bar-muted); cursor: pointer; }
+      .dif [hidden] { display: none !important; }
       .exp pre { flex: 1; min-height: 0; margin: 0; padding: 12px 14px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bar-bg); font: 12.5px/1.55 var(--mono); tab-size: 2; }
       .tl .corte { margin-left: 8px; color: var(--bar-muted); font-style: italic; }
       dialog { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); color: var(--bar-fg); }
