@@ -479,7 +479,7 @@ fn descendentes_visiveis(nos: &[No], id: usize, saida: &mut Vec<usize>) {
     }
 }
 
-const ESPACO: &[char] = &[' ', '\t', '\n', '\r'];
+pub(crate) const ESPACO: &[char] = &[' ', '\t', '\n', '\r'];
 
 /// Registro formatado; ver `Arvore::formatado`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -570,7 +570,7 @@ fn formatar(raw: &str, max: usize) -> Formatado {
     }
 }
 
-fn tipo_de(raw: &str) -> Tipo {
+pub(crate) fn tipo_de(raw: &str) -> Tipo {
     match raw.as_bytes().first() {
         Some(b'{') => Tipo::Objeto,
         Some(b'[') => Tipo::Lista,
@@ -582,7 +582,7 @@ fn tipo_de(raw: &str) -> Tipo {
 }
 
 /// Campos ou itens de um valor já validado.
-fn contar(raw: &str) -> usize {
+pub(crate) fn contar(raw: &str) -> usize {
     match tipo_de(raw) {
         Tipo::Objeto => sonic_rs::to_object_iter(raw).count(),
         Tipo::Lista => sonic_rs::to_array_iter(raw).count(),
@@ -590,7 +590,7 @@ fn contar(raw: &str) -> usize {
     }
 }
 
-fn previa(raw: &str) -> String {
+pub(crate) fn previa(raw: &str) -> String {
     if raw.len() <= MAX_PREVIA {
         return raw.to_owned();
     }
