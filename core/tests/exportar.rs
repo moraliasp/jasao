@@ -65,6 +65,10 @@ fn dourados_de_cada_formato() {
                 &exportar::zod(&inf.resumo, op),
             );
             conferir_dourado(
+                &format!("{base}{sufixo}.d.ts"),
+                &exportar::tipos(&inf.resumo, op),
+            );
+            conferir_dourado(
                 &format!("{base}{sufixo}.schema.json"),
                 &exportar::schema(&inf.resumo, op),
             );
@@ -398,4 +402,213 @@ proptest! {
             );
         }
     }
+}
+
+// ---- Validar contra schema de fora (entrada não confiável). ----
+
+fn recusa(schema: &str) -> String {
+    match validar::compilar(schema) {
+        Err(e) => e,
+        Ok(_) => panic!("devia recusar: {schema}"),
+    }
+}
+
+#[test]
+fn schema_de_fora_nao_busca_ref_remoto() {
+    for r in [
+        "https://example.com/x.json",
+        "http://127.0.0.1:1/x",
+        "file:///etc/passwd",
+        "outro.json#/a",
+        "//example.com/x",
+    ] {
+        for chave in ["$ref", "$dynamicRef"] {
+            let s = format!(r#"{{"properties": {{"a": {{"{chave}": "{r}"}}}}}}"#);
+            assert!(recusa(&s).contains("proibido"), "{s}");
+        }
+    }
+    // `$ref` no topo e dentro de lista também.
+    assert!(recusa(r#"{"anyOf": [{"$ref": "https://x/y"}]}"#).contains("proibido"));
+    // Campo de dado chamado `$ref` e `$ref` dentro de `const` não são referência.
+    let ok = r#"{"properties": {"$ref": {"const": {"$ref": "https://x"}}}, "required": ["$ref"]}"#;
+    let v = validar::compilar(ok).expect("compila");
+    assert!(v.is_valid(&serde_json::json!({"$ref": {"$ref": "https://x"}})));
+    assert!(!v.is_valid(&serde_json::json!({})));
+}
+
+#[test]
+fn schema_de_fora_recursivo_nao_derruba() {
+    // Recursão que não anda no dado (ciclo de `$ref` puro): recusada na compilação.
+    for s in [
+        r##"{"$ref": "#"}"##,
+        r##"{"$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}}, "$ref": "#/$defs/a"}"##,
+        r##"{"allOf": [{"$recursiveRef": "#"}]}"##,
+    ] {
+        assert!(recusa(s).contains("recursão"), "{s}");
+    }
+    // Recursão legítima (árvore): anda um nível no dado a cada volta; a 2ª linha reprova.
+    let dados = b"{\"a\": {\"a\": {\"a\": 1}}}\n{\"a\": \"x\"}\n";
+    let arvore = r##"{"type": "object", "properties": {"a": {"anyOf": [{"type": "integer"}, {"$ref": "#"}]}}}"##;
+    let v = validar(dados, Entrada::Jsonl, arvore);
+    assert_eq!((v.passam, v.falham), (1, 1));
+    assert_eq!(v.falhas[0].linha, 1);
+    assert!(v.falhas[0].motivo.starts_with("/a"), "{:?}", v.falhas);
+    // "Qualquer valor JSON": dois `$ref` ao topo, mas um só vale para objeto e o outro para
+    // lista; nunca os dois no mesmo dado.
+    let json = r##"{"anyOf": [{"type": ["string", "number", "boolean", "null"]},
+        {"type": "object", "additionalProperties": {"$ref": "#"}},
+        {"type": "array", "items": {"$ref": "#"}}]}"##;
+    let v = validar(
+        b"{\"a\": [1, {\"b\": null}]}\n[[[]]]\n",
+        Entrada::Jsonl,
+        json,
+    );
+    assert_eq!((v.passam, v.falham), (2, 0));
+}
+
+/// `n` níveis de `allOf` com dois `$ref` ao nível seguinte: 2^n caminhos até o fim. Poucos
+/// bytes e poucos `$ref`, custo exponencial para o validador.
+fn bomba(n: usize) -> String {
+    let defs: Vec<String> = (0..n)
+        .map(|i| {
+            let r = format!(r##"{{"$ref": "#/$defs/a{}"}}"##, i + 1);
+            format!(r#""a{i}": {{"allOf": [{r}, {r}]}}"#)
+        })
+        .collect();
+    format!(
+        r##"{{"$defs": {{{}, "a{n}": {{"type": "integer"}}}}, "$ref": "#/$defs/a0"}}"##,
+        defs.join(",")
+    )
+}
+
+#[test]
+fn schema_de_fora_com_custo_explosivo_recusado() {
+    // Medido no #45 antes da correção: n=24 0,16 s; n=40 mais de 30 s (com 81 `$ref`).
+    let t = std::time::Instant::now();
+    for n in [15, 40, 300] {
+        assert!(recusa(&bomba(n)).contains("expandido"), "n={n}");
+    }
+    // Funda demais: para no encadeamento antes de expandir.
+    assert!(recusa(&bomba(5000)).contains("encadeado"));
+    assert!(t.elapsed().as_secs() < 2, "{:?}", t.elapsed());
+    // Abaixo do teto, o mesmo formato compila e valida.
+    let v = validar(b"1\n\"x\"\n", Entrada::Jsonl, &bomba(8));
+    assert_eq!((v.passam, v.falham), (1, 1));
+    // Fan-out na recursão: cada volta dobra (2^profundidade do dado). Direto, por um `$def`
+    // alcançado duas vezes, e com caminhos de tamanhos diferentes.
+    for s in [
+        r##"{"type": "object", "properties": {"x": {"allOf": [{"$ref": "#"}, {"$ref": "#"}]}}}"##,
+        r##"{"$defs": {"b": {"$ref": "#"}}, "properties": {"x": {"allOf": [{"$ref": "#/$defs/b"}, {"$ref": "#/$defs/b"}]}}}"##,
+        // Volta de 1 e de 2 níveis no mesmo caminho: Fibonacci.
+        r##"{"properties": {"x": {"allOf": [{"$ref": "#"}, {"properties": {"x": {"$ref": "#"}}}]}}}"##,
+        r##"{"items": {"$ref": "#"}, "additionalItems": {"$ref": "#"}}"##,
+    ] {
+        assert!(recusa(s).contains("recursão"), "{s}");
+    }
+    // Recursões em dados que não se cruzam (`x` e `y`; `x` e `y.z`, tamanhos diferentes) passam.
+    for s in [
+        r##"{"type": "object", "properties": {"x": {"$ref": "#"}, "y": {"$ref": "#"}}}"##,
+        r##"{"type": "object", "properties": {"x": {"$ref": "#"}, "y": {"properties": {"z": {"$ref": "#"}}}}}"##,
+    ] {
+        let v = validar(b"{\"x\": {\"y\": {\"z\": {}}}}\n", Entrada::Jsonl, s);
+        assert_eq!((v.passam, v.falham), (1, 0), "{s}");
+    }
+    // A mesma árvore recursiva usada em dois campos: cada uso recursa sozinho.
+    let v = validar(
+        b"{\"e\": {\"f\": [{\"f\": []}]}, \"d\": {\"f\": [1]}}\n",
+        Entrada::Jsonl,
+        r##"{"$defs": {"no": {"type": "object", "properties": {"f": {"items": {"$ref": "#/$defs/no"}}}}},
+            "properties": {"e": {"$ref": "#/$defs/no"}, "d": {"$ref": "#/$defs/no"}}}"##,
+    );
+    assert_eq!((v.passam, v.falham), (0, 1));
+}
+
+#[test]
+fn schema_de_fora_fundo_ou_grande_demais() {
+    let fundo = |n: usize| "{\"items\":".repeat(n) + "{}" + &"}".repeat(n);
+    // 63 `items` + o `{}` = 64 níveis: passa; um a mais, não.
+    validar::compilar(&fundo(validar::MAX_PROFUNDIDADE - 1)).expect("no limite compila");
+    assert!(recusa(&fundo(validar::MAX_PROFUNDIDADE)).contains("níveis"));
+    // Fundo além do que o serde_json aceita: erro, não estouro de pilha.
+    recusa(&fundo(100_000));
+    let grande = format!(
+        r#"{{"description": "{}"}}"#,
+        "x".repeat(validar::MAX_SCHEMA)
+    );
+    assert!(recusa(&grande).contains("limite"));
+    // Cadeia longa de `$ref` (não cíclica): até `MAX_ENCADEADO` compila e valida numa thread
+    // com a pilha padrão (a das validações do app); acima, recusada antes de estourar a pilha.
+    let cadeia = |n: usize| {
+        let defs: Vec<String> = (0..n)
+            .map(|i| format!(r##""a{i}": {{"$ref": "#/$defs/a{}"}}"##, i + 1))
+            .collect();
+        format!(
+            r##"{{"$defs": {{{}, "a{n}": {{"type": "integer"}}}}, "$ref": "#/$defs/a0"}}"##,
+            defs.join(",")
+        )
+    };
+    let longa = cadeia(20_000);
+    assert!(longa.len() < validar::MAX_SCHEMA);
+    assert!(recusa(&longa).contains("encadeado"));
+    // `cadeia(n)` encadeia o topo e n + 1 defs: n + 2 objetos.
+    assert!(recusa(&cadeia(validar::MAX_ENCADEADO - 1)).contains("encadeado"));
+    let s = cadeia(validar::MAX_ENCADEADO - 2);
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let v = validar(b"1\n\"x\"\n", Entrada::Jsonl, &s);
+            assert_eq!((v.passam, v.falham), (1, 1));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn schema_de_fora_padrao_sem_retrocesso() {
+    // Backreference/lookaround exigem o motor com retrocesso (ReDoS): recusados.
+    assert!(validar::compilar(r#"{"pattern": "(a+)+\\1"}"#).is_err());
+    assert!(validar::compilar(r#"{"pattern": "(?=a)a"}"#).is_err());
+    // O padrão clássico de ReDoS em tempo linear.
+    let s = r#"{"type": "string", "pattern": "^(a+)+$"}"#;
+    let linha = format!("\"{}b\"\n", "a".repeat(5000));
+    let t = std::time::Instant::now();
+    let v = validar(linha.as_bytes(), Entrada::Jsonl, s);
+    assert_eq!(v.falham, 1);
+    assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+}
+
+#[test]
+fn schema_de_fora_com_meta_schema_desconhecido_nao_busca() {
+    let e = recusa(r#"{"$schema": "https://example.com/meta", "type": "object"}"#);
+    assert!(!e.is_empty());
+    // Draft conhecido (07) funciona.
+    let v = validar(
+        b"{\"a\": 1}\n{}\n",
+        Entrada::Jsonl,
+        r#"{"$schema": "http://json-schema.org/draft-07/schema#", "required": ["a"]}"#,
+    );
+    assert_eq!((v.passam, v.falham), (1, 1));
+}
+
+#[test]
+fn tipos_ts_uniao_e_opcional() {
+    let dados = std::fs::read(dourados().join("exportar.jsonl")).unwrap();
+    let t = exportar::tipos(&inferir(&dados).resumo, Opcoes::default());
+    assert!(
+        t.starts_with("export type Registro =\n  | {\n    tipo: \"evento\";\n"),
+        "{t}"
+    );
+    assert!(t.contains("\n  | {\n    tipo: \"pagamento\";\n"), "{t}");
+    // `obs` só aparece em parte dos pedidos.
+    assert!(t.contains("    obs?: string;\n"), "{t}");
+    assert!(!t.contains("moeda?"), "{t}");
+    assert!(t.contains("cidade: string | null;"), "{t}");
+    // Tipo não converte: "tratar como número" não muda o texto numérico.
+    let numero = Opcoes {
+        literal: false,
+        numero: true,
+    };
+    assert_eq!(exportar::tipos(&inferir(&dados).resumo, numero), t);
+    assert!(t.contains("valor: string;"), "{t}");
 }

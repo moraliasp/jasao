@@ -18,6 +18,15 @@ const pt = {
     recusada: "não aberto: descompactado, fica mais de 100 vezes maior que o compactado (possível bomba de descompactação)",
     teto: "descompactado, o arquivo passa de 10 GiB, o teto do app; descompacte fora do app e abra o resultado",
   },
+  seguir: {
+    seguir: "Seguir",
+    pausar: "Pausar",
+    dica: "Acompanha o arquivo enquanto ele cresce, como tail -f",
+    novas: (n: string) => `+${n} ${n === "1" ? "nova" : "novas"}`,
+    irAoFim: "Ir para os registros novos",
+    seguindo: (r: string) => `Seguindo · ${r}`,
+    reescrito: "O arquivo foi truncado, trocado ou reescrito: reaberto do início",
+  },
   abasArquivos: {
     rotulo: "Arquivos abertos",
     nova: "Nova aba",
@@ -68,7 +77,7 @@ const pt = {
   },
   exportar: {
     aba: "Exportar",
-    rotulo: "Exportar a estrutura como Zod ou JSON Schema",
+    rotulo: "Exportar a estrutura como Zod, JSON Schema ou tipos TypeScript",
     saida: "Saída",
     unico: "Campo com um valor só",
     generico: "Tipo genérico",
@@ -91,6 +100,9 @@ const pt = {
     cancelada: "Validação cancelada.",
     copiado: "Código copiado.",
     salvo: (c: string) => `Salvo em ${c}`,
+    validarOutro: "Validar outro arquivo…",
+    validarDeFora: "Validar com schema de fora…",
+    contraSchema: (nome: string) => `Contra ${nome}`,
   },
   tabela: {
     aba: "Tabela",
@@ -295,6 +307,15 @@ const en: Textos = {
     recusada: "not opened: decompressed, it gets more than 100 times larger than the compressed file (possible decompression bomb)",
     teto: "decompressed, the file exceeds 10 GiB, the app limit; decompress it outside the app and open the result",
   },
+  seguir: {
+    seguir: "Follow",
+    pausar: "Pause",
+    dica: "Keeps up with the file while it grows, like tail -f",
+    novas: (n: string) => `+${n} new`,
+    irAoFim: "Go to the new records",
+    seguindo: (r: string) => `Following · ${r}`,
+    reescrito: "The file was truncated, replaced or rewritten: reopened from the start",
+  },
   abasArquivos: {
     rotulo: "Open files",
     nova: "New tab",
@@ -344,7 +365,7 @@ const en: Textos = {
   },
   exportar: {
     aba: "Export",
-    rotulo: "Export the structure as Zod or JSON Schema",
+    rotulo: "Export the structure as Zod, JSON Schema or TypeScript types",
     saida: "Output",
     unico: "Field with a single value",
     generico: "Generic type",
@@ -367,6 +388,9 @@ const en: Textos = {
     cancelada: "Validation cancelled.",
     copiado: "Code copied.",
     salvo: (c: string) => `Saved to ${c}`,
+    validarOutro: "Validate another file…",
+    validarDeFora: "Validate with an outside schema…",
+    contraSchema: (nome: string) => `Against ${nome}`,
   },
   tabela: {
     aba: "Table",

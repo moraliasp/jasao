@@ -8,9 +8,18 @@
 //!                                         resultados em JSONL no stdout, erros por linha no stderr
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
-//!   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>
-//!                                         Zod 4 ou JSON Schema 2020-12 no stdout; valida o
-//!                                         arquivo contra ele e sai com 1 se algum registro falhar
+//!   exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>
+//!                                         Zod 4, JSON Schema 2020-12 ou tipos TypeScript (.d.ts)
+//!                                         no stdout; valida o arquivo contra ele e sai com 1 se
+//!                                         algum registro falhar
+//!   validar <arquivo> --schema <schema.json> | --como <referência> [--literal]
+//!                                         confere cada registro contra um JSON Schema (o salvo
+//!                                         pelo `exportar --schema` ou um de fora) ou contra a
+//!                                         estrutura inferida de outro arquivo; imprime as falhas
+//!                                         (linha: /caminho: motivo, até 20). Sai com 0 se todos
+//!                                         passam, 1 se algum falha (ou não é JSON), 2 em uso
+//!                                         errado, 3 se não deu para validar (arquivo não abre,
+//!                                         schema recusado: >1 MiB, >64 níveis, `$ref` não local)
 //!   diff <antes> <depois> [--json] [--falha-em quebra|qualquer]
 //!                                         mudanças de estrutura, quebra × compatível; sai com 1
 //!                                         se `--falha-em` pegar quebra (ou qualquer), 2 em uso
@@ -40,7 +49,10 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    consultar <filtro> <arquivo> [--documento] [--tempo-max SEG]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]\n  \
-                   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>\n  \
+                   exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>\n  \
+                   validar <arquivo> --schema <schema.json> | --como <referência> [--literal]\n\
+                   \x20   saída do validar: 0 todos passam · 1 algum falha · 2 uso errado ·\n\
+                   \x20   3 não deu para validar (arquivo não abre, schema recusado)\n  \
                    diff <antes> <depois> [--json] [--falha-em quebra|qualquer]\n\
                    \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
                    \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
@@ -85,11 +97,29 @@ fn main() -> ExitCode {
             inferir(arquivo, true, &mut tela())
         }
         ["exportar", resto @ ..] => match opcoes_exportar(resto) {
-            Some((arquivo, zod, op)) => exportar(arquivo, zod, op).map(|ok| {
+            Some((arquivo, formato, op)) => exportar(arquivo, formato, op).map(|ok| {
                 if !ok {
                     saida = ExitCode::from(1);
                 }
             }),
+            None => {
+                eprintln!("{USO}");
+                return ExitCode::from(2);
+            }
+        },
+        ["validar", resto @ ..] => match opcoes_validar(resto) {
+            Some(op) => match validar(op, &mut tela()) {
+                Ok(falhou) => {
+                    saida = ExitCode::from(u8::from(falhou));
+                    Ok(())
+                }
+                // Schema recusado ou arquivo que não abre não pode sair como "falhou" (1) em CI.
+                Err(e) if !pipe_fechado(&*e) => {
+                    let _ = writeln!(erro(), "erro: {e}");
+                    return ExitCode::from(VALIDAR_SEM_VALIDAR);
+                }
+                Err(e) => Err(e),
+            },
             None => {
                 eprintln!("{USO}");
                 return ExitCode::from(2);
@@ -550,13 +580,21 @@ fn inferir(arquivo: &str, json: bool, out: &mut Terminal<impl Write>) -> Resulta
     Ok(())
 }
 
-fn opcoes_exportar<'a>(args: &[&'a str]) -> Option<(&'a str, bool, nucleo::exportar::Opcoes)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Formato {
+    Zod,
+    Schema,
+    Ts,
+}
+
+fn opcoes_exportar<'a>(args: &[&'a str]) -> Option<(&'a str, Formato, nucleo::exportar::Opcoes)> {
     let (mut arquivo, mut zod, mut op) = (None, None, nucleo::exportar::Opcoes::default());
     let mut it = args.iter();
     while let Some(&a) = it.next() {
         match a {
-            "--zod" if zod.is_none() => zod = Some(true),
-            "--schema" if zod.is_none() => zod = Some(false),
+            "--zod" if zod.is_none() => zod = Some(Formato::Zod),
+            "--schema" if zod.is_none() => zod = Some(Formato::Schema),
+            "--ts" if zod.is_none() => zod = Some(Formato::Ts),
             "--literal" => op.literal = true,
             "--numero-texto" => {
                 op.numero = match *it.next()? {
@@ -576,7 +614,7 @@ fn opcoes_exportar<'a>(args: &[&'a str]) -> Option<(&'a str, bool, nucleo::expor
 /// registro falhar.
 fn exportar(
     arquivo: &str,
-    zod: bool,
+    formato: Formato,
     op: nucleo::exportar::Opcoes,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     use nucleo::{estrutura, exportar, validar};
@@ -584,11 +622,16 @@ fn exportar(
     let nada = AtomicBool::new(false);
     let inf = estrutura::inferir(a.bytes(), &nada, |_| {});
     let r = &inf.resumo;
-    let (codigo, schema) = if zod {
-        (exportar::zod(r, op), exportar::schema_da_entrada_zod(r, op))
-    } else {
-        let s = exportar::schema(r, op);
-        (s.clone(), s)
+    let (codigo, schema) = match formato {
+        Formato::Zod => (exportar::zod(r, op), exportar::schema_da_entrada_zod(r, op)),
+        Formato::Ts => (
+            exportar::tipos(r, op),
+            exportar::schema_da_entrada_zod(r, op),
+        ),
+        Formato::Schema => {
+            let s = exportar::schema(r, op);
+            (s.clone(), s)
+        }
     };
     // O código já sai com controles e bidi escapados (`exportar::aspas`): fiel também no terminal.
     let mut out = io::stdout().lock();
@@ -611,6 +654,84 @@ fn exportar(
         writeln!(err, "linha {}: {}", f.linha + 1, f.motivo)?;
     }
     Ok(v.falham == 0 && v.invalidas == 0)
+}
+
+/// Contra o que validar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Contra<'a> {
+    Schema(&'a str),
+    /// Estrutura inferida deste arquivo de referência; `bool` = `--literal`.
+    Como(&'a str, bool),
+}
+
+fn opcoes_validar<'a>(args: &[&'a str]) -> Option<(&'a str, Contra<'a>)> {
+    let (mut arquivo, mut schema, mut como, mut literal) = (None, None, None, false);
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--schema" if schema.is_none() => schema = Some(*it.next()?),
+            "--como" if como.is_none() => como = Some(*it.next()?),
+            "--literal" => literal = true,
+            _ if arquivo.is_none() && !a.starts_with("--") => arquivo = Some(a),
+            _ => return None,
+        }
+    }
+    let contra = match (schema, como) {
+        (Some(s), None) if !literal => Contra::Schema(s),
+        (None, Some(c)) => Contra::Como(c, literal),
+        _ => return None,
+    };
+    Some((arquivo?, contra))
+}
+
+/// Saída do `validar` quando não deu para validar.
+const VALIDAR_SEM_VALIDAR: u8 = 3;
+
+/// Imprime as falhas (as primeiras `MAX_FALHAS`, por linha) no `out`. `Ok(true)` se algum
+/// registro falhou ou não é JSON.
+fn validar(
+    (arquivo, contra): (&str, Contra),
+    out: &mut Terminal<impl Write>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use nucleo::{estrutura, exportar, validar};
+    let nada = AtomicBool::new(false);
+    let schema = match contra {
+        Contra::Schema(s) => validar::ler_schema(std::path::Path::new(s))?,
+        Contra::Como(c, literal) => {
+            let r = abrir(c)?;
+            let inf = estrutura::inferir(r.bytes(), &nada, |_| {});
+            let op = exportar::Opcoes {
+                literal,
+                numero: false,
+            };
+            exportar::schema(&inf.resumo, op)
+        }
+    };
+    // Recusa o schema antes de abrir o arquivo (que pode ser grande).
+    validar::compilar(&schema).map_err(|e| format!("schema recusado: {e}"))?;
+    let a = abrir(arquivo)?;
+    // shortcut: a inferência inteira só para saber se é JSONL ou JSON único; trocar por um
+    // detector leve se o tempo do `validar` em arquivo grande incomodar.
+    let entrada = estrutura::inferir(a.bytes(), &nada, |_| {}).entrada;
+    let t = Instant::now();
+    let v = validar::validar(a.bytes(), entrada, &schema, &nada, |_| {})?;
+    // O motivo cita caminho de chave do arquivo: sai neutralizado no terminal.
+    for f in &v.falhas {
+        writeln!(out, "linha {}: {}", f.linha + 1, f.motivo)?;
+    }
+    out.flush()?;
+    eprintln!(
+        "{} de {} registros passam · {} falham · {} linhas não são JSON · validado em {:.2?}",
+        v.passam,
+        v.passam + v.falham,
+        v.falham,
+        v.invalidas,
+        t.elapsed()
+    );
+    if v.falham + v.invalidas > v.falhas.len() as u64 {
+        eprintln!("(só as {} primeiras falhas aparecem)", v.falhas.len());
+    }
+    Ok(v.falham + v.invalidas > 0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1056,5 +1177,83 @@ mod testes {
             escrito(true, &[cru]),
             "\\u{1b}[2J \u{fffd} \\u{202e}".as_bytes()
         );
+    }
+
+    #[test]
+    fn opcoes_do_validar_e_do_exportar_ts() {
+        assert_eq!(
+            opcoes_validar(&["a", "--schema", "s"]),
+            Some(("a", Contra::Schema("s")))
+        );
+        assert_eq!(
+            opcoes_validar(&["--como", "r", "a", "--literal"]),
+            Some(("a", Contra::Como("r", true)))
+        );
+        assert_eq!(
+            opcoes_validar(&["a", "--como", "r"]),
+            Some(("a", Contra::Como("r", false)))
+        );
+        for ruim in [
+            &["a"][..],
+            &["--schema", "s"],
+            &["a", "--schema"],
+            &["a", "--schema", "s", "--como", "r"],
+            &["a", "--schema", "s", "--literal"],
+            &["a", "--schema", "s", "--schema", "t"],
+            &["a", "b", "--schema", "s"],
+        ] {
+            assert!(opcoes_validar(ruim).is_none(), "{ruim:?}");
+        }
+        let (_, f, op) = opcoes_exportar(&["a", "--ts", "--literal"]).unwrap();
+        assert!(matches!(f, Formato::Ts) && op.literal);
+        assert!(opcoes_exportar(&["a", "--ts", "--zod"]).is_none());
+    }
+
+    #[test]
+    fn validar_lista_falhas_neutralizadas_e_recusa_ref_remoto() {
+        let dados = Temporario::novo(
+            "val-dados",
+            "{\"n\":1}\n{\"n\":\"x\",\"k\u{202e}\":1}\n{\"n\":2}\n",
+        );
+        let schema = Temporario::novo(
+            "val-schema",
+            r#"{"type":"object","required":["n"],"properties":{"n":{"type":"integer"}},"additionalProperties":false}"#,
+        );
+        let remoto = Temporario::novo("val-remoto", r#"{"$ref":"https://exemplo.invalid/s.json"}"#);
+        let ref_ok = Temporario::novo("val-ref", "{\"n\":5}\n");
+        let [pd, ps, pr, pk] = [&dados, &schema, &remoto, &ref_ok].map(|t| t.0.to_str().unwrap());
+        let rodar = |contra| {
+            let mut t = Terminal {
+                out: Vec::new(),
+                neutralizar: true,
+            };
+            let r = validar((pd, contra), &mut t)
+                .map(|falhou| (falhou, String::from_utf8(t.out).unwrap()));
+            r.map_err(|e| e.to_string())
+        };
+        let (falhou, texto) = rodar(Contra::Schema(ps)).unwrap();
+        assert!(falhou);
+        assert_eq!(texto.lines().count(), 1, "{texto}");
+        assert!(texto.starts_with("linha 2: "), "{texto}");
+        assert!(
+            texto.contains("\\u{202e}") && !texto.chars().any(perigoso),
+            "{texto:?}"
+        );
+        // Pela estrutura de outro arquivo: `n` inteiro, então a linha 2 falha igual.
+        let (falhou, texto) = rodar(Contra::Como(pk, false)).unwrap();
+        assert!(falhou && texto.starts_with("linha 2: "), "{texto}");
+        // `--literal` trava `n` em 5: as três linhas falham.
+        assert_eq!(rodar(Contra::Como(pk, true)).unwrap().1.lines().count(), 3);
+        // Tudo passa: `Ok(false)`, nada impresso.
+        assert_eq!(
+            rodar(Contra::Como(pd, false)).unwrap(),
+            (false, String::new())
+        );
+        let e = rodar(Contra::Schema(pr)).unwrap_err();
+        assert!(
+            e.starts_with("schema recusado: ") && e.contains("proibido"),
+            "{e}"
+        );
+        assert!(rodar(Contra::Schema("/nao/existe.json")).is_err());
     }
 }
