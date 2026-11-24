@@ -21,10 +21,13 @@ const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${i
 const dataLocal = (ms: number) => new Date(ms).toLocaleString(t.lang, { dateStyle: "short", timeStyle: "medium" });
 const bytes = (l: No) => l.faixa[1] - l.faixa[0];
 
+/** Começo do texto numa prévia cortada: sem a aspa de abertura e sem o `…` que o núcleo põe no fim. */
+const inicio = (l: No) => l.previa.slice(1, l.previa.endsWith("…") ? -1 : undefined);
+
 /** Detecção pela prévia: completa se o valor coube nela, senão só a pista pelo começo. */
 export function daPrevia(l: No): Inteligente | Pista | null {
   if (l.erro || (l.tipo !== "texto" && l.tipo !== "numero")) return null;
-  if (bytes(l) > MAX_PREVIA) return l.tipo === "texto" ? pista(l.previa.slice(1), bytes(l)) : null;
+  if (bytes(l) > MAX_PREVIA) return l.tipo === "texto" ? pista(inicio(l), bytes(l)) : null;
   if (l.tipo === "numero") return detectar("numero", l.previa, l.chave);
   try {
     return detectar("texto", JSON.parse(l.previa), l.chave);
@@ -33,9 +36,13 @@ export function daPrevia(l: No): Inteligente | Pista | null {
   }
 }
 
-/** Botão do selo de link: mostra o host de destino; o endereço inteiro vai no `title`. */
-function botaoLink(endereco: string): string {
-  const host = hostDe(endereco);
+/**
+ * Botão do selo de link: mostra o host de destino e o endereço no `title`. Na prévia cortada, o
+ * host só aparece se terminou dentro dela (senão o que se vê não seria o que o clique abre).
+ */
+function botaoLink(endereco: string, cortado: boolean): string {
+  const host = !cortado || /^https?:\/\/[^/?#]+[/?#]/.test(endereco) ? hostDe(endereco) : "";
+  if (cortado) endereco += "…";
   return `<button class="lk" type="button" tabindex="-1" data-link title="${esc(endereco)}" aria-label="${esc(t.inteligente.abrir(endereco))}">${icone("link")}${esc(host || t.inteligente.abrirCurto)}</button>`;
 }
 
@@ -44,7 +51,7 @@ export function selo(l: No): string {
   const d = daPrevia(l);
   if (!d || d === "json") return "";
   let corpo: string;
-  if (d === "url") corpo = botaoLink(l.previa.slice(1));
+  if (d === "url") corpo = botaoLink(inicio(l), true); // `d` só é pista com a prévia cortada
   else if (d === "imagem") corpo = `${icone("image")}${t.inteligente.imagemCurta}`;
   else if (d === "jwt") corpo = `${icone("key")}JWT`;
   else
@@ -59,7 +66,7 @@ export function selo(l: No): string {
         corpo = `<span class="sw" role="img" aria-label="${esc(t.inteligente.amostra(d.css))}" style="background:${esc(d.css)}"></span>`;
         break;
       case "url":
-        corpo = botaoLink(d.href);
+        corpo = botaoLink(d.href, false);
         break;
       case "imagem":
         corpo = `${icone("image")}${t.inteligente.imagemCurta}`;

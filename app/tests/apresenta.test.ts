@@ -3,13 +3,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { html, type No, selo } from "../src/apresenta.ts";
-import { detectar, type Inteligente } from "../src/valores.ts";
+import { detectar, type Inteligente, MAX_FORMATADO } from "../src/valores.ts";
+import { daPrevia } from "../src/apresenta.ts";
 
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
 const HOSTIL = `<img src=x onerror=alert(1)>"'><script>x</script>`;
+/** Prévia como `nucleo::arvore::previa`: até 200 bytes, cortada em fronteira de caractere, com `…`. */
+export function previaDoNucleo(raw: string): string {
+  const b = Buffer.from(raw);
+  if (b.length <= 200) return raw;
+  let fim = 200;
+  while ((b[fim] & 0xc0) === 0x80) fim--;
+  return `${b.subarray(0, fim).toString()}…`;
+}
 const no = (valor: string, chave: string | null = null): No => {
-  const previa = JSON.stringify(valor);
-  return { tipo: "texto", previa: previa.slice(0, 200), chave, faixa: [0, previa.length], erro: null };
+  const raw = JSON.stringify(valor);
+  return { tipo: "texto", previa: previaDoNucleo(raw), chave, faixa: [0, Buffer.byteLength(raw)], erro: null };
 };
 
 /** Nenhuma tag nem atributo injetado: só as tags que o próprio app monta. */
@@ -77,4 +86,43 @@ test("selo de prévia cortada: URL com host; JSON e log não ganham selo", () =>
 test("data do arquivo no selo e no painel, e cor com amostra", () => {
   assert.match(selo(no("#2f81f7")), /class="sw" role="img" aria-label="[^"]*#2f81f7" style="background:#2f81f7"/);
   assert.match(html(detectar("texto", "2024-02-29T13:45:00Z", null)!), /2024-02-29T13:45:00\.000Z/);
+});
+
+test("prévia cortada no formato do núcleo (200 bytes + …): JWT e imagem ganham selo", () => {
+  const jwt = `${b64url('{"alg":"HS256","typ":"JWT"}')}.${b64url(JSON.stringify({ sub: "u-1", papel: "leitura", x: "a".repeat(200) }))}.assinatura`;
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const longo = png.replace(/=+$/, "") + "A".repeat(400);
+  for (const [nome, v, pista, rotulo] of [
+    ["jwt", jwt, "jwt", /JWT/],
+    ["data uri", `data:image/png;base64,${longo}`, "imagem", /#image/],
+    ["base64 cru", longo, "imagem", /#image/],
+  ] as const) {
+    const l = no(v);
+    assert.ok(l.previa.endsWith("…") && Buffer.byteLength(l.previa) === 200 + 3, nome);
+    assert.equal(daPrevia(l), pista, nome);
+    assert.match(selo(l), rotulo, nome);
+  }
+  // Prévia com acento cortado no meio: a fronteira recua e o `…` não engana a detecção.
+  assert.equal(daPrevia(no(`${"é".repeat(150)}`)), null);
+});
+
+test("URL de prévia cortada: host só se terminou dentro da prévia", () => {
+  const s1 = selo(no(`https://exemplo.test/${"a".repeat(300)}`));
+  assert.match(s1, />exemplo\.test<\/button>/);
+  assert.match(s1, /title="https:\/\/exemplo\.test\/a+…"/);
+  // Host que não coube na prévia: o selo não mostra um host que o clique talvez não abra.
+  const s2 = selo(no(`https://${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.${"e".repeat(60)}.test/x`));
+  assert.doesNotMatch(s2, /[bcde]{20}<\/button>/);
+  assert.match(s2, /data-link/);
+});
+
+test("reindentado acima de MAX_FORMATADO fica no texto cru", () => {
+  // ~1 MB com 99 níveis: reindentado passaria de 100 MB.
+  const s = "[".repeat(99) + Array(500000).fill("1").join(",") + "]".repeat(99);
+  const t0 = performance.now();
+  const d = detectar("texto", s, null);
+  assert.ok(performance.now() - t0 < 2000);
+  assert.equal(d?.tipo, "json");
+  assert.equal((d as { texto: string }).texto, s);
+  assert.ok(s.length < MAX_FORMATADO);
 });

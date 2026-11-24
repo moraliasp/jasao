@@ -10,6 +10,8 @@ export const MAX_JSON_TEXTO = 1 << 20;
 export const MAX_NIVEL = 100;
 /** Teto de uma URL que vira link. */
 export const MAX_URL = 2048;
+/** Igual a `nucleo::arvore::MAX_FORMATADO`: reindentado maior que isso fica no texto cru. */
+export const MAX_FORMATADO = 16 << 20;
 
 export type Inteligente =
   | { tipo: "epoca"; ms: number; unidade: "s" | "ms" }
@@ -185,7 +187,7 @@ function jsonNoTexto(s: string): Inteligente | null {
 /**
  * JSON válido com um campo por linha, sem passar os valores por `JSON.parse`: número grande e
  * chave repetida ficam como estão no texto (a mesma regra do `formatado` do núcleo). `null` acima
- * de `MAX_NIVEL` níveis.
+ * de `MAX_NIVEL` níveis; o próprio `s` (cru) se o reindentado passaria de `MAX_FORMATADO`.
  */
 export function reindentar(s: string, passo = "  "): string | null {
   // Pedaços num array (e não `out +=` com regex no fim): vazio só desfaz o último pedaço, e o
@@ -193,7 +195,11 @@ export function reindentar(s: string, passo = "  "): string | null {
   const out: string[] = [];
   let nivel = 0;
   let abriu = false; // o último pedaço é a quebra logo depois de `{`/`[`
-  const quebra = () => "\n" + passo.repeat(nivel);
+  let indentacao = 0; // bytes que a reindentação acrescenta; os tokens somam no máximo `s.length`
+  const quebra = () => {
+    indentacao += 1 + passo.length * nivel;
+    return "\n" + passo.repeat(nivel);
+  };
   for (const [tok] of s.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\],:]|[^\s{}[\],:"]+|\s+/g)) {
     const c = tok[0];
     if (/^\s/.test(c)) continue;
@@ -212,6 +218,7 @@ export function reindentar(s: string, passo = "  "): string | null {
     else if (c === ":") out.push(": ");
     else out.push(tok);
     abriu = false;
+    if (indentacao + s.length > MAX_FORMATADO) return s;
   }
   return out.join("");
 }
