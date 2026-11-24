@@ -304,17 +304,8 @@ fn tamanho_declarado(arquivo: &mut File, formato: Formato, total: u64) -> io::Re
     Ok(declarado)
 }
 
-/// Descompacta `caminho` para o cache (ou reaproveita o que já está lá) e devolve o caminho do
-/// arquivo descompactado.
-pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<PathBuf> {
-    let mut arquivo = File::open(caminho)?;
-    let meta = arquivo.metadata()?;
-    let total = meta.len();
-    let mtime = meta
-        .modified()?
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+/// Pasta do cache de `op` (ou a do sistema), criada e só do dono.
+pub(crate) fn pasta_cache(op: &Opcoes) -> io::Result<PathBuf> {
     let dir = match &op.dir_cache {
         Some(d) => d.clone(),
         None => dir_cache_sistema()?,
@@ -331,6 +322,21 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
         ));
     }
     privado(&dir, 0o700)?;
+    Ok(dir)
+}
+
+/// Descompacta `caminho` para o cache (ou reaproveita o que já está lá) e devolve o caminho do
+/// arquivo descompactado.
+pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<PathBuf> {
+    let mut arquivo = File::open(caminho)?;
+    let meta = arquivo.metadata()?;
+    let total = meta.len();
+    let mtime = meta
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let dir = pasta_cache(op)?;
     let canonico = fs::canonicalize(caminho)?;
     let chave = fnv(&[
         canonico.as_os_str().as_encoded_bytes(),
@@ -402,13 +408,13 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
 
 /// Permissão só do dono (o cache guarda o conteúdo de arquivos do usuário).
 #[cfg(unix)]
-fn privado(p: &Path, modo: u32) -> io::Result<()> {
+pub(crate) fn privado(p: &Path, modo: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(p, fs::Permissions::from_mode(modo))
 }
 
 #[cfg(not(unix))]
-fn privado(_: &Path, _: u32) -> io::Result<()> {
+pub(crate) fn privado(_: &Path, _: u32) -> io::Result<()> {
     Ok(())
 }
 

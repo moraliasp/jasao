@@ -88,6 +88,8 @@ struct Doc {
     consulta: Mutex<EstadoConsulta>,
     exportar: Mutex<EstadoExportar>,
     ordem: Mutex<EstadoOrdem>,
+    /// Modo seguir (arquivo vivo): a cópia que cresce; `None` fora dele.
+    vivo: Mutex<Option<nucleo::Vivo>>,
 }
 
 /// Ordenação da Tabela: a pronta (com a direção) e a que roda em 2º plano.
@@ -587,24 +589,36 @@ async fn abrir<R: Runtime>(
         &app,
         &estado,
     )?);
-    let total = arvore.total();
-    let arquivo = arvore.compartilhado();
-    let conteudo = resumo::conteudo(&arquivo);
-    let linhas = arquivo.linhas();
-    // JSON em várias linhas: "linhas inválidas" não faz sentido (ver `Conteudo`).
-    let pular = conteudo == Conteudo::JsonVariasLinhas;
-    // Sem régua para um JSON só (decisão 2 do micronavegador): nem 2ª passada.
-    let colorir = !pular && conteudo != Conteudo::JsonUnico;
-    let cancelar = Arc::new(AtomicBool::new(false));
-    let marcas: Arc<[AtomicU8]> = nucleo::regua::marcas(linhas).into();
     let novo = id.is_none();
-    let (id, doc) = match id {
-        Some(id) => {
+    if let Some(id) = id {
+        // Reabrir no mesmo documento (resultado de jq) sai do modo seguir.
+        *estado.doc(id)?.vivo.lock().map_err(|e| e.to_string())? = None;
+    }
+    let aberto = instalar(Some(arvore), id, &app, &estado)?;
+    // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
+    // jq reabre num documento que já existe (`id` Some), então também fica.
+    if novo && exemplos::embutido(&caminho).is_none() {
+        lembrar(&app, &caminho);
+    }
+    Ok(aberto)
+}
+
+/// Põe `arvore` no documento `id` (ou num novo, sem `id`) e dispara a varredura em 2º plano.
+/// `arvore` `None`: a árvore do documento já foi trocada por quem chama (arquivo vivo).
+fn instalar<R: Runtime>(
+    arvore: Option<Arvore>,
+    id: Option<u32>,
+    app: &AppHandle<R>,
+    estado: &Estado,
+) -> Result<Aberto, String> {
+    let app = app.clone();
+    let (id, doc) = match (arvore, id) {
+        (Some(arvore), Some(id)) => {
             let doc = estado.doc(id)?;
             *doc.arvore.lock().map_err(|e| e.to_string())? = arvore;
             (id, doc)
         }
-        None => {
+        (Some(arvore), None) => {
             let id = estado.proximo.fetch_add(1, Relaxed) + 1;
             let doc = Arc::new(Doc {
                 arvore: Mutex::new(arvore),
@@ -613,12 +627,24 @@ async fn abrir<R: Runtime>(
                 consulta: Default::default(),
                 exportar: Default::default(),
                 ordem: Default::default(),
+                vivo: Default::default(),
             });
             let mut docs = estado.docs.lock().map_err(|e| e.to_string())?;
             docs.insert(id, Arc::clone(&doc));
             (id, doc)
         }
+        (None, Some(id)) => (id, estado.doc(id)?),
+        (None, None) => return Err("instalar sem árvore nem documento".into()),
     };
+    let (total, arquivo) = doc.com(|a| (a.total(), a.compartilhado()))?;
+    let conteudo = resumo::conteudo(&arquivo);
+    let linhas = arquivo.linhas();
+    // JSON em várias linhas: "linhas inválidas" não faz sentido (ver `Conteudo`).
+    let pular = conteudo == Conteudo::JsonVariasLinhas;
+    // Sem régua para um JSON só (decisão 2 do micronavegador): nem 2ª passada.
+    let colorir = !pular && conteudo != Conteudo::JsonUnico;
+    let cancelar = Arc::new(AtomicBool::new(false));
+    let marcas: Arc<[AtomicU8]> = nucleo::regua::marcas(linhas).into();
     let geracao = {
         let mut v = doc.varredura.lock().map_err(|e| e.to_string())?;
         v.cancelar.store(true, Relaxed);
@@ -643,11 +669,6 @@ async fn abrir<R: Runtime>(
     };
     doc.ordem.lock().map_err(|e| e.to_string())?.reiniciar();
     doc.busca.lock().map_err(|e| e.to_string())?.reiniciar();
-    // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
-    // jq reabre num documento que já existe (`id` Some), então também fica.
-    if novo && exemplos::embutido(&caminho).is_none() {
-        lembrar(&app, &caminho);
-    }
     let doc = Arc::downgrade(&doc);
     std::thread::spawn(move || {
         // Grava no estado e emite, se o documento ainda estiver aberto com este arquivo.
@@ -703,6 +724,83 @@ async fn abrir<R: Runtime>(
         });
     });
     Ok(Aberto { id, total })
+}
+
+/// Resposta de `seguir`: o documento depois da leitura.
+#[derive(Serialize)]
+struct Seguido {
+    total: usize,
+    registros: usize,
+    /// Registros que chegaram nesta leitura (0 se nada chegou ou se o arquivo foi reaberto).
+    novas: usize,
+    /// O arquivo foi truncado, rotacionado ou reescrito e o documento foi reaberto do zero.
+    reescrito: bool,
+}
+
+/// Modo seguir (como `tail -f`): a 1ª chamada troca o documento por uma cópia que cresce
+/// (`nucleo::vivo`, sem SIGBUS se o original encolher); as seguintes acrescentam as linhas
+/// completas que chegaram e refazem a varredura. A interface chama a cada intervalo e para de
+/// chamar na pausa. Só abre caminho concedido (ver `autorizado`).
+#[tauri::command]
+async fn seguir<R: Runtime>(
+    caminho: String,
+    id: u32,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Seguido, String> {
+    let caminho = autorizado(&app, &caminho)?;
+    let doc = estado.doc(id)?;
+    let mut vivo = doc.vivo.lock().map_err(|e| e.to_string())?;
+    let erro = |e: std::io::Error| format!("{caminho}: {e}");
+    let (arquivo, reescrito) = match vivo.as_mut().map(nucleo::Vivo::atualizar) {
+        Some(Ok(nucleo::Mudanca::Nada)) => {
+            let (total, registros) = doc.com(|a| (a.total(), a.registros()))?;
+            return Ok(Seguido {
+                total,
+                registros,
+                novas: 0,
+                reescrito: false,
+            });
+        }
+        Some(Ok(nucleo::Mudanca::Cresceu(a))) => (a, false),
+        Some(Err(e)) => return Err(erro(e)),
+        reaberto => {
+            let (v, a) = nucleo::Vivo::abrir(&caminho, &Opcoes::default()).map_err(erro)?;
+            *vivo = Some(v);
+            (a, reaberto.is_some())
+        }
+    };
+    let novas = doc.com(|a| {
+        let antes = a.registros();
+        let novas = if reescrito {
+            0
+        } else {
+            arquivo.linhas().saturating_sub(antes)
+        };
+        // A 1ª cópia pode ter uma linha a menos (a última, sem `\n`): árvore nova.
+        if reescrito || arquivo.linhas() < antes {
+            *a = Arvore::new(arquivo);
+        } else {
+            a.crescer(arquivo);
+        }
+        novas
+    })?;
+    drop(vivo);
+    let Aberto { total, .. } = instalar(None, Some(id), &app, &estado)?;
+    let registros = doc.com(|a| a.registros())?;
+    Ok(Seguido {
+        total,
+        registros,
+        novas,
+        reescrito,
+    })
+}
+
+/// Sai do modo seguir: o documento fica com a cópia que já tem, sem ler mais o original.
+#[tauri::command]
+fn parar_seguir(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
+    *estado.doc(id)?.vivo.lock().map_err(|e| e.to_string())? = None;
+    Ok(())
 }
 
 /// Fecha o documento: some do mapa (a árvore e o mapeamento do arquivo saem com ele), as
@@ -1642,6 +1740,8 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             limpar_recentes,
             recente_ausente,
             abrir,
+            seguir,
+            parar_seguir,
             nova_abertura,
             cancelar_abertura,
             fechar,
@@ -1920,6 +2020,75 @@ mod testes {
     }
 
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
+    /// Modo seguir pelo IPC: cresce sem reabrir, espera a linha parcial e reabre ao truncar.
+    #[test]
+    fn seguir_pelo_ipc() {
+        let pasta = tempfile::tempdir().unwrap();
+        let log = pasta.path().join("log.jsonl");
+        std::fs::write(&log, "{\"i\":0}\n{\"i\":1}\n").unwrap();
+        let app = comandos(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let chamar = |cmd: &str, args: Value| -> Result<Value, Value> {
+            let pedido = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            };
+            get_ipc_response(&janela, pedido).map(|b| b.deserialize::<Value>().unwrap())
+        };
+        let caminho = log.to_str().unwrap();
+        let seguir = || chamar("seguir", json!({ "caminho": caminho, "id": 1 }));
+        // Sem concessão, nem abre nem segue.
+        assert!(chamar("abrir", json!({ "caminho": caminho })).is_err());
+        app.state::<abertura::Concedidos>().conceder(&log);
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": caminho })),
+            Ok(json!({"id": 1, "total": 2}))
+        );
+        let acrescentar = |b: &[u8]| {
+            std::io::Write::write_all(
+                &mut std::fs::OpenOptions::new().append(true).open(&log).unwrap(),
+                b,
+            )
+            .unwrap()
+        };
+        // 1ª chamada: troca pela cópia (mesmas 2 linhas, nenhuma nova).
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 2, "registros": 2, "novas": 0, "reescrito": false}))
+        );
+        acrescentar(b"{\"i\":2}\n{\"i\":");
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 3, "registros": 3, "novas": 1, "reescrito": false}))
+        );
+        let ultima = chamar("linhas", json!({"id": 1, "inicio": 2, "quantidade": 5})).unwrap();
+        assert_eq!(
+            ultima.as_array().unwrap().len(),
+            1,
+            "a linha parcial não entra"
+        );
+        acrescentar(b"3}\n");
+        assert_eq!(seguir().unwrap()["registros"], 4);
+        std::fs::write(&log, "{\"novo\":true}\n").unwrap();
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 1, "registros": 1, "novas": 0, "reescrito": true}))
+        );
+        assert_eq!(chamar("parar_seguir", json!({"id": 1})), Ok(Value::Null));
+        acrescentar(b"{}\n");
+        // Pausado: a próxima chamada recomeça a cópia (a interface só chama ao retomar).
+        assert_eq!(seguir().unwrap()["registros"], 2);
+    }
+
     #[test]
     fn comandos_pelo_ipc() {
         let mut f = tempfile::NamedTempFile::new().unwrap();

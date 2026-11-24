@@ -16,8 +16,10 @@ pub mod resumo;
 pub mod tabela;
 pub mod texto;
 pub mod validar;
+pub mod vivo;
 
 pub use arvore::Arvore;
 pub use busca::{Achado, Busca, ErroBusca, Lote, Resumo};
 pub use compactado::{Formato, Opcoes};
 pub use linhas::{ArquivoLinhas, IndiceLinhas};
+pub use vivo::{Mudanca, Vivo};

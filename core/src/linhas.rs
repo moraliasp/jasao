@@ -17,7 +17,7 @@ use crate::compactado::{self, Formato, Opcoes};
 pub(crate) const BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// Onde começa e termina cada linha de um buffer. Não guarda os bytes.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndiceLinhas {
     inicios: Vec<usize>,
     /// Fim (exclusivo) da última linha, já sem a quebra final.
@@ -42,6 +42,28 @@ impl IndiceLinhas {
         }
         let fim = dados.len() - usize::from(termina_em_quebra);
         Self { inicios, fim }
+    }
+
+    /// Acrescenta as linhas de `dados[de..]` a um índice feito sobre `dados[..de]`, sem varrer de
+    /// novo o que já estava indexado. `de` tem de ser 0 ou cair logo depois de um `\n` (o arquivo
+    /// vivo só confirma linhas completas); dá o mesmo índice que `construir(dados)`.
+    pub fn estender(&mut self, dados: &[u8], de: usize) {
+        if de == 0 {
+            *self = Self::construir(dados);
+            return;
+        }
+        debug_assert_eq!(dados[de - 1], b'\n', "estender fora de fim de linha");
+        if de >= dados.len() {
+            return;
+        }
+        self.inicios.push(de);
+        self.inicios
+            .extend(memchr::memchr_iter(b'\n', &dados[de..]).map(|p| de + p + 1));
+        let termina_em_quebra = self.inicios.last() == Some(&dados.len());
+        if termina_em_quebra {
+            self.inicios.pop();
+        }
+        self.fim = dados.len() - usize::from(termina_em_quebra);
     }
 
     pub fn len(&self) -> usize {
@@ -76,7 +98,8 @@ impl IndiceLinhas {
 pub struct ArquivoLinhas {
     // Arquivo vazio não é mapeado: mmap de tamanho zero falha em algumas plataformas.
     // shortcut: se outro processo truncar o arquivo enquanto ele está mapeado, o acesso pode
-    // gerar SIGBUS; tratar junto com "arquivo que muda por baixo" (plano, seção 4).
+    // gerar SIGBUS (achado 14). Quem espera mudança usa `vivo::Vivo`, que mapeia uma cópia do
+    // app; abrir sem seguir continua mapeando o original (mais rápido na 1ª tela).
     mapa: Option<Mmap>,
     /// Bytes embutidos no binário (`estatico`); vazio quando há `mapa`.
     estatico: &'static [u8],
@@ -122,6 +145,15 @@ impl ArquivoLinhas {
             mapa: None,
             estatico: dados,
             indice: IndiceLinhas::construir(dados),
+        }
+    }
+
+    /// Mapa e índice já prontos (arquivo vivo: o índice cresce fora, ver `vivo`).
+    pub(crate) fn de_mapa(mapa: Option<Mmap>, indice: IndiceLinhas) -> Self {
+        Self {
+            mapa,
+            estatico: &[],
+            indice,
         }
     }
 
