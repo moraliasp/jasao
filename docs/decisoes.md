@@ -282,7 +282,7 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Consulta jq:** campo na mesma faixa da busca, aberto por ⌘J. Roda sempre sobre o arquivo **original** (uma consulta nova não encadeia sobre o resultado anterior). `consultar` compila o filtro (erro de sintaxe volta com linha e coluna e o front seleciona o trecho no campo), escolhe modo documento para JSON único ou de várias linhas e JSONL para o resto, e grava os resultados, num processo filho, num JSONL temporário (`jasao-consulta-<pid>-<geração>-<nanos>.jsonl`, criado com `create_new` e 0600). No fim, o temporário abre na visão atual como um arquivo comum, sem passar pelo painel de entrada; "Voltar ao arquivo" reabre o original. O temporário é apagado ao voltar, numa consulta nova, ao cancelar e ao sair do app; por isso cancelar uma consulta feita por cima de um resultado aberto volta ao arquivo original.
 
-**Limites conhecidos:** sem teto de tempo na interface (o usuário cancela, e o cancelar mata o processo filho mesmo com o filtro preso; ver "Consulta em processo filho"). No Windows, um temporário aberto pela visão pode não ser apagado. O destaque do erro de sintaxe usa o comprimento em bytes da faixa, aproximado para texto fora do ASCII.
+**Limites conhecidos:** o cancelar mata o processo filho mesmo com o filtro preso; além dele, o filho tem teto de relógio e de heap (ver "Consulta jq ao vivo, filtros salvos e CSV"). No Windows, um temporário aberto pela visão pode não ser apagado. O destaque do erro de sintaxe usa o comprimento em bytes da faixa, aproximado para texto fora do ASCII.
 
 ## Abas de arquivo e arrastar (Fase 1, 22/11/2026)
 
@@ -502,31 +502,37 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 
 ## Consulta jq ao vivo, filtros salvos e CSV (Fase 5, 24/11/2026)
 
-**Linha de comando:** `jasao jq '<filtro>' arquivo [--saida jsonl|csv] [--max-resultados N] [--max-mb N] [--tempo-max S]` (`consultar` continua valendo). JSONL é o padrão. Passar de um teto de saída imprime o que coube, avisa no stderr e sai com código 1: resultado parcial nunca passa por completo em script.
+**Linha de comando:** `jasao jq '<filtro>' arquivo [--saida jsonl|csv] [--max-resultados N] [--max-mb N] [--tempo-max S] [--max-memoria-mb N]` (`consultar` continua valendo). JSONL é o padrão. Passar de um teto de saída imprime o que coube, avisa no stderr e sai com código 1: resultado parcial nunca passa por completo em script. A consulta roda num processo filho (o próprio binário, com `JASAO_CLI_FILHO` no ambiente e o stdio herdado): o pai a mata no relógio e troca a morte por sinal (teto de memória, pilha estourada por `def f: 1 + f; f`) por mensagem e código 3, sem abortar.
 
-**Tetos, todos no núcleo (`Consulta`), cada um com teste que falha se for desligado:**
+**Tetos, cada um com teste que falha se for desligado:**
 
 | Teto | Padrão | Ao estourar |
 |---|---|---|
 | Resultados no total (`com_teto_saida`) | sem teto; CLI `--max-resultados` | para tudo, `cortado` |
 | Bytes de saída no total | app 1 GiB (`filho::TETO_SAIDA`); CLI `--max-mb`, CSV sem `--max-mb` 256 MiB | para tudo, `cortado` |
 | Bytes por lote de um trabalhador | 8 MiB (`MAX_BYTES_LOTE_PADRAO`) | entrega o lote e segue: a memória de bloco adiantado fica limitada mesmo com resultados grandes |
-| Resultados por registro (`com_teto_registro`) | sem teto | erro naquela linha ("o registro passou de N resultados"), o resto segue |
-| Tempo por registro | sem teto | erro naquela linha |
+| Relógio de parede do filho | app 300 s (`filho::TEMPO_MAX`); CLI `--tempo-max` + 2 s, ou 300 s sem ele | o pai mata o filho, vale antes do 1º resultado; falha "passou de N s" (app) ou código 3 (CLI) |
+| Heap do filho (`nucleo::memoria`) | app 4 GiB (`filho::TETO_MEMORIA`); CLI 4096 MiB, `--max-memoria-mb` | o filho aborta; o pai reconhece a marca no stderr e devolve "passou do teto de memória (N MiB)" (app) ou código 3 (CLI) |
 
-O teto de saída é imposto no receptor, na ordem do arquivo: o resultado parcial é sempre um prefixo do completo. Filtro que gira sem entregar nada (`last(range(1e12))`, `def f: f; f`) não para por teto de saída; quem o para é o isolamento já existente: o app mata o processo filho (cancelar, ou consulta nova) e a CLI tem o vigia de `--tempo-max`. Os testes de `range(1e12)`, `repeat(1)` e `recurse` sem fim cobrem os dois lados.
+O teto de saída é imposto no receptor, na ordem do arquivo: o resultado parcial é sempre um prefixo do completo. Filtro que gira sem entregar nada (`last(range(1e12))`, `until(false; .)`) ou junta tudo numa expressão só (`[range(1e9)] | length`) não para por teto de saída: quem o para é o relógio e o teto de heap do filho. Os tetos por registro (resultados e tempo) saíram: só eram conferidos entre resultados e o produto não os ligava.
 
-**Ao vivo:** digitar roda o filtro depois de 400 ms sem tecla; o Rust cancela a consulta anterior ao receber a nova (o filho dela é morto). Enter roda na hora. Ao vivo, erro de sintaxe aparece na linha de estado mas o cursor não pula para o erro (só no Enter), e abrir o resultado não tira o foco do campo. O mesmo filtro com resultado aberto não roda de novo.
+**Teto de memória:** alocador global que conta o heap vivo (`nucleo::memoria::Contador`, declarado no app e na CLI; só o filho liga o teto). Alocação que passaria do teto é recusada, o Rust aborta o filho e a 1ª recusa escreve uma marca direto no fd 2 (sem alocar e sem o lock do `stderr`, que a CLI segura durante a consulta). Não é `setrlimit`: no macOS `RLIMIT_AS` não vale e contaria o arquivo mapeado, que não é heap.
+
+**Ao vivo:** digitar roda o filtro depois de 400 ms sem tecla; o Rust cancela a consulta anterior ao receber a nova (o filho dela é morto) e descarta o fim e o temporário de geração velha. Filtro que não compila (no meio da digitação) não cancela nem apaga o resultado mostrado: `consultar` compila antes de reiniciar. Enter roda na hora. Ao vivo, erro de sintaxe aparece na linha de estado mas o cursor não pula para o erro (só no Enter), e abrir o resultado não tira o foco do campo. O mesmo filtro com resultado aberto não roda de novo.
 
 **Filtros salvos:** botão ★ ao lado do campo salva ou tira o filtro atual; a lista aparece como sugestão do campo (`<datalist>`, preenchida por `option.value`, nunca HTML). Fica no `localStorage` (chave `jasao.filtros`): até 50 filtros de até 16 KiB (o teto do Rust). O que vem de lá é lido como não confiável: JSON fora do formato vira lista vazia, item que não é texto ou passa do teto é descartado. Armazenamento bloqueado: a lista vale só na execução.
 
-**Salvar resultado:** botões "Salvar JSONL…" e "Salvar CSV…" com resultado aberto. O IPC (`salvar_consulta`) só aceita o temporário atual do próprio documento: caminho vindo da interface que não seja esse é recusado antes do diálogo. JSONL é cópia do temporário. CSV são duas passadas no temporário (colunas, depois linhas), memória só dos nomes das colunas; erro de colunas acontece antes de criar o destino.
+**Salvar resultado:** botões "Salvar JSONL…" e "Salvar CSV…" com resultado aberto. O IPC (`salvar_consulta`) só aceita o temporário atual do próprio documento: caminho vindo da interface que não seja esse é recusado antes do diálogo. JSONL é cópia do temporário. CSV são duas passadas no temporário (colunas, depois linhas), memória só dos nomes das colunas.
+
+**Salvar não sobrescreve o que está aberto:** o destino escolhido no diálogo é recusado ("é um arquivo aberto no jasão") quando é, pelo caminho canônico ou pelo mesmo (dev, ino) no Unix, um arquivo concedido nesta execução (abertos, resultados temporários), um recente ou o próprio resultado. Pega link simbólico e hard link. A gravação vai para um temporário `.jasao-salvar-*` na pasta do destino e só no fim vira o destino por `rename`: falha no meio (colunas demais, disco cheio) não deixa o destino pela metade nem apaga o que havia lá.
 
 **Regra do CSV** (`core/src/csv.rs`):
 - Coluna = caminho jq da folha relativo ao resultado (`.a.b`, `.itens[0]`, `.["com espaço"]`); resultado escalar vai na coluna `.`. Objeto e lista vazios são folhas (`{}`, `[]`).
 - Colunas na ordem da primeira aparição. Teto de 10.000 colunas e 256 níveis: passar é erro, sem arquivo parcial.
 - Célula: `null` vazia, booleano como texto, número exato como veio (inteiro grande não perde dígito), caminho ausente vazio.
-- **Injeção de fórmula:** texto e nome de coluna que começam com `=`, `+`, `-`, `@`, tab, CR ou as formas de largura total `＝ ＋ － ＠` ganham `'` na frente. Número não (`-5` continua número).
+- **Injeção de fórmula:** texto e nome de coluna que começam com `=`, `+`, `-`, `@`, tab, CR ou as formas de largura total `＝ ＋ － ＠` ganham `'` na frente, também quando antes deles só há espaço (qualquer branco Unicode), NUL ou U+FEFF, que algumas planilhas descartam antes de ler a fórmula. Número não (`-5` continua número).
 - Aspas RFC 4180 quando a célula tem `,`, `"`, CR ou LF; linhas em CRLF.
+- **UTF-8 sem BOM.** O BOM ajuda o Excel a acertar os acentos ao abrir com duplo clique, mas vira lixo no 1º nome de coluna para `cut`, `csvkit`, pandas sem `encoding="utf-8-sig"` e para quem concatena arquivos. O CSV daqui é para ferramenta; no Excel, importar como UTF-8.
+- Resultado vazio vira arquivo vazio, sem linha de cabeçalho em branco.
 
 **Parquet fica fora.** O crate `parquet` puxa o `arrow` e centenas de dependências transitivas, com vários MB a mais no binário, para um formato que quem precisa converte do JSONL com uma linha (DuckDB, pandas). Volta à mesa se aparecer uso real.

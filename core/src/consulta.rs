@@ -129,8 +129,6 @@ pub struct Consulta {
     tempo_max: Option<Duration>,
     max_resultados: u64,
     max_bytes: u64,
-    max_por_registro: u64,
-    tempo_por_registro: Option<Duration>,
 }
 
 impl Consulta {
@@ -184,8 +182,6 @@ impl Consulta {
             tempo_max: None,
             max_resultados: u64::MAX,
             max_bytes: u64::MAX,
-            max_por_registro: u64::MAX,
-            tempo_por_registro: None,
         })
     }
 
@@ -212,14 +208,6 @@ impl Consulta {
     pub fn com_teto_saida(mut self, resultados: Option<u64>, bytes: Option<u64>) -> Self {
         self.max_resultados = resultados.unwrap_or(u64::MAX);
         self.max_bytes = bytes.unwrap_or(u64::MAX);
-        self
-    }
-
-    /// Teto por registro: passar de `resultados` valores ou de `tempo` numa mesma linha (ou no
-    /// documento) vira erro daquela linha e a varredura segue. Conferido entre resultados.
-    pub fn com_teto_registro(mut self, resultados: Option<u64>, tempo: Option<Duration>) -> Self {
-        self.max_por_registro = resultados.unwrap_or(u64::MAX);
-        self.tempo_por_registro = tempo;
         self
     }
 
@@ -480,22 +468,9 @@ impl Consulta {
             }
         };
         let ctx = Ctx::<JustLut<Val>>::new(&self.filtro.lut, Vars::new([]));
-        let prazo = self.tempo_por_registro.map(|t| Instant::now() + t);
-        let mut n = 0u64;
         for r in self.filtro.id.run((ctx, valor)).map(unwrap_valr) {
             if parar() {
                 return false;
-            }
-            n += 1;
-            if n > self.max_por_registro {
-                let max = self.max_por_registro;
-                saida.erro(linha, format!("o registro passou de {max} resultados"));
-                break;
-            }
-            if prazo.is_some_and(|p| Instant::now() >= p) {
-                let t = self.tempo_por_registro.unwrap_or_default();
-                saida.erro(linha, format!("o registro passou de {t:.1?} de consulta"));
-                break;
             }
             match r {
                 Ok(v) => {
@@ -945,45 +920,6 @@ mod testes {
         });
         assert_eq!(total, 200);
         assert!(lotes >= 40, "{lotes} lotes");
-    }
-
-    #[test]
-    fn teto_por_registro_em_resultados() {
-        // `repeat` e `range` enormes viram erro da linha; as outras linhas seguem. O teto de
-        // saída só garante que, sem o teto por registro, o teste falhe em vez de girar para sempre.
-        for filtro in ["range(1e12)", "repeat(1)", "1 | recurse(. + 1)"] {
-            let c = Consulta::nova(filtro)
-                .unwrap()
-                .com_teto_saida(Some(1000), None)
-                .com_teto_registro(Some(10), None);
-            let (v, r) = rodar_com(c, b"1\n2\n", 64);
-            assert_eq!(v.len(), 20, "{filtro}");
-            assert_eq!(r.erros, 2, "{filtro}");
-            assert!(
-                r.primeiros_erros[0].motivo.contains("10 resultados"),
-                "{r:?}"
-            );
-        }
-        // No teto exato, sem erro.
-        let c = Consulta::nova("range(10)")
-            .unwrap()
-            .com_teto_registro(Some(10), None);
-        assert_eq!(rodar_com(c, b"1\n", 64).1.erros, 0);
-    }
-
-    #[test]
-    fn teto_por_registro_em_tempo() {
-        let c = Consulta::nova("range(1e12)")
-            .unwrap()
-            .com_teto_registro(None, Some(Duration::from_millis(30)))
-            // Rede de segurança: sem o teto por registro, falha em vez de girar para sempre.
-            .com_teto_saida(None, Some(256 << 20))
-            .com_tempo_max(Some(Duration::from_secs(10)));
-        let t = Instant::now();
-        let (_, r) = rodar_com(c, b"1\n2\n", 64);
-        assert!(t.elapsed() < Duration::from_secs(20));
-        assert_eq!(r.erros, 2);
-        assert!(r.primeiros_erros[0].motivo.contains("de consulta"), "{r:?}");
     }
 
     #[test]

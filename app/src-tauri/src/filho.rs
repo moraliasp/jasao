@@ -23,6 +23,15 @@ const VAR_FILTRO: &str = "JASAO_CONSULTA_FILTRO";
 const VAR_DESTINO: &str = "JASAO_CONSULTA_DESTINO";
 /// Teto do resultado em disco: filtro que multiplica a entrada (`range(1e12)`) para aqui.
 pub(crate) const TETO_SAIDA: u64 = if cfg!(test) { 1 << 20 } else { 1 << 30 };
+/// Teto de heap do filho (`nucleo::memoria`): `[range(1e9)]|length` para aqui.
+pub(crate) const TETO_MEMORIA: usize = if cfg!(test) { 256 << 20 } else { 4 << 30 };
+/// Relógio de parede: o pai mata o filho que passa disso, entregando ou não (`until(false;.)`
+/// sem resultado nenhum, consulta ao vivo que ficou rodando depois da última tecla).
+pub(crate) const TEMPO_MAX: Duration = if cfg!(test) {
+    Duration::from_secs(5)
+} else {
+    Duration::from_secs(300)
+};
 
 /// Recusa o que não é arquivo comum antes de criar o filho, para o erro voltar na hora.
 pub(crate) fn arquivo_comum(caminho: &str) -> Result<(), String> {
@@ -78,7 +87,8 @@ pub(crate) fn rodar(
     let stderr = filho.stderr.take().expect("stderr do filho");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || ler_linhas(stderr, &tx));
-    let (mut fim, mut ultima, mut aberto) = (None, String::new(), true);
+    let (mut fim, mut ultima, mut aberto, mut sem_memoria) = (None, String::new(), true, false);
+    let prazo = Instant::now() + TEMPO_MAX;
     // O cancelar vale até o filho sair, mesmo depois de ele fechar o stderr.
     let saida = loop {
         if cancelar.load(Relaxed) {
@@ -89,6 +99,14 @@ pub(crate) fn rodar(
                 cancelado: true,
                 ..Default::default()
             };
+        }
+        if Instant::now() >= prazo {
+            let _ = filho.kill();
+            let _ = filho.wait();
+            return falhou(format!(
+                "a consulta passou de {} s e foi parada",
+                TEMPO_MAX.as_secs()
+            ));
         }
         if !aberto {
             match filho.try_wait() {
@@ -102,6 +120,7 @@ pub(crate) fn rodar(
             Ok(linha) => match serde_json::from_str::<AndamentoConsulta>(&linha) {
                 Ok(a) if a.fim => fim = Some(a),
                 Ok(a) => avisar(a),
+                Err(_) if linha == nucleo::memoria::MARCA => sem_memoria = true,
                 Err(_) => ultima = linha,
             },
             Err(RecvTimeoutError::Timeout) => {}
@@ -110,6 +129,10 @@ pub(crate) fn rodar(
     };
     match (saida, fim) {
         (Ok(s), Some(a)) if s.success() => a,
+        _ if sem_memoria => falhou(format!(
+            "a consulta passou do teto de memória ({} MiB) e foi parada",
+            TETO_MEMORIA >> 20
+        )),
         (s, _) => falhou(format!(
             "a consulta parou sem terminar (recursão sem fundo ou falta de memória?): {}",
             if ultima.is_empty() {
@@ -140,6 +163,7 @@ pub fn filho() -> Option<i32> {
     let caminho = std::env::var(VAR).ok()?;
     let filtro = std::env::var(VAR_FILTRO).unwrap_or_default();
     let destino = PathBuf::from(std::env::var_os(VAR_DESTINO)?);
+    nucleo::memoria::limitar(TETO_MEMORIA);
     std::thread::spawn(|| {
         let _ = io::copy(&mut io::stdin(), &mut io::sink());
         std::process::exit(4);
@@ -322,6 +346,36 @@ mod testes {
         );
         let falha = fim.falha.expect("recursão sem fundo devia falhar");
         assert!(falha.contains("parou sem terminar"), "{falha}");
+    }
+
+    /// Tetos do pai sobre o filho com uma expressão só, sem cancelar: relógio de parede (vale
+    /// antes do 1º resultado) e memória.
+    #[test]
+    fn filho_tem_teto_de_tempo_e_memoria() {
+        let (f, destino) = jsonl(b"1\n");
+        let caminho = f.path().to_str().unwrap();
+        for filtro in ["last(range(1e12))", "until(false; .)", "def f: f; f"] {
+            let t = Instant::now();
+            let fim = rodar(
+                filtro,
+                caminho,
+                destino.path(),
+                &AtomicBool::new(false),
+                |_| {},
+            );
+            let falha = fim.falha.unwrap_or_default();
+            assert!(falha.contains("passou de 5 s"), "{filtro}: {falha}");
+            assert!(t.elapsed() < TEMPO_MAX * 3, "{filtro}: {:?}", t.elapsed());
+        }
+        let fim = rodar(
+            "[range(1e9)] | length",
+            caminho,
+            destino.path(),
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        let falha = fim.falha.unwrap_or_default();
+        assert!(falha.contains("teto de memória (256 MiB)"), "{falha}");
     }
 
     /// Se o pai morre, o stdin do filho fecha e ele sai, mesmo com o filtro preso.

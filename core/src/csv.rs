@@ -8,7 +8,9 @@
 //! - Célula: `null` vazia; `true`/`false`; número exato como veio (inteiro grande não perde
 //!   dígito); texto cru. Caminho ausente no resultado: vazia.
 //! - Injeção de fórmula: texto (e nome de coluna) que começa com `=`, `+`, `-`, `@`, tab, CR ou
-//!   as formas de largura total `＝ ＋ － ＠` ganha um `'` na frente. Número não (`-5` é número).
+//!   as formas de largura total `＝ ＋ － ＠` ganha um `'` na frente, também quando antes dele só
+//!   há espaço, NUL ou BOM (U+FEFF), que a planilha pode ignorar. Número não (`-5` é número).
+//! - UTF-8 sem BOM; resultado vazio é arquivo vazio (sem linha de cabeçalho).
 //! - Aspas RFC 4180 quando a célula tem `,`, `"`, CR ou LF; linhas terminam em CRLF.
 //!
 //! São duas passadas: `ver` em todos os resultados junta as colunas, `escrever` grava. Memória:
@@ -55,7 +57,11 @@ impl Csv {
         &self.colunas
     }
 
+    /// Sem colunas (nenhum resultado), não escreve nada: arquivo vazio, não uma linha vazia.
     pub fn cabecalho(&self, out: &mut impl Write) -> io::Result<()> {
+        if self.colunas.is_empty() {
+            return Ok(());
+        }
         linha(out, self.colunas.iter().map(|c| celula_texto(c)))
     }
 
@@ -127,9 +133,13 @@ fn celula(v: &Val) -> String {
 /// Texto que uma planilha leria como fórmula ganha `'` na frente.
 pub fn celula_texto(s: &str) -> String {
     const PERIGO: [char; 10] = ['=', '+', '-', '@', '\t', '\r', '＝', '＋', '－', '＠'];
-    match s.chars().next() {
-        Some(c) if PERIGO.contains(&c) => format!("'{s}"),
-        _ => s.to_owned(),
+    let perigo = |t: &str| t.chars().next().is_some_and(|c| PERIGO.contains(&c));
+    // Espaço, NUL e BOM na frente podem ser ignorados pela planilha antes de ler a fórmula.
+    let util = s.trim_start_matches(|c: char| c.is_whitespace() || c == '\0' || c == '\u{feff}');
+    if perigo(s) || perigo(util) {
+        format!("'{s}")
+    } else {
+        s.to_owned()
     }
 }
 
@@ -209,6 +219,16 @@ mod testes {
         );
         assert_eq!(celula_texto("-"), "'-");
         assert_eq!(celula_texto("\rx"), "'\rx");
+        for s in [" =1", "\0=1", "\u{feff}=1", " \u{a0}+1", "\n@x"] {
+            assert_eq!(celula_texto(s), format!("'{s}"), "{s:?}");
+        }
+        assert_eq!(celula_texto(" ok"), " ok");
+        assert_eq!(celula_texto("\u{feff}x"), "\u{feff}x");
+    }
+
+    #[test]
+    fn vazio_e_arquivo_vazio() {
+        assert_eq!(csv(&[]), "");
     }
 
     #[test]

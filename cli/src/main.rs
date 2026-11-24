@@ -4,12 +4,15 @@
 //!   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]
 //!                                         imprime linha:coluna (em bytes, a partir de 1) e trecho
 //!   jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]
-//!              [--max-resultados N] [--max-mb N]
+//!              [--max-resultados N] [--max-mb N] [--max-memoria-mb N]
 //!                                         roda o filtro jq em cada linha (ou no documento inteiro);
 //!                                         resultados em JSONL (ou CSV achatado, ver `nucleo::csv`)
 //!                                         no stdout, erros por linha no stderr. Passar de um teto
 //!                                         de saída imprime o parcial e sai com 1. O CSV junta o
-//!                                         resultado em memória: sem `--max-mb`, o teto é 256 MiB
+//!                                         resultado em memória: sem `--max-mb`, o teto é 256 MiB.
+//!                                         Roda num processo filho com teto de heap (4096 MiB sem
+//!                                         `--max-memoria-mb`) e de relógio (300 s sem `--tempo-max`);
+//!                                         passar de um deles, ou recursão sem fundo, sai com 3
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
 //!   exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>
@@ -42,7 +45,7 @@ use nucleo::{ArquivoLinhas, Busca, Opcoes};
 const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]\n\
-                   \x20     [--max-resultados N] [--max-mb N]\n  \
+                   \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]\n  \
                    exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>\n  \
@@ -50,9 +53,20 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
                    \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
 
+/// Conta o heap: o filho da consulta liga o teto (ver `supervisionar`).
+#[global_allocator]
+static ALOCADOR: nucleo::memoria::Contador = nucleo::memoria::Contador;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let ["consultar" | "jq", resto @ ..] = args.as_slice() {
+        match opcoes_consulta(resto) {
+            Some(op) if std::env::var_os(VAR_FILHO).is_none() => return supervisionar(&op),
+            Some(op) => nucleo::memoria::limitar(op.max_memoria),
+            None => {}
+        }
+    }
     let mut saida = ExitCode::SUCCESS;
     let resultado = match args.as_slice() {
         ["linhas", arquivo] => linhas(arquivo),
@@ -322,14 +336,24 @@ struct OpcoesConsulta<'a> {
     csv: bool,
     max_resultados: Option<u64>,
     max_bytes: Option<u64>,
+    max_memoria: usize,
 }
 
 /// Teto de bytes do CSV sem `--max-mb`: o CSV precisa do resultado inteiro (as colunas vêm de
 /// todos os registros) e o junta em memória.
 const TETO_CSV: u64 = 256 << 20;
 
+/// Teto de heap do filho sem `--max-memoria-mb`.
+const TETO_MEMORIA: usize = 4096 << 20;
+/// Relógio de parede do filho sem `--tempo-max`: `until(false; .)` não entrega nada e nunca
+/// chega ao teto de tempo do núcleo, que só é visto entre resultados.
+const TEMPO_PADRAO: Duration = Duration::from_secs(300);
+
 fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
-    let mut op = OpcoesConsulta::default();
+    let mut op = OpcoesConsulta {
+        max_memoria: TETO_MEMORIA,
+        ..Default::default()
+    };
     let mut posicionais = Vec::new();
     let mut it = args.iter();
     while let Some(&a) = it.next() {
@@ -347,6 +371,9 @@ fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
             "--max-mb" => {
                 op.max_bytes = Some(it.next()?.parse::<u64>().ok()?.checked_mul(1 << 20)?)
             }
+            "--max-memoria-mb" => {
+                op.max_memoria = it.next()?.parse::<usize>().ok()?.checked_mul(1 << 20)?
+            }
             _ => posicionais.push(a),
         }
     }
@@ -363,9 +390,53 @@ fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
     })
 }
 
-/// Folga depois do teto de tempo antes de derrubar o processo: o núcleo só vê o teto entre
+/// Folga depois do teto de tempo antes de matar o filho: o núcleo só vê o teto entre
 /// resultados, e filtro que não produz nada (`last(range(1e12))`, `def f: f; f`) nunca devolve.
 const FOLGA_TEMPO: Duration = Duration::from_secs(2);
+/// Marca o processo filho da consulta (ver `supervisionar`).
+const VAR_FILHO: &str = "JASAO_CLI_FILHO";
+
+/// Reexecuta o próprio binário como filho (mesmos argumentos, stdio herdado) e o vigia: mata no
+/// relógio de parede e troca a morte por sinal (teto de heap, pilha estourada) por mensagem e
+/// código 3, em vez de o processo abortar.
+fn supervisionar(op: &OpcoesConsulta) -> ExitCode {
+    let falhar = |m: String| {
+        eprintln!("erro: {m}");
+        ExitCode::from(3)
+    };
+    let mut filho = match std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env(VAR_FILHO, "1")
+            .spawn()
+    }) {
+        Ok(f) => f,
+        Err(e) => return falhar(format!("não deu para iniciar a consulta: {e}")),
+    };
+    let limite = op.tempo_max.map_or(TEMPO_PADRAO, |t| t + FOLGA_TEMPO);
+    let prazo = Instant::now() + limite;
+    let status = loop {
+        match filho.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if Instant::now() >= prazo => {
+                let _ = filho.kill();
+                let _ = filho.wait();
+                return falhar(format!(
+                    "a consulta passou de {limite:.0?} e foi parada (filtro não respondeu)"
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return falhar(format!("não deu para acompanhar a consulta: {e}")),
+        }
+    };
+    match status.code() {
+        Some(c) => ExitCode::from(u8::try_from(c).unwrap_or(3)),
+        None => falhar(format!(
+            "a consulta parou sem terminar: passou do teto de memória ({} MiB) ou recursão sem fundo",
+            op.max_memoria >> 20
+        )),
+    }
+}
 
 fn consultar(
     op: OpcoesConsulta,
@@ -376,13 +447,6 @@ fn consultar(
         .com_tempo_max(op.tempo_max)
         .com_teto_saida(op.max_resultados, op.max_bytes);
     let a = abrir(op.arquivo)?;
-    if let Some(t) = op.tempo_max {
-        std::thread::spawn(move || {
-            std::thread::sleep(t + FOLGA_TEMPO);
-            eprintln!("erro: tempo máximo de {t:.1?} esgotado (filtro não respondeu)");
-            std::process::exit(3);
-        });
-    }
     let t = Instant::now();
     let cancelar = AtomicBool::new(false);
     let mut erro = None;
