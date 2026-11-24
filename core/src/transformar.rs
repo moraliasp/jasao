@@ -135,9 +135,10 @@ fn caminho_jq(segs: &[Seg]) -> String {
 }
 
 /// `select` que deixa passar o registro que passa no `criterio` de `filtro::filtrar`.
-pub fn criterio_jq(criterio: &Criterio) -> String {
+/// Erro quando o critério não tem tradução fiel (valor comum cortado pelo perfil).
+pub fn criterio_jq(criterio: &Criterio) -> Result<String, String> {
     let primeiro = |segs: &[Seg]| format!("[limit(1; {})]", caminho_jq(segs));
-    match criterio {
+    Ok(match criterio {
         Criterio::Tem(segs) => format!("select({} != [])", primeiro(segs)),
         Criterio::NaoTem(segs) => format!("select({} == [])", primeiro(segs)),
         Criterio::Igual(segs, valor) => format!(
@@ -145,7 +146,35 @@ pub fn criterio_jq(criterio: &Criterio) -> String {
             primeiro(segs),
             texto_json(&decodificar(valor))
         ),
-    }
+        Criterio::Comum(segs, comum) => {
+            // shortcut: o jq compara o valor decodificado, então grafias diferentes do mesmo
+            // valor (1.5 e 1.50, "é" e "\u00e9") passam juntas aqui e ficam separadas na Tabela.
+            let v: serde_json::Value = serde_json::from_str(comum)
+                .map_err(|_| "valor cortado: salve pela consulta jq".to_owned())?;
+            format!("select(any({}; . == {v}))", caminho_jq(segs))
+        }
+        Criterio::Faixa(segs, negativo, expoente) => {
+            // A faixa de `perfil`: 10^e ≤ |x| < 10^(e+1), com e preso entre −30 e 30.
+            let cond = match expoente {
+                None => ". == 0".to_owned(),
+                Some(e) => {
+                    let (sinal, m) = if *negativo { ("<", -1) } else { (">", 1) };
+                    let mut c = format!(". {sinal} 0 and ((. * {m}) as $a | true");
+                    if *e > -30 {
+                        c.push_str(&format!(" and $a >= 1e{e}"));
+                    }
+                    if *e < 30 {
+                        c.push_str(&format!(" and $a < 1e{}", e + 1));
+                    }
+                    c + ")"
+                }
+            };
+            format!(
+                "select(any({}; type == \"number\" and {cond}))",
+                caminho_jq(segs)
+            )
+        }
+    })
 }
 
 /// De onde vêm os registros salvos. Só texto: viaja ao processo filho, que decide `documento`
@@ -163,8 +192,8 @@ pub enum Fonte {
 
 impl Fonte {
     /// Os registros que passam no filtro da Tabela (`criterio_jq`).
-    pub fn filtro(c: &Criterio) -> Self {
-        Fonte::Selecao(criterio_jq(c))
+    pub fn filtro(c: &Criterio) -> Result<Self, String> {
+        criterio_jq(c).map(Fonte::Selecao)
     }
 }
 
@@ -609,23 +638,31 @@ mod testes {
         ];
         let t = Transformacao::default();
         assert_eq!(
-            jsonl(DADOS, Fonte::filtro(&Criterio::Tem(&d)), &t),
+            jsonl(DADOS, Fonte::filtro(&Criterio::Tem(&d)).unwrap(), &t),
             "{\"a\":4,\"d\":{\"e\":5}}\n"
         );
         assert_eq!(
-            jsonl(DADOS, Fonte::filtro(&Criterio::NaoTem(&d)), &t),
+            jsonl(DADOS, Fonte::filtro(&Criterio::NaoTem(&d)).unwrap(), &t),
             "{\"a\":1,\"b\":2,\"c\":3}\n[1]\n"
         );
         // `null` explícito conta como valor presente (como em `filtro`).
         let a = [Seg::Campo(Box::from(&b"a"[..]))];
         assert_eq!(
-            jsonl(b"{\"a\":null}\n{}\n", Fonte::filtro(&Criterio::Tem(&a)), &t),
+            jsonl(
+                b"{\"a\":null}\n{}\n",
+                Fonte::filtro(&Criterio::Tem(&a)).unwrap(),
+                &t
+            ),
             "{\"a\":null}\n"
         );
         let tipo = [Seg::Campo(Box::from(&b"tipo"[..]))];
         let v = b"{\"tipo\":\"x\\u00e9\"}\n{\"tipo\":\"y\"}\n{\"tipo\":1}\n";
         assert_eq!(
-            jsonl(v, Fonte::filtro(&Criterio::Igual(&tipo, b"x\\u00e9")), &t),
+            jsonl(
+                v,
+                Fonte::filtro(&Criterio::Igual(&tipo, b"x\\u00e9")).unwrap(),
+                &t
+            ),
             "{\"tipo\":\"xé\"}\n"
         );
         let itens = [
@@ -636,11 +673,40 @@ mod testes {
         assert_eq!(
             jsonl(
                 b"{\"l\":[{},{\"k\":0}]}\n{\"l\":{\"k\":0}}\n",
-                Fonte::filtro(&Criterio::Tem(&itens)),
+                Fonte::filtro(&Criterio::Tem(&itens)).unwrap(),
                 &t
             ),
             "{\"l\":[{},{\"k\":0}]}\n"
         );
+    }
+
+    /// Faceta da Estrutura (valor comum, faixa) salva os mesmos registros que a Tabela filtra.
+    #[test]
+    fn fonte_filtro_de_faceta() {
+        let t = Transformacao::default();
+        let n = [Seg::Campo(Box::from(&b"n"[..]))];
+        let dados = b"{\"n\":\"a\\\"b\"}\n{\"n\":\"a\\\\(b\"}\n{\"n\":null}\n{\"n\":[1.5,7]}\n\
+{\"n\":-0.5}\n{\"n\":0}\n{\"n\":10}\n{\"n\":99}\n{\"n\":100}\n{\"n\":1e31}\n{}\n";
+        let todas: Vec<&str> = std::str::from_utf8(dados).unwrap().lines().collect();
+        let so = |c: Criterio| -> Vec<usize> {
+            let r = jsonl(dados, Fonte::filtro(&c).unwrap(), &t);
+            r.lines()
+                .map(|l| todas.iter().position(|x| x.replace(' ', "") == l).unwrap())
+                .collect()
+        };
+        assert_eq!(so(Criterio::Comum(&n, r#""a\"b""#)), [0]);
+        assert_eq!(so(Criterio::Comum(&n, r#""a\\(b""#)), [1]);
+        assert_eq!(so(Criterio::Comum(&n, "null")), [2]);
+        let el = [Seg::Campo(Box::from(&b"n"[..])), Seg::Elemento];
+        assert_eq!(so(Criterio::Comum(&el, "1.5")), [3]); // qualquer elemento da lista
+        assert_eq!(so(Criterio::Faixa(&el, false, Some(0))), [3]); // 1.5 ou 7
+        assert_eq!(so(Criterio::Faixa(&n, false, Some(1))), [6, 7]); // 10, 99
+        assert_eq!(so(Criterio::Faixa(&n, false, Some(2))), [8]);
+        assert_eq!(so(Criterio::Faixa(&n, true, Some(-1))), [4]);
+        assert_eq!(so(Criterio::Faixa(&n, false, None)), [5]);
+        assert_eq!(so(Criterio::Faixa(&n, false, Some(30))), [9]); // preso em 30
+        // Valor cortado pelo perfil não tem tradução fiel: recusa em vez de salvar outro conjunto.
+        assert!(Fonte::filtro(&Criterio::Comum(&n, "\"abc…")).is_err());
     }
 
     /// Chave e valor com `"` e `\(` (interpolação do jq) entram como texto JSON, não como código.
@@ -653,13 +719,17 @@ mod testes {
         let linhas = |s: &str| s.lines().map(str::to_owned).collect::<Vec<_>>();
         let todas = linhas(std::str::from_utf8(dados).unwrap());
         assert_eq!(
-            linhas(&jsonl(dados, Fonte::filtro(&Criterio::Tem(&chave)), &t)),
+            linhas(&jsonl(
+                dados,
+                Fonte::filtro(&Criterio::Tem(&chave)).unwrap(),
+                &t
+            )),
             todas[..2]
         );
         assert_eq!(
             linhas(&jsonl(
                 dados,
-                Fonte::filtro(&Criterio::Igual(&chave, br#"v\"\\(y"#)),
+                Fonte::filtro(&Criterio::Igual(&chave, br#"v\"\\(y"#)).unwrap(),
                 &t
             )),
             todas[..1]
@@ -674,7 +744,7 @@ mod testes {
         };
         let lista = b"[{\"a\":1,\"b\":2},\n {\"a\":3}]";
         let tipo = [Seg::Campo(Box::from(&b"b"[..]))];
-        let expr = compor(&Fonte::filtro(&Criterio::Tem(&tipo)), &t, true);
+        let expr = compor(&Fonte::filtro(&Criterio::Tem(&tipo)).unwrap(), &t, true);
         assert_eq!(
             rodar(lista, true, &expr, Saida::JsonCompacto),
             "[{\"a\":1}]\n"

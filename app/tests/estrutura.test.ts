@@ -2,7 +2,7 @@
 // O idioma de `t` vem do ambiente; as expectativas usam o próprio `t` para não depender dele.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detalhe, type Estrutura, faixa, itens, type Perfil, presenca, segmento } from "../src/estrutura.ts";
+import { detalhe, type Estrutura, faceta, faixa, itens, type Perfil, presenca, segmento } from "../src/estrutura.ts";
 import { t } from "../src/i18n.ts";
 
 const fmt = (n: number) => String(n);
@@ -155,4 +155,44 @@ test("caminho com bidi não chega cru ao title", () => {
   };
   const [it] = itens(b, t, fmt);
   assert.match(it.html, /title="\.a&lt;U\+202E>b"/);
+});
+
+test("facetas: cada valor comum e cada faixa é um botão com rótulo, e o filtro leva o valor inteiro", () => {
+  const longo = `"${"x".repeat(200)}"`;
+  const comuns: [string, number][] = [
+    ['"a\\"b"', 4], ['"a\\\\(b"', 3], ["null", 3], ["true", 2], ["false", 2], ["1.50", 2], [longo, 1], ['"<img src=x onerror=1>"', 1], ['"\u202Eevil"', 1],
+  ];
+  const q: Perfil = { ...p, comuns };
+  const h = detalhe(".v", q, t, fmt);
+  assert.deepEqual([...h.matchAll(/data-comum="(\d+)"/g)].map((m) => Number(m[1])), comuns.map((_, i) => i));
+  assert.deepEqual([...h.matchAll(/data-faixa="(\d+)"/g)].map((m) => Number(m[1])), [0, 1, 2]);
+  // Botão de verdade (teclado e foco), com rótulo para leitor de tela.
+  assert.equal((h.match(/<button class="f[cx]" type="button" data-(comum|faixa)="\d+" aria-label="[^"<]+">/g) ?? []).length, comuns.length + 3);
+  // Nada do arquivo vira HTML nem quebra o atributo; bidi não chega cru ao rótulo.
+  assert.ok(!h.includes("<img") && !h.includes("\u202E\""), h);
+  assert.ok(!/aria-label="[^"]*\u202E/.test(h));
+  // Na tela o longo aparece cortado; o filtro usa o inteiro.
+  assert.ok(!h.includes(longo));
+  for (const [i, [v]] of comuns.entries()) {
+    const f = faceta(4, ".v", q, { comum: String(i) }, t);
+    assert.deepEqual(f?.alvo, { caminho: 4, comum: v });
+    assert.equal(f?.rotulo, t.tabela.filtro.comum(".v", v.replace("\u202E", "⟦202E⟧")));
+  }
+  assert.equal((faceta(4, ".v", q, { comum: "6" }, t)?.alvo as { comum: string }).comum.length, 202);
+  assert.equal(faceta(4, ".v", q, { comum: "99" }, t), null);
+  assert.equal(faceta(4, ".v", q, {}, t), null);
+});
+
+test("facetas: faixa vira sinal e grandeza, inclusive a última e a do zero", () => {
+  const fs = p.numeros!.faixas;
+  assert.deepEqual(faceta(2, ".v", p, { faixa: "0" }, t), {
+    alvo: { caminho: 2, negativo: true, expoente: 0 }, rotulo: t.tabela.filtro.faixa(".v", "−1e0…1e1"),
+  });
+  assert.deepEqual(faceta(2, ".v", p, { faixa: "1" }, t)?.alvo, { caminho: 2, negativo: false, expoente: null });
+  // A última faixa (a do máximo, 120) é a de 1e2…1e3: o núcleo põe o máximo dentro dela.
+  const ultima = faceta(2, ".v", p, { faixa: String(fs.length - 1) }, t);
+  assert.deepEqual(ultima?.alvo, { caminho: 2, negativo: false, expoente: 2 });
+  assert.equal(ultima?.rotulo, t.tabela.filtro.faixa(".v", "1e2…1e3"));
+  assert.equal(faceta(2, ".v", p, { faixa: String(fs.length) }, t), null);
+  assert.equal(faceta(2, ".v", { ...p, numeros: null }, { faixa: "0" }, t), null);
 });
