@@ -1,6 +1,6 @@
 # Radar: Jasão × top 5
 
-Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 7d00a59 (#6 a #52 mergeados, menos #51; #50 em 1aa6fee e o radar #48 em 7d00a59). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
+Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 7d00a59 (PRs #6 a #52 mergeados, com três exceções: #14 fechado sem merge, #36 é issue e #51 segue aberto; #50 em 1aa6fee e o radar #48 em 7d00a59). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
 
 **Premissa: o Jasão é gratuito.** A barra a bater são os pagos (Dadroit, OK JSON Pro), e o adversário de preço são os grátis (JSON Hero, quicktype, Compass). Nenhum deles entrega o pacote completo: gratuito, desktop, arquivo de 10 GB, estrutura, diff e export.
 
@@ -8,7 +8,7 @@ Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 
 
 | # | Concorrente | Preço | Padrão que ele define |
 |---|---|---|---|
-| 1 | Dadroit | pago, valor não confirmado (a página oficial de preços dá 404 em 24/11/2026; terceiros se contradizem) | abrir arquivo gigante rápido |
+| 1 | Dadroit | pago, valor não confirmado (`https://dadroit.com/pricing` dá 404 em 24/11/2026, assim como `/buy` e `/store`; terceiros se contradizem) | abrir arquivo gigante rápido |
 | 2 | OK JSON | US$ 24,99 pagamento único, com teste grátis ([okjson.app](https://okjson.app), 24/11/2026) | acabamento nativo de macOS, jq/JSONPath, JSONL |
 | 3 | JSON Hero | grátis, open source | navegação em colunas, busca, link compartilhável, inferência 2020-12 |
 | 4 | quicktype | grátis, open source | tipos, Zod e Schema gerados a partir de amostras |
@@ -117,10 +117,10 @@ Conferido contra `docs/plano.md`, `docs/decisoes.md`, `docs/concorrencia.md` e o
 |---|---|---|
 | Abrir de stdin (`cat x \| jasao`) | jless, fx, jq, lnav | ❌ não achei leitura de stdin em `cli/src/main.rs`; nenhum doc trata |
 | Abrir de URL / colar cURL | OK JSON, Dadroit, JSON Crack, lnav | ❌ só arquivo local; nenhum doc trata (o link no painel do valor só abre no navegador, #40) |
-| S3 e remoto (SSH) | DuckDB, lnav | ❌ só aparece no mockup; nenhuma decisão |
+| S3 e remoto (SSH) | DuckDB, lnav | ❌ não aparece em nenhum doc nem mockup |
 | Assinatura e notarização do Mac | (pré-requisito de distribuir) | ❌ nenhuma menção em docs nem config; sem isso o Gatekeeper barra o download gratuito |
 | Atualização automática | OK JSON (App Store) | ❌ nenhuma decisão em `decisoes.md`/`plano.md` |
-| Agrupar e contar por campo, histograma | Datasette, Tad, VisiData, Datadog | ◐ estatísticas por campo (#43); sem facet clicável nem gráfico |
+| Agrupar e contar por campo, histograma | Datasette, Tad, VisiData, Datadog | ◐ contagem por valor ("Mais comuns") e faixas de número com barras já existem no modo Estrutura (#43, `app/src/estrutura.ts`); falta clicar num valor ou faixa para filtrar, e gráfico de datas no tempo |
 | SQL sobre o arquivo | DuckDB, Datasette, lnav | ❌ fora do plano; `concorrencia.md` cita DuckDB como "faça você mesmo" |
 | Formatar, minificar, editar e salvar | OK JSON, Pretty JSON, VS Code | ❌ visualizador só de leitura (decisão implícita, não escrita) |
 | Reparar JSON quebrado | OK JSON | ◐ linha inválida não quebra o resto (#7, #12); não conserta |
@@ -142,8 +142,8 @@ Conferido contra `docs/plano.md`, `docs/decisoes.md`, `docs/concorrencia.md` e o
 
 1. **`jasao/abertura/stdin`**: CLI lê `-` e pipe; o app aceita `jasao abrir -` gravando num temporário. Impacto alto para dev, esforço pequeno (o núcleo já indexa arquivo; é um temporário).
 2. **`jasao/distribuicao/notarizacao`**: Developer ID, `hardenedRuntime`, notarização no CI de release, com decisão escrita. Impacto alto (sem isso o "grátis" não instala sem susto), esforço pequeno em código, depende de conta Apple do Eduardo.
-3. **`jasao/abertura/url`**: abrir `https://…` e colar cURL, baixando para o cache que o `.gz` já usa, só por ação explícita e sem enviar nada além do pedido. Impacto alto (OK JSON e Dadroit têm), esforço médio; precisa decisão de privacidade antes.
-4. **`jasao/estrutura/facetas`**: clicar num campo e ver contagem por valor e histograma de número e data, filtrando a Tabela (reaproveita #43 e #49). Impacto médio-alto, esforço médio.
+3. **`jasao/estrutura/facetas-clique`**: clicar num valor de "Mais comuns" ou numa faixa de número no modo Estrutura filtra a Tabela por ele (a contagem e as faixas já existem em #43; o filtro da Tabela já existe em #49). Impacto médio, esforço pequeno: é ligar dois pedaços prontos. Gráfico de datas no tempo fica para depois, se aparecer pedido.
+4. **`jasao/abertura/url`**: abrir `https://…` e colar cURL, baixando para o cache que o `.gz` já usa, só por ação explícita e sem enviar nada além do pedido. Impacto alto (OK JSON e Dadroit têm), esforço médio; precisa decisão de privacidade antes.
 5. **`jasao/radar/benchmark-dadroit`**: o gap 1 de sempre, só leitura de páginas do Dadroit e medição nossa.
 6. **`jasao/macos/quicklook`**: prévia no Finder com o laudo (#52). Impacto médio, esforço médio.
 7. **`jasao/abertura/reparar`**: sugerir conserto de linha inválida (vírgula sobrando, aspas) sem gravar no original. Impacto médio, esforço médio.
@@ -176,4 +176,4 @@ Fora de propósito, registrados para não voltar: plugins, compartilhar por link
 - 24/11/2026 (noite): mergeado #40 (valores inteligentes na árvore e no painel do valor, tudo local: o link só abre com clique e o JWT nunca é conferido nem enviado). Valores inteligentes passa a ✅ e empata com as prévias do JSON Hero. Recontagem eixo a eixo: 25 de 26 pontos, e o único ponto aberto é o diff estrutural sem interface; as somas de 22/11 (20) e 24/11 (25) foram corrigidas para 18 e 23 nesta recontagem.
 - 24/11/2026 (tarde): mergeados #44 (seguir arquivo vivo, como `tail -f`), #45 (tipos TypeScript e `jasao validar` contra estrutura salva ou JSON Schema de fora, com `$ref` só local e custo limitado) e #46 (MessagePack, CBOR, BSON, YAML e TOML como entrada). O export fica mais largo, mas o placar não muda: 25 de 26. Arquivo vivo e formatos ficam fora do placar até haver fonte do que os concorrentes fazem.
 - 24/11/2026 (fim do dia): mergeados #42 (interface do diff estrutural e diff de valores), #43 (avisos, estatísticas por campo e registros que fogem), #47 (jq ao vivo, filtros salvos, exportar JSONL/CSV) e #49 (filtrar a Tabela por variante ou caminho). Diff passa a ✅ e o Jasão fecha 26 de 26 pontos; o eixo do diff segue sem nenhum concorrente. Gap 1 continua o benchmark público contra o Dadroit. Em PR: máscara de segredos (#50), linha do tempo de pasta (#51) e laudo ao abrir (#52).
-- 24/11/2026 (rodada ampliada): mergeados #52 (laudo ao abrir, no painel e em `jasao laudo`, 7b9b6c7), #50 (máscara de segredos e anonimização, 1aa6fee) e o radar anterior #48 (7d00a59). Placar declarado eixo a eixo (13 eixos, 0 a 2) para ser recontável; segue 26 de 26. Diff passa a dizer só "estrutural" no diferencial: diff de valores já existe em jd, jsondiffpatch e Graphtage. Varredura fora do top 5 (19 ferramentas, só páginas oficiais): o que mais falta é abrir de stdin e URL, notarização do Mac e agrupar por campo. Preço do OK JSON corrigido para US$ 24,99 único; o do Dadroit fica não confirmado.
+- 24/11/2026 (rodada ampliada): mergeados #52 (laudo ao abrir, no painel e em `jasao laudo`, 7b9b6c7), #50 (máscara de segredos e anonimização, 1aa6fee) e o radar anterior #48 (7d00a59). Placar declarado eixo a eixo (13 eixos, 0 a 2) para ser recontável; segue 26 de 26. Diff passa a dizer só "estrutural" no diferencial: diff de valores já existe em jd, jsondiffpatch e Graphtage. Varredura fora do top 5 (19 ferramentas, só páginas oficiais): o que mais falta é abrir de stdin e URL, notarização do Mac e filtrar clicando na contagem por campo. Preço do OK JSON corrigido para US$ 24,99 único; o do Dadroit fica não confirmado.
