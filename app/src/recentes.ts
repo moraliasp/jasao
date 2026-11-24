@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { t } from "./i18n";
+import { semInvisiveis } from "./texto";
 
 export interface Recente {
   caminho: string;
@@ -24,12 +25,12 @@ export function criarRecentes(el: HTMLElement, escolher: (caminho: string) => vo
     for (const r of lista) {
       const b = document.createElement("button");
       b.type = "button";
-      b.title = r.caminho;
+      b.title = semInvisiveis(r.caminho);
       const nome = document.createElement("span");
-      nome.textContent = r.nome;
+      nome.textContent = semInvisiveis(r.nome);
       const pasta = document.createElement("span");
       pasta.className = "pasta";
-      pasta.textContent = r.pasta;
+      pasta.textContent = semInvisiveis(r.pasta);
       b.append(nome, pasta);
       b.addEventListener("click", () => escolher(r.caminho));
       const li = document.createElement("li");

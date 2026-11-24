@@ -43,18 +43,25 @@ struct Estado {
     abrindo: Aberturas,
 }
 
-/// Flags de cancelamento por abertura. A chave é o id que a interface dá a cada abertura,
-/// não o caminho: o mesmo arquivo pode estar abrindo em duas abas.
+/// Flags de cancelamento por abertura. A chave é um id por abertura, não o caminho: o mesmo
+/// arquivo pode estar abrindo em duas abas. O id vem do backend (`nova_abertura`), que já deixa
+/// a flag registrada: o Cancelar que chega antes de o `abrir` começar não se perde, e o id não se
+/// repete nesta execução (nem depois de recarregar a página).
 #[derive(Default)]
-struct Aberturas(Mutex<HashMap<u32, Arc<AtomicBool>>>);
+struct Aberturas(Mutex<HashMap<u32, Arc<AtomicBool>>>, AtomicU32);
 
 impl Aberturas {
+    fn nova(&self) -> u32 {
+        let id = self.1.fetch_add(1, Relaxed) + 1;
+        self.registrar(id);
+        id
+    }
+    /// A flag de `id`, a já registrada (talvez já cancelada) ou uma nova.
     fn registrar(&self, id: u32) -> Arc<AtomicBool> {
-        let c = Arc::new(AtomicBool::new(false));
-        if let Ok(mut m) = self.0.lock() {
-            m.insert(id, Arc::clone(&c));
+        match self.0.lock() {
+            Ok(mut m) => Arc::clone(m.entry(id).or_default()),
+            Err(_) => Arc::default(),
         }
-        c
     }
     /// Tira `id` se ainda for a flag `c` (o id pode ter sido reusado).
     fn soltar(&self, id: u32, c: &Arc<AtomicBool>) {
@@ -292,7 +299,7 @@ fn abrir_linhas_com(caminho: &str, op: &Opcoes) -> Result<ArquivoLinhas, String>
         return Err(format!("{caminho}: é uma pasta, não um arquivo"));
     }
     ArquivoLinhas::abrir_com(caminho, op).map_err(|e| match e.kind() {
-        std::io::ErrorKind::Interrupted => ERRO_CANCELADA.into(),
+        _ if nucleo::compactado::cancelada(&e) => ERRO_CANCELADA.into(),
         _ if nucleo::compactado::razao_estourada(&e) => ERRO_RAZAO.into(),
         std::io::ErrorKind::FileTooLarge => ERRO_TETO.into(),
         _ => format!("{caminho}: {e}"),
@@ -345,6 +352,12 @@ fn abrir_cancelavel<R: Runtime>(
     r
 }
 
+/// Id para a próxima abertura (ver `Aberturas`); a interface o passa ao `abrir`.
+#[tauri::command]
+fn nova_abertura(estado: State<'_, Estado>) -> u32 {
+    estado.abrindo.nova()
+}
+
 /// Cancela a abertura `abertura` em curso (o `abrir` dela falha com `jasao:cancelada`).
 #[tauri::command]
 fn cancelar_abertura(abertura: u32, estado: State<'_, Estado>) {
@@ -354,7 +367,8 @@ fn cancelar_abertura(abertura: u32, estado: State<'_, Estado>) {
 /// Se cada caminho é uma pasta (o arraste avisa em vez de tentar abrir).
 #[tauri::command]
 fn pastas<R: Runtime>(caminhos: Vec<String>, app: AppHandle<R>) -> Vec<bool> {
-    // Só responde pelo concedido (o arraste concede antes de avisar a interface).
+    // Só responde pelo concedido. Síncrono de propósito: roda na thread principal, depois do
+    // handler do soltar que concede o arraste (ver `run`); a interface chama este antes de abrir.
     caminhos
         .iter()
         .map(|c| autorizado(&app, c).is_ok_and(|c| Path::new(&c).is_dir()))
@@ -470,13 +484,30 @@ async fn escolher<R: Runtime>(
         .add_filter("JSON, JSON Lines", &ext)
         .blocking_pick_files()
         .unwrap_or_default();
-    let concedidos = janela.state::<abertura::Concedidos>();
+    let caminhos = escolhidos.into_iter().filter_map(|f| f.into_path().ok());
+    conceder_escolhidos(janela.app_handle(), caminhos)
+}
+
+/// Concede o que o usuário escolheu no diálogo e devolve os caminhos para a interface abrir.
+fn conceder_escolhidos<R: Runtime>(
+    app: &AppHandle<R>,
+    escolhidos: impl Iterator<Item = PathBuf>,
+) -> Vec<String> {
+    let concedidos = app.state::<abertura::Concedidos>();
     escolhidos
-        .into_iter()
-        .filter_map(|f| f.into_path().ok())
         .inspect(|p| concedidos.conceder(p))
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
+}
+
+/// Arquivos do argv da 1ª instância: o pedido é a concessão; entram na fila da abertura.
+fn conceder_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String], cwd: &Path) {
+    let abertura = app.state::<abertura::Abertura>();
+    let concedidos = app.state::<abertura::Concedidos>();
+    for c in abertura::caminhos_argv(argv, cwd) {
+        concedidos.conceder(Path::new(&c));
+        abertura.enfileirar(c);
+    }
 }
 
 /// Documento aberto: o id e o número de registros (= linhas visíveis).
@@ -932,6 +963,9 @@ async fn consultar<R: Runtime>(
     estado: State<'_, Estado>,
 ) -> Result<u64, ErroConsulta> {
     let doc = estado.doc(id)?;
+    // Caminho recusado não mexe na consulta em curso nem apaga o resultado mostrado.
+    let caminho = autorizado(&app, &caminho)?;
+    filho::arquivo_comum(&caminho)?;
     let (geracao, cancelar) = doc.consulta.lock().map_err(|e| e.to_string())?.reiniciar();
     // Compila aqui só para devolver o erro de sintaxe com posição; quem roda é o filho.
     Consulta::nova(&filtro).map_err(|e| ErroConsulta {
@@ -948,8 +982,6 @@ async fn consultar<R: Runtime>(
             })
             .collect(),
     })?;
-    let caminho = autorizado(&app, &caminho)?;
-    filho::arquivo_comum(&caminho)?;
     // Nome com os nanossegundos do relógio para não ser previsível; `create_new` (O_EXCL) recusa
     // arquivo ou link que alguém tenha posto ali antes, e 0600 deixa o resultado só para o dono.
     let nanos = std::time::SystemTime::now()
@@ -1129,6 +1161,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             limpar_recentes,
             recente_ausente,
             abrir,
+            nova_abertura,
             cancelar_abertura,
             fechar,
             pastas,
@@ -1266,8 +1299,11 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let b = b.menu(menu).on_menu_event(no_menu);
     b.plugin(tauri_plugin_dialog::init())
-        // Arraste: soltar na janela é a concessão. Roda antes de a interface receber o evento
-        // (ela só pergunta depois, pelo IPC). Janela com webview manda como evento de janela.
+        // Arraste: soltar na janela é a concessão. No Tauri 2.12 o evento chega à interface
+        // antes deste handler rodar; a ordem não importa porque a interface, ao receber o
+        // soltar, chama primeiro `pastas`, comando síncrono que roda na thread principal, a
+        // mesma deste handler: só começa depois que ele concedeu. Só então chama `abrir`.
+        // Janela com webview manda como evento de janela.
         .on_window_event(|j, e| {
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = e {
                 soltos(j.app_handle(), paths);
@@ -1290,12 +1326,7 @@ pub fn run() {
             }
             let cwd = std::env::current_dir().unwrap_or_default();
             let argv: Vec<String> = std::env::args().collect();
-            let abertura = app.state::<abertura::Abertura>();
-            let concedidos = app.state::<abertura::Concedidos>();
-            for c in abertura::caminhos_argv(&argv, &cwd) {
-                concedidos.conceder(Path::new(&c));
-                abertura.enfileirar(c);
-            }
+            conceder_argv(app.handle(), &argv, &cwd);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1337,13 +1368,19 @@ mod testes {
         let (um, dois) = (a.registrar(1), a.registrar(2));
         a.cancelar(1);
         assert!(um.load(Relaxed) && !dois.load(Relaxed));
-        // Id reusado: a abertura antiga não solta a nova.
-        let novo = a.registrar(2);
         a.soltar(2, &dois);
-        a.cancelar(2);
-        assert!(novo.load(Relaxed));
-        a.soltar(2, &novo);
         a.cancelar(3); // desconhecido: nada
+    }
+
+    /// Cancelar entre o `nova_abertura` e o `abrir` não se perde: o `abrir` já nasce cancelado.
+    #[test]
+    fn cancelar_antes_do_abrir_vale() {
+        let a = Aberturas::default();
+        let (x, y) = (a.nova(), a.nova());
+        assert_ne!(x, y);
+        a.cancelar(x);
+        assert!(a.registrar(x).load(Relaxed));
+        assert!(!a.registrar(y).load(Relaxed));
     }
 
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
@@ -1389,12 +1426,14 @@ mod testes {
         assert!(erro.as_str().unwrap().contains("não está aberto"), "{erro}");
         assert!(em(1, "estrutura", json!({})).is_err());
         let caminho = f.path().to_str().unwrap();
+        let abertura = chamar("nova_abertura", json!({})).unwrap();
+        assert_ne!(abertura, chamar("nova_abertura", json!({})).unwrap());
         assert_eq!(
-            chamar("abrir", json!({ "caminho": caminho, "abertura": 7 })),
+            chamar("abrir", json!({ "caminho": caminho, "abertura": abertura })),
             Ok(json!({"id": 1, "total": 2}))
         );
         assert_eq!(
-            chamar("cancelar_abertura", json!({ "abertura": 7 })),
+            chamar("cancelar_abertura", json!({ "abertura": abertura })),
             Ok(Value::Null)
         );
         // A varredura roda em outra thread: espera o fim pelo próprio comando.
@@ -1633,7 +1672,9 @@ mod testes {
         );
         assert_eq!(a["arquivo"], Value::Null);
         // Filtro preso e `fechar_consulta`: a thread da consulta só termina (e solta o
-        // `cancelar`) depois de matar e esperar o filho.
+        // `cancelar`) depois de matar e esperar o filho. `consultar` volta na hora, com o
+        // filtro ainda girando: não espera a consulta (síncrono, nem voltaria).
+        let t = Instant::now();
         assert!(
             em(
                 2,
@@ -1641,6 +1682,11 @@ mod testes {
                 json!({"filtro": "def f: f; f", "caminho": caminho})
             )
             .is_ok()
+        );
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
         let preso = Arc::downgrade(
@@ -1908,24 +1954,117 @@ mod testes {
             json!({"id": 1, "filtro": ".", "caminho": fora.to_str().unwrap()}),
         );
         assert_eq!(erro.unwrap_err()["mensagem"], json!(NEGADO));
+        // Consulta recusada não mexe na que está em curso nem apaga o resultado dela.
+        let caminho_c = concedido.to_str().unwrap();
+        let consulta = || {
+            let doc = app.state::<Estado>().doc(1).unwrap();
+            let c = doc.consulta.lock().unwrap();
+            (c.geracao, c.arquivo.clone(), c.cancelar.load(Relaxed))
+        };
+        assert_eq!(
+            chamar(
+                "consultar",
+                json!({"id": 1, "filtro": "def f: f; f", "caminho": caminho_c})
+            ),
+            Ok(json!(1))
+        );
+        let antes = consulta();
+        assert!(
+            chamar(
+                "consultar",
+                json!({"id": 1, "filtro": ".", "caminho": fora.to_str().unwrap()})
+            )
+            .is_err()
+        );
+        assert_eq!(consulta(), antes);
+        assert!(antes.1.unwrap().exists());
+        assert_eq!(chamar("fechar_consulta", json!({"id": 1})), Ok(Value::Null));
 
-        // `..` e link para fora do concedido: compara o alvo real, recusa.
-        assert_eq!(abrir(&dentro.join("..").join("fora.jsonl")), negado);
+        // Concessão vale para o alvo real, não para o texto do caminho: `..` concedido cru
+        // concede o arquivo a que ele leva, e o mesmo nome apontando para outro lugar depois
+        // não herda a concessão (comparar o texto deixaria passar).
+        let outro = raiz.join("outro");
+        std::fs::create_dir(&outro).unwrap();
+        let ali = outro.join("ali.jsonl");
+        std::fs::write(&ali, b"{\"b\":2}\n").unwrap();
+        concedidos.conceder(&dentro.join("..").join("outro").join("ali.jsonl"));
+        assert!(abrir(&ali).is_ok());
         #[cfg(unix)]
         {
-            let link = dentro.join("link.jsonl");
-            std::os::unix::fs::symlink(&fora, &link).unwrap();
+            use std::os::unix::fs::symlink;
+            // Link concedido quando apontava para `ali`; depois aponta para `fora`.
+            let link = raiz.join("link.jsonl");
+            symlink(&ali, &link).unwrap();
+            concedidos.conceder(&link);
+            assert!(abrir(&link).is_ok());
+            std::fs::remove_file(&link).unwrap();
+            symlink(&fora, &link).unwrap();
             assert_eq!(abrir(&link), negado);
-            // Link para o concedido abre: o alvo real é o que o usuário escolheu.
+            // Pasta-link com `..`: `d/../ali.jsonl` concedido com `d` em `outro/sub`, depois `d`
+            // repontado para `dentro`: o mesmo texto leva a `raiz/ali.jsonl`, nunca concedido.
+            let sub = outro.join("sub");
+            std::fs::create_dir(&sub).unwrap();
+            std::fs::write(raiz.join("ali.jsonl"), b"{}\n").unwrap();
+            let d = raiz.join("d");
+            symlink(&sub, &d).unwrap();
+            let via = d.join("..").join("ali.jsonl");
+            concedidos.conceder(&via);
+            assert!(abrir(&via).is_ok());
+            std::fs::remove_file(&d).unwrap();
+            symlink(&dentro, &d).unwrap();
+            assert_eq!(abrir(&via), negado);
+            // Link para o concedido abre, e `autorizado` devolve o alvo canônico (é ele que se
+            // abre, não o link).
             let bom = raiz.join("bom.jsonl");
-            std::os::unix::fs::symlink(&concedido, &bom).unwrap();
-            assert_eq!(abrir(&bom), Ok(json!({"id": 2, "total": 1})));
+            symlink(&concedido, &bom).unwrap();
+            assert!(abrir(&bom).is_ok());
+            assert_eq!(
+                autorizado(app.handle(), bom.to_str().unwrap()),
+                Ok(concedido.to_str().unwrap().to_owned())
+            );
         }
-        // Mesmo arquivo em outra aba e `..` que volta ao concedido: abrem.
+        // `..` que volta ao concedido abre, e o que se abre é o canônico.
         let volta = dentro.join("..").join("dentro").join("a.jsonl");
         assert!(abrir(&volta).is_ok());
+        assert_eq!(
+            autorizado(app.handle(), volta.to_str().unwrap()),
+            Ok(concedido.to_str().unwrap().to_owned())
+        );
 
         // Recente reaberto (lista em disco, sem concessão nesta execução): abre.
         assert!(abrir(&recente).is_ok());
+    }
+
+    /// Cada porta de concessão concede de fato: soltar, pedido do sistema, argv e diálogo.
+    #[test]
+    fn fontes_de_concessao() {
+        let pasta = tempfile::tempdir().unwrap();
+        let raiz = std::fs::canonicalize(pasta.path()).unwrap();
+        let [solto, pedido, argv, escolhido] =
+            ["solto", "pedido", "argv", "escolhido"].map(|n| raiz.join(format!("{n}.jsonl")));
+        for p in [&solto, &pedido, &argv, &escolhido] {
+            std::fs::write(p, b"{}\n").unwrap();
+        }
+        let app = comandos(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let h = app.handle();
+        let negado = || Err(NEGADO.to_owned());
+        let ok = |p: &Path| Ok(p.to_str().unwrap().to_owned());
+        for p in [&solto, &pedido, &argv, &escolhido] {
+            assert_eq!(autorizado(h, p.to_str().unwrap()), negado());
+        }
+        soltos(h, std::slice::from_ref(&solto));
+        assert_eq!(autorizado(h, solto.to_str().unwrap()), ok(&solto));
+        abertura::pedir(h, vec![pedido.to_str().unwrap().into()]);
+        assert_eq!(autorizado(h, pedido.to_str().unwrap()), ok(&pedido));
+        // argv relativo, resolvido contra a pasta de quem chamou.
+        conceder_argv(h, &["jasao".into(), "argv.jsonl".into()], &raiz);
+        assert_eq!(autorizado(h, argv.to_str().unwrap()), ok(&argv));
+        assert_eq!(
+            conceder_escolhidos(h, std::iter::once(escolhido.clone())),
+            [escolhido.to_str().unwrap()]
+        );
+        assert_eq!(autorizado(h, escolhido.to_str().unwrap()), ok(&escolhido));
     }
 }

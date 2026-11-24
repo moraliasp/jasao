@@ -66,3 +66,13 @@ test("itens: um por caminho e um por variante, com a 1ª linha para ir à Árvor
 test("singular quando há 1 item ou 1 lista", () => {
   assert.notEqual(t.estrutura.elementos("1", "1"), t.estrutura.elementos("2", "2").replace(/2/g, "1"));
 });
+
+test("caminho com bidi não chega cru ao title", () => {
+  const b: Estrutura = {
+    ...e,
+    caminhos: [{ caminho: ".a\u202eb", relacao: "campo", profundidade: 1, presenca: 1, de: 1, tipos: [["texto", 1, 0]] }],
+    discriminadores: [],
+  };
+  const [it] = itens(b, t, fmt);
+  assert.match(it.html, /title="\.a&lt;U\+202E>b"/);
+});

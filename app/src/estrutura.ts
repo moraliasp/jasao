@@ -1,7 +1,7 @@
 // Modo Estrutura: desenha o que `nucleo::estrutura` inferiu (comando `estrutura`). Lógica pura,
 // sem DOM, para rodar com `node --test`. Nada de inferência aqui: só formatação.
 import type { Textos } from "./i18n.ts";
-import { visivel } from "./texto.ts";
+import { escAtributo, visivel } from "./texto.ts";
 
 export interface CaminhoE {
   caminho: string;
@@ -24,7 +24,7 @@ export interface Estrutura {
 export interface ItemE { html: string; rotulo: string; caminho: string; linha: number | null }
 
 type Fmt = (n: number) => string;
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+const esc = escAtributo;
 
 /** Último segmento do caminho em relação ao pai (`.a.b` sob `.a` → `b`; `[]` e `*` ficam). */
 export function segmento(c: string, pai: string | undefined): string {

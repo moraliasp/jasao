@@ -11,13 +11,22 @@ import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
 import { type Estrutura, type ItemE, itens as itensEstrutura } from "./estrutura";
-import { type Motivo, t } from "./i18n";
+import { erroDoRust, type Motivo, t } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
-import { decodificar, type JanelaTexto, marcado, resumir, linhaHtml as textoHtml, visivel } from "./texto";
+import {
+  decodificar,
+  escAtributo,
+  type JanelaTexto,
+  marcado,
+  resumir,
+  semInvisiveis,
+  linhaHtml as textoHtml,
+  visivel,
+} from "./texto";
 
 type Tipo = "objeto" | "lista" | "texto" | "numero" | "booleano" | "nulo" | "erro";
 interface Linha {
@@ -54,7 +63,7 @@ const verFormatado = $<HTMLButtonElement>("ver-formatado");
 const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura") };
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+const esc = escAtributo;
 const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
 
 let total = 0; // linhas visíveis
@@ -631,7 +640,7 @@ function desenharAbas(): void {
   if (!a) return;
   area.setAttribute("aria-labelledby", `arq-${a.chave}`);
   semArquivo.setAttribute("aria-labelledby", `arq-${a.chave}`);
-  $("nome").textContent = a.arquivo ? n[ativa] : "";
+  $("nome").textContent = a.arquivo ? semInvisiveis(n[ativa]) : "";
   document.getElementById(`arq-${a.chave}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -663,7 +672,7 @@ function ativar(i: number, foco = false): void {
   else if (!resumo) void preparar(a, a.visao);
   else {
     prepararRegua();
-    $("painel-nome").textContent = nomesDasAbas()[i];
+    $("painel-nome").textContent = semInvisiveis(nomesDasAbas()[i]);
     $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], a.ms);
     desenharPainel();
     if (noPainel) mostrarPainel();
@@ -685,7 +694,6 @@ function prepararRegua(): void {
 /** Abas abrindo agora, com o id da abertura: a descompactação delas tem progresso e cancelamento.
  * Id e não caminho: o mesmo arquivo pode estar abrindo em duas abas. */
 const abrindo = new Map<Aba, number>();
-let ultimaAbertura = 0;
 const cancelarAbertura = $<HTMLButtonElement>("cancelar-abertura");
 const mostrarCancelar = () => void (cancelarAbertura.hidden = !abrindo.has(abaAtiva()!));
 const cancelarDe = (a: Aba) => {
@@ -705,13 +713,7 @@ void listen<{ abertura: number; lidos: number; total: number }>("descompactando"
 /** Erro do `abrir` no idioma da interface (os da descompactação vêm como código do Rust). */
 function erroAoAbrir(erro: unknown): string {
   const e = String(erro);
-  if (e === "jasao:cancelada") return t.compactado.cancelada;
-  const textos: Record<string, string> = {
-    "jasao:razao": t.compactado.recusada,
-    "jasao:teto": t.compactado.teto,
-    "jasao:negado": t.negado,
-  };
-  return `${t.erro}: ${textos[e] ?? e}`;
+  return e === "jasao:cancelada" ? t.compactado.cancelada : `${t.erro}: ${erroDoRust(e)}`;
 }
 
 /** Abre `caminho` no documento da aba `a` (cria o documento se a aba ainda não tiver); diz se abriu.
@@ -720,10 +722,11 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo, forcar = false): P
   if (a.doc !== null) consulta.abriu(caminho, a.doc);
   a.status = t.abrindo;
   if (a === abaAtiva()) status.textContent = t.abrindo;
-  const abertura = ++ultimaAbertura;
-  abrindo.set(a, abertura);
-  mostrarCancelar();
   try {
+    // O id vem do backend já registrado: o Cancelar antes de o `abrir` começar não se perde.
+    const abertura = await chamar<number>("nova_abertura");
+    abrindo.set(a, abertura);
+    mostrarCancelar();
     const inicio = performance.now();
     const r = await chamar<{ id: number; total: number }>("abrir", { caminho, id: a.doc, abertura, forcar }).finally(
       () => {
@@ -775,7 +778,7 @@ async function preparar(a: Aba, visao?: Modo): Promise<void> {
     if (v !== versao) return; // trocou de aba: prepara quando voltar
     resumo = r;
     prepararRegua();
-    $("painel-nome").textContent = nomesDasAbas()[ativa];
+    $("painel-nome").textContent = semInvisiveis(nomesDasAbas()[ativa]);
     $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[r.conteudo], a.ms);
     desenharPainel();
     const destino = visao ?? destinoAoAbrir();
