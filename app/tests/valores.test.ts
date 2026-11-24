@@ -1,7 +1,7 @@
 // Detecção dos valores inteligentes (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectar, MAX_BASE64, MAX_JSON_TEXTO, MAX_NIVEL, MAX_URL, pista, reindentar, relativo } from "../src/valores.ts";
+import { detectar, MAX_BASE64, MAX_FORMATADO, MAX_JSON_TEXTO, MAX_NIVEL, MAX_URL, pista, reindentar, relativo } from "../src/valores.ts";
 
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -139,4 +139,16 @@ test("perto de 1 MiB a detecção é linear (não trava a seleção)", () => {
     assert.equal(detectar("texto", s, null)?.tipo, tipo, nome);
     assert.ok(performance.now() - t0 < 2000, `${nome}: ${Math.round(performance.now() - t0)} ms`);
   }
+});
+
+test("teto do reindentado conta quebra, recuo e o espaço depois de `:`", () => {
+  // Objeto de N campos num nível: o reindentado acrescenta 3N+1 bytes de quebra e recuo e N de
+  // espaço após `:`. Dimensionado para só o espaço decidir: sem contá-lo, caberia no teto.
+  const n = 100000;
+  const s = `{${Array(n).fill(`"a":${"1".repeat(159)}`).join(",")}}`;
+  assert.ok(s.length + 3 * n + 1 <= MAX_FORMATADO && s.length + 4 * n + 1 > MAX_FORMATADO);
+  assert.equal(reindentar(s), s);
+  // Com metade dos campos cabe: reindenta.
+  const meio = `{${Array(n / 2).fill(`"a":${"1".repeat(159)}`).join(",")}}`;
+  assert.notEqual(reindentar(meio), meio);
 });
