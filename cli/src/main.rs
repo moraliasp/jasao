@@ -584,8 +584,10 @@ fn exportar(
     if v.invalidas > 0 {
         eprintln!("{} linhas não são JSON para o validador", v.invalidas);
     }
+    // O motivo cita caminho de chave do arquivo: sai pelo stderr neutralizado.
+    let mut err = erro();
     for f in &v.falhas {
-        eprintln!("linha {}: {}", f.linha + 1, neutro(&f.motivo));
+        writeln!(err, "linha {}: {}", f.linha + 1, f.motivo)?;
     }
     Ok(v.falham == 0 && v.invalidas == 0)
 }
