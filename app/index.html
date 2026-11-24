@@ -272,6 +272,16 @@
       .indic .aviso { border-color: color-mix(in srgb, var(--change) 45%, transparent); background: color-mix(in srgb, var(--change) 7%, transparent); }
       .indic .aviso dd { color: var(--change); }
       .painel h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+      .laudo { margin: 0 0 28px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+      .laudo h3 { margin: 12px 0 4px; font-size: 12px; font-weight: 600; color: var(--bar-muted); }
+      .laudo ul { margin: 0; padding-left: 18px; }
+      .laudo li { margin: 2px 0; }
+      .laudo code { font: 12.5px var(--mono); }
+      .laudo .lk { display: inline; text-align: left; }
+      .laudo .lk:hover, .laudo .lk:focus-visible { text-decoration: underline; }
+      .laudo .pm { margin: 0; color: var(--bar-muted); }
+      .laudo .aviso { margin: 0 0 6px; color: var(--change); }
+      .laudo .passos { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
       .modos { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
       .modo { position: relative; display: grid; grid-template-columns: auto 1fr; align-content: start; gap: 4px 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); text-align: left; cursor: pointer; }
       .modo:hover { background: var(--hover); }
@@ -372,6 +382,7 @@
             <span class="selo" id="painel-selo" role="status" aria-live="polite"></span>
           </header>
           <dl class="indic" id="painel-indic"></dl>
+          <section class="laudo" id="painel-laudo" aria-live="polite"></section>
           <h2 id="painel-pergunta">O que você quer fazer?</h2>
           <div class="modos" id="painel-modos" role="group" aria-labelledby="painel-pergunta"></div>
           <footer class="pf"><label for="painel-pref" id="painel-rotulo">Ao abrir um arquivo</label><select id="painel-pref"></select></footer>

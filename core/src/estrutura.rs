@@ -594,7 +594,11 @@ impl Resumo {
             let Some(no) = self.raiz.filhos.get(campo) else {
                 continue;
             };
+            // Campo que parece segredo nunca vira discriminador: os valores dele iriam para a
+            // legenda, o laudo, o Zod e o diff (mesmo critério do aviso `Segredo`).
             if c.excesso
+                || no.valores.segredo
+                || chave_de_segredo(campo)
                 || c.valores.len() < 2
                 || no.presenca != objetos
                 || no.conjunto() != 1 << Tipo::Texto as u8
@@ -1634,6 +1638,21 @@ mod testes {
         let i = inf(b"{\"a\":\n{\"a\":1}\n{\"a\":2}\n");
         assert_eq!(i.entrada, Entrada::Jsonl);
         assert_eq!((i.resumo.registros(), i.resumo.invalidas.n), (2, 1));
+    }
+
+    #[test]
+    fn segredo_nunca_vira_discriminador() {
+        // Por nome (`token`) e por valor (cara de chave), cada um com 2 valores distintos.
+        for d in [
+            "{\"token\":\"hunter2xyz\",\"a\":1}\n{\"token\":\"s3cr3tvalue\",\"b\":2}\n",
+            "{\"k\":\"ghp_0123456789abcdefghijABCDEFGHIJ0123\",\"a\":1}\n{\"k\":\"ghp_9876543210abcdefghijABCDEFGHIJ0123\",\"b\":2}\n",
+        ] {
+            let i = inf(d.as_bytes());
+            assert!(i.resumo.discriminadores().is_empty(), "{d}");
+        }
+        // Controle: o mesmo formato com campo comum vira discriminador.
+        let i = inf(b"{\"tipo\":\"x\",\"a\":1}\n{\"tipo\":\"y\",\"b\":2}\n");
+        assert_eq!(i.resumo.discriminadores().len(), 1);
     }
 
     #[test]
