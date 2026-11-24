@@ -596,3 +596,17 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 **Seguir (arquivo vivo):** recusado para os formatos convertidos (`Vivo` confere `formatos::detectar`; teste `recusa_convertido`), porque a cópia seria dos bytes crus. O botão Seguir ainda aparece; ao clicar, a interface pausa com o motivo.
 
 **Limites conhecidos:** YAML/TOML/binários compactados (`.yaml.gz`) não abrem (compactado só JSON/JSONL; dá para somar depois encadeando as duas conversões). A mensagem de progresso do app ainda diz "descompactando" durante a conversão. Posição no erro do YAML é em caracteres, nos binários em bytes.
+
+## Filtro por variante e por caminho (Fase 2, 24/11/2026)
+
+**O que faz:** a partir da Estrutura (tecla F na linha) ou do painel de estatísticas ("filtrar estes N", com e sem o caminho), filtra os registros de uma variante (`.tipo = "X"`) ou os que têm / não têm um caminho. A Tabela passa a mostrar só os filtrados, com chip na barra (critério, "N de M registros" e × para tirar). Na Árvore, decisão do Eduardo "A, só navegação": ⌘↓/⌘↑ anda entre os registros filtrados e a Árvore não filtra. Se a Tabela não serve para o arquivo, o filtro abre a Árvore direto.
+
+**Como roda:** `nucleo::filtro` varre o arquivo inteiro em 2º plano, em paralelo por blocos como `perfil` e a busca, e devolve a lista crescente dos registros que passam no espaço de índices da Tabela (JSONL: linha; JSON único: elemento). No app, o comando `filtrar` devolve a geração e o evento `filtragem` leva progresso e fim; `cancelar_filtro`, `limpar_filtro` e `filtrado(posicao)` (linha e byte do k-ésimo filtrado, para a Árvore) completam. Filtro novo derruba a ordem (a ordem guarda a versão do filtro sobre a qual foi feita, e `vista()` descarta a de outra versão); a interface pede a mesma ordem de novo sobre o filtro novo. O critério de variante compara o valor cru do discriminador do topo, como a inferência conta (chave repetida: vale a 1ª).
+
+**Teto:** `MAX_FILTRADOS` = 50 milhões de índices de 4 bytes (200 MB), o mesmo da ordenação. Ao passar, a varredura para, o evento traz `falha: "grande"` e o filtro anterior continua valendo. O teto é do documento (`EstadoFiltro.teto`) e o teste `comandos_pelo_ipc` o baixa para 1 no call site real.
+
+**Medido (24/11/2026, JSONL de 1 GB de `examples/gerar`, 6.456.439 linhas, M5 Pro, load ~25):** filtro por variante entre 0,30 e 0,39 s (cerca de 2,15 milhões de achados cada, iguais às contagens da inferência); "tem"/"não tem" um caminho entre 0,34 e 0,41 s. `medir.sh` na mesma fatia: 1ª tela 0,20 s (meta 300 ms) e inferência 2,05 s, sem mudança, porque o filtro só roda sob pedido.
+
+**Fora desta fatia:** filtrar a própria Árvore; ⌘↓ parte da última posição navegada, não do cursor; filtro por forma sem discriminador; combinar filtros; guardar o filtro entre sessões; variante cujo valor tem UTF-8 inválido não casa (o valor chega à interface já convertido com perda).
+
+**Não conferido:** a interface não foi aberta no app nesta fatia. O comando e o evento foram testados pelo IPC (`comandos_pelo_ipc`), e a lógica pura da barra, do chip e da Estrutura pelos testes do `app`.

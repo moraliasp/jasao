@@ -18,7 +18,8 @@ import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPar
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { criarExportar } from "./exportar";
-import { criarGrade, type Ordenacao } from "./grade";
+import { type Alvo, criarGrade, type Filtragem, type Ordenacao } from "./grade";
+import { rotuloFiltro } from "./tabela";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
 import {
   decodificar,
@@ -489,6 +490,31 @@ async function abrirOcorrencia(): Promise<void> {
   await focarRegistro(linha);
 }
 
+/** Filtra os registros pelo `alvo` e mostra na Tabela (ou na Árvore, se não houver Tabela, para
+ * ⌘↓/⌘↑ andar entre eles). Corre em 2º plano: o fim chega pelo evento `filtragem`. */
+async function filtrarRegistros(alvo: Alvo, rotulo: string): Promise<void> {
+  trocarModo(grade.disponivel() ? "tabela" : "arvore");
+  if (modo !== "tabela") status.textContent = t.tabela.filtro.filtrando(rotulo, "0");
+  const msg = await grade.filtrar(alvo, rotulo);
+  if (msg) status.textContent = msg;
+}
+
+function filtrarItem(): Promise<void> | undefined {
+  const it = estr?.[selE];
+  if (!it || !registrosE) return;
+  return filtrarRegistros(it.alvo, rotuloFiltro({ caminho: it.caminho, tem: it.valor === null ? true : null, valor: it.valor }, t));
+}
+
+/** ⌘↓/⌘↑ na Árvore: o registro filtrado seguinte (ou anterior). */
+async function andarNoFiltro(passo: 1 | -1): Promise<void> {
+  const v = grade.vizinho(passo);
+  if (!v) return void (status.textContent = t.tabela.filtro.semFiltro);
+  const f = await chamar<{ posicao: number; total: number; linha: number; byte: number } | null>("filtrado", { posicao: v.posicao });
+  if (!f) return;
+  await revelar(f.linha, f.byte);
+  status.textContent = t.tabela.filtro.navegar(fmt(f.posicao + 1), fmt(f.total));
+}
+
 function teclaEstrutura(e: KeyboardEvent): void {
   const pagina = Math.max(1, Math.floor(estruturaEl.clientHeight / ALTURA) - 2);
   const acoes: Record<string, () => unknown> = {
@@ -499,9 +525,10 @@ function teclaEstrutura(e: KeyboardEvent): void {
     Home: () => moverE(0),
     End: () => moverE(Infinity),
     Enter: () => abrirOcorrencia(),
+    f: () => filtrarItem(),
   };
   const acao = acoes[e.key];
-  if (!acao) return;
+  if (!acao || (e.key === "f" && (e.metaKey || e.ctrlKey || e.altKey))) return; // ⌘F é a busca
   e.preventDefault();
   Promise.resolve(acao()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
 }
@@ -581,6 +608,10 @@ async function alternar(v: number): Promise<void> {
 }
 
 async function aoTeclado(e: KeyboardEvent): Promise<void> {
+  if ((e.metaKey || e.ctrlKey) && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    e.preventDefault();
+    return andarNoFiltro(e.key === "ArrowDown" ? 1 : -1).catch((erro) => void (status.textContent = `${t.erro}: ${erro}`));
+  }
   const l = linhaEm(sel);
   const pagina = Math.max(1, geometria().cabem - 2);
   const acoes: Record<string, () => unknown> = {
@@ -1219,6 +1250,13 @@ estruturaLinhas.addEventListener("dblclick", (e) => {
 perfilEl.addEventListener("click", (e) => {
   const l = (e.target as HTMLElement).closest<HTMLElement>("[data-l]");
   if (l) void focarRegistro(Number(l.dataset.l));
+  const f = (e.target as HTMLElement).closest<HTMLElement>("[data-filtrar]");
+  const it = estr?.[selE];
+  if (f && it?.indice != null) {
+    const tem = f.dataset.filtrar === "true";
+    void filtrarRegistros({ caminho: it.indice, tem }, rotuloFiltro({ caminho: it.caminho, tem, valor: null }, t))
+      .catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+  }
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
@@ -1361,6 +1399,10 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   regua.andamento(p);
 });
 void listen<Ordenacao>("ordenacao", ({ payload }) => grade.ordenacao(payload));
+void listen<Filtragem>("filtragem", ({ payload }) => {
+  const msg = grade.filtragem(payload);
+  if (msg && payload.id === docAtivo()) status.textContent = msg;
+});
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
 async function focarRegistro(r: number): Promise<boolean> {
   if (semRegistros()) trocarModo("arvore"); // Estrutura, Tabela e Exportar: na Árvore

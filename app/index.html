@@ -159,9 +159,13 @@
       .tabw { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
       .tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
       .tocultas { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-      .tocultas .chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; background: none; color: var(--bar-fg); font: 11.5px var(--mono); overflow: hidden; white-space: nowrap; cursor: pointer; unicode-bidi: isolate; }
-      .tocultas .chip svg { width: 11px; height: 11px; flex: none; }
-      .tordem { display: inline-flex; align-items: center; gap: 8px; }
+      .tocultas .chip, .tfiltro .chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; background: none; color: var(--bar-fg); font: 11.5px var(--mono); overflow: hidden; white-space: nowrap; cursor: pointer; unicode-bidi: isolate; }
+      .tfiltro .chip { cursor: default; }
+      .tfiltro .chip .ib { padding: 0; border: 0; background: none; color: inherit; cursor: pointer; display: inline-flex; }
+      .tfiltro, .tordem { display: inline-flex; align-items: center; gap: 8px; }
+      .tfiltro progress { width: 120px; }
+      .tfiltro .btn { padding: 1px 8px; }
+      .tocultas .chip svg, .tfiltro .chip svg { width: 11px; height: 11px; flex: none; }
       .tordem progress { width: 120px; }
       .tordem .btn { padding: 1px 8px; }
       .grade .rows { overflow-x: visible; overflow-y: clip; width: max-content; min-width: 100%; }
@@ -411,6 +415,7 @@
         <div class="tabw" id="tabela-vista" hidden>
           <div class="tbar">
             <span id="tabela-resumo" role="status" aria-live="polite"></span>
+            <span class="tfiltro" id="tabela-filtro" role="status" aria-live="polite"></span>
             <span class="tocultas" id="tabela-ocultas"></span>
             <span class="tordem" id="tabela-ordem" role="status" aria-live="polite" hidden><progress max="100" value="0"></progress><span></span><button class="btn" type="button"></button></span>
           </div>

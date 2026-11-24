@@ -63,6 +63,11 @@ test("itens: um por caminho e um por variante, com a 1ª linha para ir à Árvor
   assert.ok(it[6].html.includes(`${t.estrutura.opcionais}: z (1)`));
   // Índice em `caminhos` para o comando `perfil`; variante não tem.
   assert.deepEqual(it.map((i) => i.indice), [0, 1, 2, 3, 4, 5, null]);
+  // F filtra: caminho → os que têm; variante → os do formato (índices do discriminador).
+  assert.deepEqual(it[2].alvo, { caminho: 2, tem: true });
+  assert.deepEqual(it[6].alvo, { discriminador: 0, variante: 0 });
+  assert.equal(it[6].valor, "x");
+  assert.equal(it[2].valor, null);
 });
 
 test("avisos viram etiqueta e entram no rótulo de leitor de tela", () => {
@@ -99,6 +104,8 @@ test("painel do perfil: extremos, faixas, comuns e linhas com e sem (1ª linha =
   assert.equal((h.match(new RegExp(t.estrutura.aproximado, "g")) ?? []).length, 1);
   assert.deepEqual([...h.matchAll(/data-l="(\d+)">(\d+)</g)].map((m) => [m[1], m[2]]), [["0", "1"], ["2", "3"], ["3", "4"]]);
   assert.ok(h.includes(t.estrutura.primeiras("2")), "8 com, só 2 linhas guardadas");
+  // Um botão de filtrar para os com e outro para os sem.
+  assert.deepEqual([...h.matchAll(/data-filtrar="(\w+)"/g)].map((m) => m[1]), ["true", "false"]);
   assert.ok(!h.includes(t.estrutura.oculto));
 });
 
@@ -114,6 +121,7 @@ test("painel de caminho oculto: só contagens", () => {
 test("sem registros sem o caminho, a lista some", () => {
   const h = detalhe(".v", { ...p, sem: 0, linhas_sem: [] }, t, fmt);
   assert.ok(!h.includes(t.estrutura.sem));
+  assert.ok(!h.includes('data-filtrar="false"'));
 });
 
 test("singular quando há 1 item ou 1 lista", () => {
