@@ -478,6 +478,35 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 - A régua não aparece no modo Tabela (o registro selecionado não é posição no arquivo depois de ordenar).
 - Fixar/ocultar/ordem valem por documento na sessão; não são guardados.
 
+
+## Avisos da estrutura (Fase 2, 24/11/2026)
+
+**Onde rodam:** na própria inferência (`estrutura::inferir`, 2º plano), com flags baratas por texto que param de ser conferidas na primeira vez que viram verdade. Nada na 1ª tela. Cada caminho leva `avisos` (`numero_como_texto`, `data_fora_iso`, `valor_unico`, `opaco`, `segredo`); a Estrutura mostra uma etiqueta por aviso e o nome entra no rótulo do leitor de tela.
+
+**Critérios, decididos para não gritar à toa:**
+- **Número como texto:** todo texto visto no caminho é um número JSON válido **e** pelo menos um deles não é código. **Código** = só dígitos, 8 ou mais: CEP sem traço (`20040020`), telefone (`11987654321`), CPF, CNPJ, cartão. Esses são identificadores guardados certo como texto, então não avisam. CEP com zero à esquerda (`01310100`) nem é número JSON. Com traço, parênteses ou espaço (`01310-100`, `(11) 98765-4321`) é texto. Um único texto não numérico no caminho cala o aviso.
+- **Data fora do ISO:** o texto inteiro é uma data em grupos separados por `/`, `-` ou `.`, com dia e mês nas faixas válidas, e hora opcional (`HH:MM`). Avisam `24/11/2026`, `11-24-26`, `24.11.2026`, `2026/11/24`. Não avisam o ISO (`2026-11-24`, com ou sem hora), versão (`1.2.30`, `10.11.12`, porque ano de 2 dígitos com ponto fica de fora), data dentro de frase, telefone com traço e mês 13.
+- **Valor único:** pelo menos 2 valores escalares não nulos, todos o mesmo valor, e nenhum objeto ou lista no caminho. Um valor só, ou só `null`, não avisa.
+- **Opaco:** texto que é JSON (`{"…}` ou `[{"…]`/`["…]`), `data:…;base64,` ou base64 com 100 ou mais caracteres. Hex puro (hash SHA) e texto curto ficam de fora.
+- **Parece segredo:** pelo **valor** (JWT `eyJ…` com 2 pontos, `-----BEGIN … PRIVATE KEY`, chave AWS `AKIA` + 16, prefixos `ghp_`/`gho_`/`ghs_`/`github_pat_`/`xoxb-`/`xoxp-`/`xoxa-`/`sk-`/`sk_live_`/`rk_live_` com 20 ou mais caracteres sem espaço, `Bearer `/`Basic ` + credencial sem espaço) ou pelo **nome** de qualquer chave acima, se o caminho tem valor escalar (texto, número ou booleano): `.senha.valor`, `.credentials.user` e `.pin` (número) avisam. O nome é quebrado em palavras (`_`, `-`, `.`, espaço, camelCase), e a **última** palavra decide: `senha`, `password`, `passwd`, `pwd`, `pass`, `passcode`, `passphrase`, `pin`, `secret`, `segredo`, `token`, `apikey`, `credential`, `credencial`, `authorization`, `privatekey`, os plurais (menos `tokens`: em `max_tokens` é contagem), ou o par `api/private/secret/access` + `key(s)` e `chave(s)` + `privada(s)/api`. Assim `token_type`, `password_hash`, `secretaria` e `max_tokens` não avisam. Falso positivo aqui é o lado seguro: o perfil só esconde o que tem o aviso.
+
+**Segredo só aponta:** o aviso leva o caminho, nunca o valor. O perfil de um caminho com esse aviso sai `oculto`: só contagens, sem mínimo, máximo nem mais comuns, e o valor não é guardado nem cortado (o teste confere que não aparece no `Debug` nem no JSON). A interface não registra valor em log. Mascarar o segredo na Árvore e no Texto é da Fase 5.
+
+## Estatísticas por campo e registros que fogem (Fase 2, 24/11/2026)
+
+**Sob pedido, não na inferência:** `perfil::perfil` varre o arquivo inteiro para **um** caminho (o selecionado na Estrutura), em paralelo por blocos como a busca. O comando `perfil(id, indice)` roda fora da thread da interface, e pedir outro caminho cancela o anterior. A interface espera 200 ms parada na linha antes de pedir. Fazer isso para todos os caminhos dentro da inferência multiplicaria memória e tempo pelo número de caminhos.
+
+**O que sai, e o que é aproximado:**
+- Mínimo e máximo exatos. Número pelo valor (`f64`), devolvendo o texto cru do arquivo; texto pela ordem dos bytes.
+- Distribuição dos números por ordem de grandeza (`1e2…1e3`, sinal à parte, zero sozinho), exata e com memória constante.
+- **Cardinalidade:** exata até 4.096 valores distintos. Acima disso, estimativa KMV (os 4.096 menores hashes), com erro típico de ~1,6%, e a interface escreve "aproximado". Texto `"1"` e número `1` contam separados.
+- **Mais comuns (10):** contagem exata até 1.000 valores distintos. Acima disso, Misra–Gries em lote (cada bloco segura até 2.000 e reduz para 1.000): as contagens viram limite inferior, quem aparece em mais de 1/1.001 dos valores nunca some, e a interface escreve "aproximado". Mínimo, máximo e mais comuns guardam no máximo 1 KiB + 1 byte por valor e saem cortados com `…` (cortar não muda a ordem, então o mínimo e o máximo seguem certos; o número é comparado pelo valor inteiro). Até 2.000 distintos sem corte nenhum a contagem dos comuns é exata e não sai "aproximado".
+- Memória por bloco: no máximo 4.096 hashes, 2.000 valores de até 1 KiB e 2 × 1.000 linhas, independente do tamanho do arquivo.
+
+**Registros que fogem:** o perfil conta os registros com pelo menos um valor no caminho e os sem nenhum, e guarda as primeiras 1.000 linhas de cada grupo, em ordem; as contagens seguem até o fim. A lista sai no painel como botões, e o clique abre o registro na Árvore (o mesmo `focarRegistro` do Enter na Estrutura). Linha em branco e linha inválida não entram em nenhum dos dois grupos. Filtrar a Tabela por esses registros fica para a fatia do filtro por variante.
+
+**Medido (24/11/2026, JSONL de 1 GB de `examples/gerar`, M5 Pro, load ~90):** perfil de um caminho entre 0,30 s e 1,0 s. O mais lento foi `.id`, com 6,46 milhões de valores distintos: a estimativa deu 6.469.431, erro de 0,2%. A inferência com os avisos levou 2,01 s no `medir.sh`, contra a meta de 5 s. A 1ª tela levou 0,21 s, contra a meta de 300 ms, e não mudou porque os avisos não estão nesse caminho.
+
 ## Tipos TypeScript e validar contra schema de fora (Fase 4, 24/11/2026)
 
 **Tipos TS:** `exportar::tipos` imprime a mesma `Forma` do Zod e do Schema como `export type Registro = …`. União discriminada vira união de objetos com o discriminador literal (`| { tipo: "evento"; … }`); campo opcional, `campo?:`; nullable, `| null`; mapa, `Record<string, T>`; lista, `Array<T>`; objeto sem campo visto, `Record<string, unknown>`. Chaves e literais passam pelo mesmo `exportar::aspas`; identificador ASCII sai sem aspas e `__proto__` sai como `["__proto__"]`. **"Tratar como número" não se aplica aos tipos:** o tipo descreve o JSON como está, e tipo não converte; texto numérico continua `string` (a interface desliga a opção). A autovalidação usa `schema_da_entrada_zod`, que aceita exatamente o que o tipo descreve. Prova: dourados `app/tests/dourados/*.d.ts` e `app/tests/tipos.test.ts`, que roda o `tsc` do projeto em modo estrito: todo registro do próprio arquivo precisa caber no tipo, e casos com `@ts-expect-error` (discriminador errado, campo obrigatório faltando, tipo errado, valor travado, texto numérico) precisam ser recusados. Trocar `obs?` por `obs`, o literal do discriminador por `string`, `valor: string` por `number` ou tirar o `| null` reprova o teste.
