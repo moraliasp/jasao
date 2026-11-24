@@ -46,7 +46,7 @@ Máquina de referência: MacBook com Apple Silicon, 8 núcleos. Arquivo de refer
 | Memória além do `mmap` | < 300 MB |
 | Teto de tamanho | 10 GB abre e navega; acima disso, avisa |
 
-Cada alvo vira benchmark (`criterion`) que roda no CI e reprova regressão acima de 10%.
+Cada alvo vira benchmark (`criterion`). A meta é rodar no CI e reprovar regressão acima de 10%, mas isso ainda não está ligado: o runner único tem ruído acima de 10% (ver `decisoes.md`, "Medidas de desempenho").
 
 ## 4. Robustez
 

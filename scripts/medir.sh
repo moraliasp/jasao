@@ -18,10 +18,18 @@ mkdir -p "$dir"
 cargo build --release -q -p cli
 cargo build --release -q -p nucleo --example gerar
 bin=target/release/jasao
-[ -s "$arq" ] || { echo "gerando $arq…" >&2; target/release/examples/gerar "$arq" "$mb" 1 >&2; }
+if [ -s "$arq" ]; then
+  echo "reaproveitando $arq já existente (apague-o para gerar de novo)" >&2
+else
+  echo "gerando $arq…" >&2
+  target/release/examples/gerar "$arq" "$mb" 1 >&2
+fi
 cat "$arq" >/dev/null # aquece o cache de páginas: mede o programa, não o disco
 
-# mede <rótulo> <meta> <limite_s> <comando…>: N rodadas, tempo mediano e memória máxima
+memoria_mb=300 # meta "além do mmap" do plano, conferida em cada linha
+falhou=0
+# mede <rótulo> <meta> <limite_s|-> <comando…>: N rodadas, tempo mediano e memória máxima.
+# Limite "-" = medida sem meta de tempo (só a de memória vale).
 mede() {
   local rotulo="$1" meta="$2" limite="$3"
   shift 3
@@ -34,10 +42,14 @@ mede() {
   done
   local med
   med=$(printf '%s\n' "${tempos[@]}" | sort -n | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}')
-  awk -v r="$rotulo" -v m="$meta" -v t="$med" -v l="$limite" -v p="$pico" -v s="$rss" 'BEGIN{
-    printf "| %s | %s | %.2f s | %.0f MB | %.0f MB | %s |\n",
-      r, m, t, p/1048576, s/1048576, (t < l ? "ok" : "NÃO")
-  }'
+  awk -v r="$rotulo" -v m="$meta" -v t="$med" -v l="$limite" -v p="$pico" -v s="$rss" \
+    -v mm="$memoria_mb" 'BEGIN{
+    tempo = (l == "-") ? "—" : (t < l ? "ok" : "NÃO")
+    mem = (p / 1048576 < mm) ? "ok" : "NÃO"
+    printf "| %s | %s | %.2f s | %s | %.0f MB | %s | %.0f MB |\n",
+      r, m, t, tempo, p/1048576, mem, s/1048576
+    exit (tempo == "NÃO" || mem == "NÃO")
+  }' || falhou=1
 }
 
 echo
@@ -45,13 +57,14 @@ echo "$(sw_vers -productName) $(sw_vers -productVersion) · $(sysctl -n machdep.
 echo "jasão $(git describe --always --dirty) · $(stat -f %z "$arq") bytes · mediana de $n rodadas"
 echo "carga antes de medir: $(sysctl -n vm.loadavg) (load average 1/5/15 min; alto = números pessimistas)"
 echo
-echo "| Medida (CLI, processo inteiro) | Meta | Medido | Pico alocado | RSS máximo | Meta |"
-echo "|---|---|---|---|---|---|"
+echo "| Medida (CLI, processo inteiro) | Meta de tempo | Medido | Tempo | Pico alocado | < $memoria_mb MB | RSS máximo (com mmap) |"
+echo "|---|---|---|---|---|---|---|"
 mede "primeira tela (abrir + 50 linhas)" "< 300 ms" 0.3 "$bin" janela "$arq" 0 50
 mede "índice de linhas (abrir)" "< 2 s" 2 "$bin" linhas "$arq"
 mede "estrutura completa (inferir)" "< 5 s" 5 "$bin" inferir "$arq"
 mede "busca até o fim (literal ausente)" "< 3 s" 3 "$bin" buscar "$arq" "agulha inexistente"
 mede "busca até o fim (regex ausente)" "< 3 s" 3 "$bin" buscar --regex "$arq" '"qtd":\d{3}'
-mede "exportar Schema + validar tudo" "—" 1e9 "$bin" exportar --schema "$arq"
+mede "exportar Schema + validar tudo" "sem meta" - "$bin" exportar --schema "$arq"
 echo
-echo "Meta de memória: pico alocado < 300 MB em todas as linhas."
+if [ "$falhou" = 0 ]; then echo "Todas as metas batidas."; else echo "Há meta NÃO batida (ver tabela)."; fi
+exit "$falhou"
