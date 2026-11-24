@@ -8,7 +8,7 @@ Visualizador de JSON/JSONL de ponta, somente leitura, no molde do Leve (Tauri 2,
 2. **Varredura completa, nunca amostra escondida.** Resultado parcial aparece enquanto roda, sempre com "N de M linhas".
 3. **Fiel ao byte.** Número grande, ordem das chaves, chave duplicada e linha inválida aparecem como estão no arquivo.
 4. **Tudo cancelável e nada trava.** Operação longa roda fora da thread da interface, com progresso.
-5. **Somente leitura.** Edição fica fora até o resto estar sólido.
+5. **Somente leitura.** Edição fica fora até o resto estar sólido. O arquivo aberto nunca é alterado: transformar só grava um arquivo **novo** ("Salvar como…"), e o app recusa gravar por cima do original ou de outro aberto.
 
 ## 2. Arquitetura
 
@@ -98,9 +98,10 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - **Linha de comando:** `inferir`, `diff --falha-em quebra`, `validar`, para CI.
 - **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada. Feito em 24/11/2026 (somente leitura, convertidos para JSONL no cache; ver `docs/decisoes.md`, "Formatos de entrada").
 - **Máscara de segredos** na tela e na exportação; anonimização. ✅ (24/11/2026: ligada por padrão em todo caminho de saída, "Mostrar valor" campo a campo, anonimizar no jq; ver `docs/decisoes.md`, "Máscara de segredos")
+- **Salvar como (transformar em arquivo novo):** arquivo inteiro, resultado do jq ou filtro da Tabela; manter, tirar e renomear campos; JSONL ou JSON (formatado ou compacto); mascarado por padrão. ✅ (24/11/2026, no app e em `jasao transformar`; ver `docs/decisoes.md`, "Salvar como")
 
 ### Fora por enquanto
-Edição, decriptar age/gpg, colaboração, nuvem.
+Edição no lugar (e desfazer), decriptar age/gpg, colaboração, nuvem.
 
 ## 6. Decisões em aberto
 
