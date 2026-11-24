@@ -4,6 +4,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { chamar, docAtivo } from "./doc";
 import { copiarTexto } from "./copiar";
+import { porGeracao } from "./geracao";
 import { t } from "./i18n";
 
 interface Pedido {
@@ -55,7 +56,6 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
   const codigoEl = q("ex-codigo");
   const botoes = [q<HTMLButtonElement>("ex-copiar"), q<HTMLButtonElement>("ex-salvar")];
 
-  let geracao = 0; // da validação mostrada; 0: nenhuma (evento é descartado)
   let codigo = "";
   let de: number | null = null; // doc do código mostrado
 
@@ -87,16 +87,14 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
       .join("");
   }
 
-  let adiantado: Validacao | null = null; // evento que chegou antes da resposta do `exportar`
   const aplicar = (v: Validacao) => {
     if (v.fim) return resultado(v);
     estado(`<span>${x.validando(o.fmt(v.varridas), o.fmt(v.total))}</span>`);
   };
+  const eventos = porGeracao<Validacao>(aplicar); // geração da validação mostrada
   void listen<Validacao>("validacao", ({ payload: v }) => {
     if (v.id !== docAtivo() || el.hidden) return;
-    // Arquivo pequeno termina antes do `await` devolver a geração: guarda para aplicar depois.
-    if (v.geracao > geracao) adiantado = v;
-    if (v.geracao === geracao) aplicar(v);
+    eventos.receber(v);
   });
 
   /** Gera o código das opções atuais e começa a validar; sem inferência ainda, avisa e espera. */
@@ -113,18 +111,16 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
       return estado(`<span>${x.inferindo}</span>`);
     }
     de = d;
-    geracao = r.geracao;
     codigo = codigoEl.textContent = r.codigo;
     pronto(true);
     estado(`<span>${x.validando("0", "…")}</span>`);
-    if (adiantado?.geracao === geracao) aplicar(adiantado);
-    adiantado = null;
+    eventos.fixar(r.geracao); // aplica o `fim` que chegou antes desta resposta
   }
 
   /** Para a validação em curso (sair da vista, trocar de aba, Esc). */
   function parar(): void {
-    if (!geracao) return;
-    geracao = 0;
+    if (!eventos.atual) return;
+    eventos.fixar(0);
     void chamar("cancelar_validacao").catch(() => {}); // doc fechado: nada a cancelar
   }
 
@@ -144,7 +140,7 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
     }
   });
   el.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !geracao) return;
+    if (e.key !== "Escape" || !eventos.atual) return;
     e.preventDefault();
     parar();
     estado(`<span>${x.cancelada}</span>`);
