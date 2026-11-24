@@ -8,6 +8,11 @@ test("aceita JSON, JSON Lines e compactados; recusa o resto", () => {
   for (const c of ["foto.png", "a.json.bak", "a.gz", "a.zst", "jsonl", "a.json.gz.txt", "pasta"]) assert.ok(!aceito(c), c);
 });
 
+test("aceita YAML, TOML, MessagePack, CBOR e BSON, mas não compactados", () => {
+  for (const c of ["a.yaml", "b.YML", "c.toml", "d.msgpack", "e.mpk", "f.cbor", "/x/g.BSON"]) assert.ok(aceito(c), c);
+  for (const c of ["a.yaml.gz", "b.toml.zst", "c.bson.bak", "yaml", "a.cbor.txt"]) assert.ok(!aceito(c), c);
+});
+
 test("aba nova entra logo depois da ativa", () => {
   assert.equal(posicaoNova(0, -1), 0);
   assert.equal(posicaoNova(3, 0), 1);

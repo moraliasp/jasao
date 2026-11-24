@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use memmap2::MmapOptions;
 
 use crate::compactado::{self, Formato, Opcoes};
+use crate::formatos;
 use crate::linhas::{ArquivoLinhas, IndiceLinhas, arquivo_comum};
 
 /// Últimos bytes copiados que cada leitura confere no original: reescrita no mesmo arquivo
@@ -117,6 +118,13 @@ impl Vivo {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 "arquivo compactado não dá para seguir; descompacte e abra o JSONL",
+            ));
+        }
+        // Convertido (YAML, BSON…): a cópia seria dos bytes crus, não do JSONL que a aba mostra.
+        if let Some(e) = formatos::detectar(&origem, &mut File::open(&origem)?)? {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("arquivo {e:?} não dá para seguir; só JSONL"),
             ));
         }
         let mesmo = match marca {
@@ -455,6 +463,15 @@ mod testes {
         fs::write(&gz, b"\x1f\x8b\x08\x00").unwrap();
         let erro = Vivo::abrir(&gz, &op(pasta.path())).err().unwrap();
         assert!(erro.to_string().contains("compactado"), "{erro}");
+    }
+
+    #[test]
+    fn recusa_convertido() {
+        let pasta = tempfile::tempdir().unwrap();
+        let yaml = pasta.path().join("log.yaml");
+        fs::write(&yaml, "a: 1\n").unwrap();
+        let erro = Vivo::abrir(&yaml, &op(pasta.path())).err().unwrap();
+        assert!(erro.to_string().contains("não dá para seguir"), "{erro}");
     }
 
     /// A cópia não fica no cache (Unix): nada sobra em disco se o app cair.

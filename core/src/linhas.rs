@@ -13,6 +13,7 @@ use std::path::Path;
 use memmap2::Mmap;
 
 use crate::compactado::{self, Formato, Opcoes};
+use crate::formatos;
 
 pub(crate) const BOM: &[u8] = b"\xEF\xBB\xBF";
 
@@ -107,7 +108,8 @@ pub struct ArquivoLinhas {
 }
 
 impl ArquivoLinhas {
-    /// Abre JSONL cru, gzip ou zstd (pelos bytes mágicos), com as opções padrão.
+    /// Abre JSONL cru, gzip ou zstd (pelos bytes mágicos), ou MessagePack, CBOR, BSON, YAML e TOML
+    /// convertidos para JSONL (ver `formatos`), com as opções padrão.
     pub fn abrir(caminho: impl AsRef<Path>) -> io::Result<Self> {
         Self::abrir_com(caminho, &Opcoes::default())
     }
@@ -121,7 +123,10 @@ impl ArquivoLinhas {
         let mut magico = [0u8; 4];
         let n = arquivo.by_ref().take(4).read(&mut magico)?;
         let arquivo = match compactado::detectar(&magico[..n]) {
-            Formato::Cru => arquivo,
+            Formato::Cru => match formatos::detectar(caminho, &mut arquivo)? {
+                None => arquivo,
+                Some(f) => File::open(formatos::para_cache(caminho, f, op)?)?,
+            },
             f => File::open(compactado::para_cache(caminho, f, op)?)?,
         };
         let mapa = if arquivo.metadata()?.len() == 0 {

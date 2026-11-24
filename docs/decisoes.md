@@ -499,3 +499,44 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 **Testado (núcleo, `vivo::testes`):** `crescimento`, `linha_parcial`, `truncamento_sem_sigbus` (2.000 linhas, trunca a 0, lê todos os bytes do mapa antigo; depois reescrita no lugar maior), `rotacao` (Unix), `recusa_compactado`, `copia_nao_fica_no_disco`, `estender_igual_a_construir`, `teto`, `parcial_reescrita`, `continuar_confere_a_marca`; no app, `seguir_pelo_ipc` (concessão exigida, crescimento com linha parcial, truncamento reabre, troca durante a pausa reabre, troca entre abrir e o 1º seguir reabre). Mutações plausíveis, todas derrubadas: mapear o original em vez da cópia (`truncamento_sem_sigbus` morre de SIGBUS, prova do achado 14), tirar o cheque de identidade (`rotacao`), tirar o cheque do rabo (`truncamento_sem_sigbus`), copiar até o fim em vez de até o último `\n` (`linha_parcial`), esquecer o início do 1º bloco novo em `estender` (`estender_igual_a_construir`, `crescimento`); `Marca` sempre conferindo (`continuar_confere_a_marca`); sem teto (`teto`); rabo sem a linha parcial (`parcial_reescrita`); mapear a parcial ou contá-la como copiada (`linha_parcial`).
 
 **Não testado:** Windows (a identidade só existe no Unix; lá só o rabo detecta reescrita, e rotação com prefixo igual passa); a interface à mão (botão, indicador, rolar ao fim); desempenho de seguir um arquivo grande que cresce rápido (cada crescimento refaz a varredura inteira e clona o índice); a janela curta, no 1º seguir, em que threads antigas ainda seguram o mapa do original; a janela entre conferir o rabo e copiar (reescrita exatamente nesse intervalo pode juntar bytes velhos e novos numa leitura; a seguinte confere o rabo de novo); a janela entre mapear no `abrir` e ler a `Marca` (troca nela faz o 1º seguir acrescentar ao arquivo trocado).
+
+## Formatos de entrada: MessagePack, CBOR, BSON, YAML e TOML (Fase 5, 24/11/2026)
+
+**Converter para JSONL no cache, não um segundo modelo.** `nucleo::formatos` lê cada formato e grava JSONL (um documento por linha) no mesmo cache dos `.gz`/`.zst` (`compactado::em_cache`, que ganhou uma etiqueta na chave com o formato e a versão da conversão). Daí em diante é o caminho de sempre: `mmap`, índice de linhas, árvore, busca, jq, Estrutura, Tabela, Exportar e Diff funcionam sem mudança. A conversão é feita uma vez; reabrir usa o cache (chave: caminho canônico, tamanho, mtime e etiqueta). `ArquivoLinhas::abrir_com` é o único ponto de entrada, então app e CLI ganham os formatos juntos. Somente leitura: nada é gravado de volta.
+
+**Detecção.** Pela extensão: `.msgpack`/`.mpk`, `.cbor`, `.bson`, `.yaml`/`.yml`, `.toml`; `.json`, `.jsonl` e `.ndjson` nunca passam pela conversão (custo zero para a primeira tela). Sem extensão conhecida, pela assinatura: CBOR com a marca de autodescrição (`D9 D9 F7`); YAML começando em `%YAML` ou `---` (depois do BOM); BSON com o `int32` do 1º documento entre 5 e o tamanho do arquivo, tipo do 1º elemento válido e byte zero no fim declarado (texto JSON não tem byte zero). MessagePack e TOML não têm assinatura confiável: só pela extensão. No app, o filtro do diálogo e o arrastar aceitam as extensões novas (`abas.ts`); associação de arquivo do sistema continua só para JSON/JSONL, para não disputar `.yaml`/`.toml` com editores.
+
+**Representação do que não tem par em JSON.**
+- Inteiro fora de ±2^53 (MessagePack `uint64`, CBOR bignum, YAML/TOML): sai com todos os dígitos. É JSON válido; o app já mostra o número cru.
+- NaN e ±infinito: textos `"NaN"`, `"Infinity"`, `"-Infinity"` (JSON não tem). Real sai na forma mais curta que volta ao mesmo valor (`f32` como `f32`: `0.1`, não `0.10000000149011612`).
+- Binário (MessagePack `bin`, CBOR byte string): texto base64 padrão, com `=`.
+- Chave que não é texto (MessagePack, CBOR e YAML aceitam qualquer valor como chave): o JSON compacto dela vira a chave (`1` → `"1"`, `[1,2]` → `"[1,2]"`). Chave repetida fica repetida, como no JSONL cru.
+- MessagePack ext: `{"$ext": tipo, "$dados": base64}`; o timestamp (ext −1) vira ISO 8601 em UTC (anos 0–9999; fora disso, a forma genérica).
+- CBOR: marcas (tags) são transparentes (data, URI etc. saem como o valor marcado), exceto bignum (2 e 3) de até 1 KiB, que vira inteiro decimal; acima, base64. `undefined` vira `null`; valor simples não atribuído vira `"simple(N)"`.
+- BSON: documentos concatenados (o que o `mongodump` grava), cada um uma linha, no Extended JSON relaxado do MongoDB (`{"$oid": …}`, `{"$date": "…Z"}`, `{"$binary": …}`, `{"$numberDecimal": …}`), o mesmo do `mongoexport`. Código com escopo vira `{"$code": …, "$scope": {…}}`.
+- YAML: esquema core do YAML 1.2 (`yes`/`no`/`on` são texto; `0x10` e `0o7` são inteiros; zero à esquerda é removido); datas ficam texto; vários documentos (`---`) viram várias linhas; `<<` (merge do YAML 1.1) fica como chave comum, sem mesclar.
+- TOML: data e hora viram texto RFC 3339.
+
+**Tetos (`formatos::Limites`, cada um com teste em `core/tests/formatos.rs` que falha se ele for desligado).** Entrada é não confiável: erro sempre `InvalidData` com mensagem ("YAML: aliases expandem mais de 1000000 valores (bomba de aliases?)…"), nunca pânico.
+- Profundidade: 1000 níveis (`arvore::MAX_PROFUNDIDADE`), então tudo que converte a árvore abre. Os leitores próprios e os percursos são iterativos (pilha no heap); 100 mil níveis dão erro, não estouro de pilha (teste).
+- Nós: 2^31 valores no arquivo, aliases expandidos inclusive.
+- Saída: o mesmo `max_saida` dos compactados (10 GiB); parcial é apagado.
+- Bomba de aliases do YAML ("billion laughs"): aliases podem acrescentar no máximo 1 milhão de valores; cada âncora guarda no máximo 16 MiB de JSON para repetir (acima disso, alias para ela é erro).
+- Tags YAML fora do esquema (`!python/object`, `!Ref`, `!custom`, `!<tag:…>`) são recusadas; `!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!seq`, `!!map`, `!!binary`, `!!timestamp` e `!` passam.
+- Comprimento declarado mentiroso (MessagePack `array32`/`map32`/`bin32`/`str32`, CBOR com tamanho de 64 bits, BSON `int32`): conferido contra o que resta do arquivo antes de qualquer leitura; nunca vira alocação. Contêiner com N itens exige ao menos N bytes restantes.
+- Chave que não é texto: até 64 KiB de JSON.
+- TOML inteiro e texto/binário CBOR em pedaços (indefinido) precisam de memória: 64 MiB.
+
+**Arquivo grande.** MessagePack, CBOR, BSON e YAML são lidos por `mmap` e convertidos em fluxo, com memória proporcional à profundidade (e às âncoras do YAML), não ao tamanho; progresso e cancelamento como na descompactação. TOML não tem leitura em fluxo no `toml`: arquivo acima de 64 MiB é recusado com mensagem ("TOML é carregado inteiro na memória"). O cache gasta disco: o JSONL convertido costuma ter 1–3× o original.
+
+**Dependências novas.**
+- `yaml-rust2` 0.13 (MIT): parser YAML 1.2 puro Rust, mantido (fork ativo do `yaml-rust`), com API de eventos: dá para converter em fluxo e controlar âncora, alias e tag sem montar a árvore. `serde_yaml` está arquivado; `serde_yml` teve problemas de manutenção.
+- `bson` 3.1 (MIT OR Apache-2.0), o crate oficial do MongoDB: `RawDocument` lê sobre o `mmap` sem copiar e gera o Extended JSON relaxado; features `serde` e `serde_json-1` para isso. Puxa `bitvec`, `rand`, `serde_bytes`, `hashlink` e afins (MIT/Apache).
+- `toml` 1.2 (MIT OR Apache-2.0), que já vinha transitivo pelo Tauri; entra direto no núcleo com `parse` e `serde`.
+- MessagePack e CBOR têm leitor próprio (~250 linhas): os crates (`rmpv`, `ciborium`) montam a árvore inteira em memória e alocam pelo tamanho declarado em alguns caminhos; o formato é simples e o leitor próprio confere cada comprimento contra o arquivo.
+
+**Fuzz:** um alvo por decodificador (`formato_msgpack`, `formato_cbor`, `formato_bson`, `formato_yaml`, `formato_toml`), todos com tetos pequenos e conferindo que a saída é JSONL válido (`serde_json`). Com 18 alvos, o fuzz curto passou de 23 para 16 s por alvo (`FUZZ_SEG`, CI e `gates.sh`), para caber no mesmo tempo do job (18 × 16 ≈ 13 × 23).
+
+**Seguir (arquivo vivo):** recusado para os formatos convertidos (`Vivo` confere `formatos::detectar`; teste `recusa_convertido`), porque a cópia seria dos bytes crus. O botão Seguir ainda aparece; ao clicar, a interface pausa com o motivo.
+
+**Limites conhecidos:** YAML/TOML/binários compactados (`.yaml.gz`) não abrem (compactado só JSON/JSONL; dá para somar depois encadeando as duas conversões). A mensagem de progresso do app ainda diz "descompactando" durante a conversão. Posição no erro do YAML é em caracteres, nos binários em bytes.
