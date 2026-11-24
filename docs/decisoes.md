@@ -379,7 +379,7 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Escolha:** `nucleo::diff` compara duas inferências já prontas (`estrutura::inferir` em cada arquivo, sem leitor novo) andando as duas árvores de `No` juntas. Cada mudança traz caminho (mesmo formato do `inferir`), regra, classe e evidência "N de M" antes e depois. Comparar a árvore, e não a lista achatada de caminhos, deixa cortar o ruído: quando um campo some ou o pai deixa de ser objeto, os filhos dele não viram mudanças à parte.
 
-**Taxonomia** (oasdiff/buf; quebra = um consumidor ou validador escrito para o arquivo de antes pode falhar com o de depois):
+**Taxonomia** (regras do oasdiff/buf; quebra = um consumidor **ou** um validador escrito para o arquivo de antes pode falhar com o de depois; é um gate de CI, então na dúvida é quebra). Com essa definição, só campo novo opcional é compatível: o consumidor de antes não o lê e o validador de antes, sem o campo na lista de obrigatórios, aceita. Tipo que muda em qualquer direção quebra (alargar inclusive: quem lia `.a` como inteiro passa a receber `null` ou `1.5`), presença também (campo que virou opcional falta para quem o lia sempre) e variante nova também (um `switch` exaustivo ou um `enum` no discriminador do validador de antes não a conhece).
 
 | Regra | Classe | Evidência |
 |---|---|---|
@@ -388,17 +388,17 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 | virou obrigatório (antes faltava em algum objeto, agora em todos) | quebra | presença de objetos-pai |
 | tipo estreitado (os tipos de depois são subconjunto estrito) | quebra | valores dos tipos que mudaram, de todos os valores do caminho |
 | tipo trocado (perdeu um tipo e ganhou outro, ex.: inteiro → texto) | quebra | idem |
+| tipo alargado (os tipos de depois contêm os de antes; `null` novo também) | quebra | idem |
+| virou opcional | quebra | presença de objetos-pai |
 | variante removida (valor do discriminador que sumiu) | quebra | registros da variante, de registros-objeto |
+| variante nova | quebra | como em variante removida |
 | campo novo opcional | compatível | 0 → presença |
-| virou opcional | compatível | presença de objetos-pai |
-| tipo alargado (os tipos de depois contêm os de antes; `null` novo também) | compatível | como em tipo |
-| variante nova | compatível | como em variante |
 
-Decimal aceita inteiro (como `number` no JSON Schema): inteiro → decimal é alargado, decimal → inteiro é estreitado, e `{inteiro, decimal}` → `{decimal}` não é mudança. "Campo novo obrigatório" e "virou opcional" não estão na lista do oasdiff para dados: seguem a mesma regra de "virou obrigatório" (estreitar a presença quebra, alargar é compatível).
+As regras continuam separadas (alargado × estreitado × trocado, virou obrigatório × opcional) para a pessoa saber a direção; a classe é que é a mesma. Decimal aceita inteiro (como `number` no JSON Schema): inteiro → decimal é alargado, decimal → inteiro é estreitado, e `{inteiro, decimal}` → `{decimal}` não é mudança. Primeira versão (PR #39) dava alargar, virar opcional e variante nova como compatíveis, pela ótica só do validador; o verificador reprovou: um gate de CI lê a união das duas óticas.
 
 **Variantes:** valem para campos que são discriminador (critério da inferência) em pelo menos um lado. No outro lado, o campo conta se também for discriminador ou se tiver um valor só, texto, em todo registro-objeto (o caso de um arquivo com uma variante só).
 
-**CLI:** `jasao diff antes depois [--json] [--falha-em quebra|qualquer]`. Uma linha por mudança (`quebra      .a.b  campo removido  (3 de 5 → 0 de 4)`), resumo no stderr; `--json` dá `{"quebras","compativeis","mudancas":[{caminho, regra, classe, antes:{n,de}, depois:{n,de}, tipos?|variante?}]}`. Sai com 1 se `--falha-em` pegar alguma mudança da classe pedida, com 2 em uso errado. A saída passa pelo mesmo `Terminal` do `inferir` (chave hostil não manda controle ao terminal).
+**CLI:** `jasao diff antes depois [--json] [--falha-em quebra|qualquer]`. Uma linha por mudança (`quebra      .a.b  campo removido  (3 de 5 → 0 de 4)`), resumo no stderr; `--json` dá `{"quebras","compativeis","invalidas","mudancas":[{caminho, regra, classe, antes:{n,de}, depois:{n,de}, tipos?|variante?}]}`. Sai com 1 se `--falha-em` pegar alguma mudança da classe pedida, 2 em uso errado e 3 quando não deu para comparar: arquivo que não abre (nos outros comandos erro de execução sai com 1, mas aqui 1 é "quebra" e o gate não pode confundir) ou registro inválido em qualquer lado com `--falha-em` (as linhas ignoradas podem esconder uma quebra; falso verde não). Sem a flag, os inválidos viram uma linha `aviso:` no fim do stdout e `"invalidas":{"antes","depois"}` no `--json`. A saída passa pelo mesmo `Terminal` do `inferir` (chave hostil não manda controle ao terminal).
 
 **Limites conhecidos:**
 - Lista ou mapa vazio de um lado: `[]`/`.*` que só existem do outro lado não são comparados (lista que ficou vazia não é campo removido).
@@ -408,4 +408,4 @@ Decimal aceita inteiro (como `number` no JSON Schema): inteiro → decimal é al
 - Formato, faixa de valores e enum não entram: não são inferidos ainda.
 - Custo: duas inferências completas (a comparação é linear no número de caminhos).
 
-**Testado:** dourados por regra da taxonomia (a linha exata de cada uma, em `core/src/diff.rs`), aninhado/elemento/mapa e a regra do decimal; proptest de que A contra A não tem mudanças e de que acrescentar registros a A nunca quebra; CLI com chave hostil no terminal, `--json` e os três modos de `--falha-em`; alvo de fuzz `diff` (A contra A vazio, `n ≤ de` e B→A espelho de A→B). O fuzz curto passou de 25 para 23 s por alvo para o alvo novo caber no tempo do job (14 × 23 s ≈ 13 × 25 s).
+**Testado:** dourados por regra da taxonomia (a linha exata de cada uma, em `core/src/diff.rs`), aninhado/elemento/mapa e a regra do decimal; guardas de `valores()` (valor único mas ausente em algum registro; texto único com `null` ao lado) e da regra de presença (não vale em `[]`), cada uma com um caso que cai se ela sair; proptest de que A contra A não tem mudanças e de que acrescentar registros a A só gera regras de alargar; CLI com chave hostil no terminal, `--json` e os três modos de `--falha-em`; teste de integração pelo binário (`cli/tests/diff.rs`) com os códigos 0, 1, 2 e 3; alvo de fuzz `diff` (A contra A vazio, `n ≤ de` e B→A espelho de A→B). O fuzz curto passou de 25 para 23 s por alvo para o alvo novo caber no tempo do job (14 × 23 s ≈ 13 × 25 s).

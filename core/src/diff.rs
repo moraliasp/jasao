@@ -1,9 +1,10 @@
 //! Diff de estrutura entre duas inferências (`antes` e `depois`): cada mudança com caminho,
 //! regra, classe (quebra × compatível) e evidência "N de M" nos dois lados.
 //!
-//! Taxonomia do oasdiff/buf: campo removido, tipo estreitado (ou trocado), campo que vira
-//! obrigatório (ou novo já obrigatório) e variante removida quebram; campo novo opcional, campo
-//! que vira opcional, tipo alargado e variante nova são compatíveis. Critérios e limites:
+//! Quebra = um consumidor OU um validador escrito para o arquivo de antes pode falhar com o de
+//! depois; na dúvida, quebra (é um gate de CI). Por isso só campo novo opcional é compatível:
+//! tipo que muda em qualquer direção (inclusive alargar: `null` novo chega a quem lia inteiro),
+//! presença que muda em qualquer direção e variante nova ou removida quebram. Critérios e limites:
 //! `docs/decisoes.md`.
 
 use std::fmt;
@@ -45,10 +46,7 @@ pub enum Regra {
 impl Regra {
     pub fn classe(self) -> Classe {
         match self {
-            Regra::CampoNovoOpcional
-            | Regra::VirouOpcional
-            | Regra::TipoAlargado
-            | Regra::VarianteNova => Classe::Compativel,
+            Regra::CampoNovoOpcional => Classe::Compativel,
             _ => Classe::Quebra,
         }
     }
@@ -198,7 +196,8 @@ fn comparar(
             detalhe,
         })
     };
-    if campo && de_a > 0 && de_b > 0 {
+    // Campo existe nos dois lados só se o pai foi objeto nos dois: `de_a`, `de_b` > 0.
+    if campo {
         match (a.presenca == de_a, b.presenca == de_b) {
             (false, true) => por(
                 Regra::VirouObrigatorio,
@@ -389,7 +388,7 @@ mod testes {
             (
                 "{\"a\":1}\n",
                 "{\"a\":1}\n{}\n",
-                &["compatível  .a  virou opcional  (1 de 1 → 1 de 2)"],
+                &["quebra      .a  virou opcional  (1 de 1 → 1 de 2)"],
             ),
             (
                 "{\"v\":1}\n{\"v\":\"x\"}\n{\"v\":null}\n",
@@ -402,7 +401,7 @@ mod testes {
                 "{\"v\":1}\n",
                 "{\"v\":1}\n{\"v\":null}\n{\"v\":2.5}\n",
                 &[
-                    "compatível  .v  tipo alargado: inteiro → nulo, inteiro, decimal  (0 de 1 → 2 de 3)",
+                    "quebra      .v  tipo alargado: inteiro → nulo, inteiro, decimal  (0 de 1 → 2 de 3)",
                 ],
             ),
             (
@@ -422,9 +421,9 @@ mod testes {
                 "{\"t\":\"a\",\"x\":1}\n{\"t\":\"a\",\"x\":2}\n",
                 "{\"t\":\"a\",\"x\":1}\n{\"t\":\"b\",\"y\":2}\n",
                 &[
-                    "compatível  .x  virou opcional  (2 de 2 → 1 de 2)",
+                    "quebra      .x  virou opcional  (2 de 2 → 1 de 2)",
                     "compatível  .y  campo novo opcional  (0 de 2 → 1 de 2)",
-                    "compatível  .t  variante nova \"b\"  (0 de 2 → 1 de 2)",
+                    "quebra      .t  variante nova \"b\"  (0 de 2 → 1 de 2)",
                 ],
             ),
         ];
@@ -456,7 +455,7 @@ mod testes {
         };
         assert_eq!(
             linhas(&mapa("1"), &mapa("1.5")),
-            ["compatível  .m.*  tipo alargado: inteiro → decimal  (25 de 25 → 25 de 25)"]
+            ["quebra      .m.*  tipo alargado: inteiro → decimal  (25 de 25 → 25 de 25)"]
         );
         // Decimal aceita inteiro: {inteiro, decimal} → {decimal} não é mudança.
         assert!(linhas("{\"v\":1}\n{\"v\":1.5}\n", "{\"v\":2.5}\n").is_empty());
@@ -466,14 +465,45 @@ mod testes {
         );
     }
 
+    /// Alargar também quebra: `null` ou decimal novo chega a quem lia só inteiro.
+    #[test]
+    fn alargar_quebra() {
+        assert_eq!(
+            linhas("{\"a\":1}\n", "{\"a\":1}\n{\"a\":null}\n"),
+            ["quebra      .a  tipo alargado: inteiro → nulo, inteiro  (0 de 1 → 1 de 2)"]
+        );
+        assert_eq!(
+            linhas("{\"a\":1}\n", "{\"a\":1}\n{\"a\":1.5}\n"),
+            ["quebra      .a  tipo alargado: inteiro → inteiro, decimal  (0 de 1 → 1 de 2)"]
+        );
+        assert_eq!(
+            linhas("{\"o\":{\"k\":1}}\n", "{\"o\":{\"k\":1}}\n{\"o\":null}\n"),
+            ["quebra      .o  tipo alargado: objeto → nulo, objeto  (0 de 1 → 1 de 2)"]
+        );
+    }
+
+    /// Guardas de `valores()` e da presença: cada caso cai se a guarda sair.
+    #[test]
+    fn guardas() {
+        let ab = "{\"t\":\"a\",\"x\":1}\n{\"t\":\"b\",\"y\":2}\n";
+        // Um valor só mas ausente em algum registro: não conta como variante única.
+        assert_eq!(
+            linhas(ab, "{\"t\":\"a\",\"x\":1}\n{\"y\":2}\n"),
+            ["quebra      .t  virou opcional  (2 de 2 → 1 de 2)"]
+        );
+        // Um texto só, mas com `null` (fora do `unico`) em outro registro: idem.
+        assert_eq!(
+            linhas(ab, "{\"t\":\"a\",\"x\":1}\n{\"t\":null,\"y\":2}\n"),
+            ["quebra      .t  tipo alargado: texto → nulo, texto  (0 de 2 → 1 de 2)"]
+        );
+        // Presença em `[]` conta elementos, não listas: sem regra de presença ali.
+        assert!(linhas("{\"l\":[1,2]}\n", "{\"l\":[1]}\n").is_empty());
+        assert!(linhas("{\"l\":[1]}\n", "{\"l\":[1,2]}\n").is_empty());
+    }
+
     #[test]
     fn classe_e_nome_estaveis() {
-        let compat = [
-            Regra::CampoNovoOpcional,
-            Regra::VirouOpcional,
-            Regra::TipoAlargado,
-            Regra::VarianteNova,
-        ];
+        let compat = [Regra::CampoNovoOpcional];
         for r in [
             Regra::CampoRemovido,
             Regra::CampoNovoOpcional,
@@ -530,14 +560,20 @@ mod testes {
 
         /// Acrescentar registros só alarga: nada some, nenhum tipo estreita, nada vira obrigatório.
         #[test]
-        fn acrescentar_registros_nunca_quebra(
+        fn acrescentar_registros_so_alarga(
             a in prop::collection::vec(registro(), 1..20),
             b in prop::collection::vec(registro(), 0..20),
         ) {
             let ra = resumo(&jsonl(&a));
             let rab = resumo(&jsonl(&[a, b].concat()));
             for m in diff(&ra, &rab) {
-                prop_assert_eq!(m.regra.classe(), Classe::Compativel, "{}", m);
+                let alarga = [
+                    Regra::CampoNovoOpcional,
+                    Regra::VirouOpcional,
+                    Regra::TipoAlargado,
+                    Regra::VarianteNova,
+                ];
+                prop_assert!(alarga.contains(&m.regra), "{}", m);
             }
         }
     }
