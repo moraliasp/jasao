@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Conta o heap: o processo filho da consulta liga o teto (ver `filho`).
+#[global_allocator]
+static ALOCADOR: nucleo::memoria::Contador = nucleo::memoria::Contador;
+
 mod abertura;
 mod exemplos;
 mod filho;
@@ -2220,8 +2224,8 @@ async fn consultar<R: Runtime>(
     // Caminho recusado não mexe na consulta em curso nem apaga o resultado mostrado.
     let caminho = autorizado(&app, &caminho)?;
     filho::arquivo_comum(&caminho)?;
-    let (geracao, cancelar) = doc.consulta.lock().map_err(|e| e.to_string())?.reiniciar();
-    // Compila aqui só para devolver o erro de sintaxe com posição; quem roda é o filho.
+    // Compila aqui só para devolver o erro de sintaxe com posição; quem roda é o filho. Antes de
+    // `reiniciar`: filtro que não compila (digitando, ao vivo) não apaga o resultado mostrado.
     Consulta::nova(&filtro).map_err(|e| ErroConsulta {
         mensagem: e.to_string(),
         falhas: e
@@ -2236,6 +2240,7 @@ async fn consultar<R: Runtime>(
             })
             .collect(),
     })?;
+    let (geracao, cancelar) = doc.consulta.lock().map_err(|e| e.to_string())?.reiniciar();
     // Nome com os nanossegundos do relógio para não ser previsível; `create_new` (O_EXCL) recusa
     // arquivo ou link que alguém tenha posto ali antes, e 0600 deixa o resultado só para o dono.
     let nanos = std::time::SystemTime::now()
@@ -2288,6 +2293,142 @@ fn fechar_consulta(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
         .lock()
         .map_err(|e| e.to_string())?
         .reiniciar();
+    Ok(())
+}
+
+/// Salva o resultado mostrado da consulta (`arquivo`, o temporário que o evento `consulta`
+/// entregou) em JSONL ou CSV, pelo diálogo de salvar no backend. Só o resultado atual do
+/// documento: caminho que não é o dele (outro arquivo, consulta nova já rodando) é recusado.
+/// Devolve o caminho salvo, ou `None` se o usuário cancelou.
+#[tauri::command]
+async fn salvar_consulta<R: Runtime>(
+    id: u32,
+    arquivo: String,
+    csv: bool,
+    nome: String,
+    janela: tauri::WebviewWindow<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let atual = estado
+        .doc(id)?
+        .consulta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .arquivo
+        .clone();
+    let Some(origem) = atual.filter(|a| a.as_os_str() == arquivo.as_str()) else {
+        return Err("o resultado da consulta não está mais aberto".into());
+    };
+    let (filtro, ext) = if csv {
+        ("CSV", "csv")
+    } else {
+        ("JSONL", "jsonl")
+    };
+    let nome = Path::new(&nome)
+        .file_stem()
+        .map(|n| format!("{}.{ext}", n.to_string_lossy()))
+        .unwrap_or_default();
+    let destino = janela
+        .dialog()
+        .file()
+        .set_parent(&janela)
+        .set_file_name(nome)
+        .add_filter(filtro, &[ext])
+        .blocking_save_file();
+    let Some(p) = destino.and_then(|f| f.into_path().ok()) else {
+        return Ok(None);
+    };
+    // Protegidos: o que o usuário abriu nesta execução, os resultados de consulta (todos
+    // concedidos) e os recentes (abrir por eles não concede).
+    let mut protegidos = janela.state::<abertura::Concedidos>().todos();
+    protegidos.extend(
+        com_recentes(janela.app_handle(), recentes::ler)
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    protegidos.push(origem.clone());
+    gravar_resultado(&origem, &p, csv, &protegidos)?;
+    Ok(Some(p.to_string_lossy().into_owned()))
+}
+
+/// Se `destino` é um dos `protegidos`: mesmo caminho real (link resolvido) ou, no Unix, o mesmo
+/// arquivo (`dev`, `ino`; pega link físico). Destino que não existe não é nenhum deles.
+fn destino_protegido(destino: &Path, protegidos: &[PathBuf]) -> bool {
+    let Ok(real) = std::fs::canonicalize(destino) else {
+        return false;
+    };
+    #[cfg(unix)]
+    let id = |p: &Path| {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
+    };
+    #[cfg(not(unix))]
+    let id = |_: &Path| None::<(u64, u64)>;
+    let alvo = id(&real);
+    protegidos.iter().any(|p| {
+        std::fs::canonicalize(p).is_ok_and(|c| c == real) || (alvo.is_some() && id(p) == alvo)
+    })
+}
+
+/// Copia o JSONL do resultado ou o converte em CSV (`nucleo::csv`, duas passadas no arquivo:
+/// em memória só os nomes das colunas). Recusa sobrescrever um dos `protegidos` (o arquivo
+/// aberto, o próprio resultado). Grava num temporário na pasta do destino e troca por `rename`:
+/// falha no meio deixa o destino que já existia intacto.
+fn gravar_resultado(
+    origem: &Path,
+    destino: &Path,
+    csv: bool,
+    protegidos: &[PathBuf],
+) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, BufWriter, Write};
+    let erro = |e: std::io::Error| format!("{}: {e}", destino.display());
+    if destino_protegido(destino, protegidos) {
+        return Err(format!(
+            "{}: é um arquivo aberto no jasão; salve com outro nome",
+            destino.display()
+        ));
+    }
+    let pasta = match destino.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".jasao-salvar-")
+        .tempfile_in(pasta)
+        .map_err(erro)?;
+    if csv {
+        let linhas = |f: &mut dyn FnMut(&[u8]) -> Result<(), String>| -> Result<(), String> {
+            let arquivo = std::fs::File::open(origem).map_err(|e| e.to_string())?;
+            let (mut r, mut l) = (BufReader::new(arquivo), Vec::new());
+            while r.read_until(b'\n', &mut l).map_err(|e| e.to_string())? > 0 {
+                if !l.trim_ascii().is_empty() {
+                    f(&l)?;
+                }
+                l.clear();
+            }
+            Ok(())
+        };
+        let mut c = nucleo::csv::Csv::default();
+        linhas(&mut |l| c.ver(l))?;
+        let mut out = BufWriter::new(tmp.as_file_mut());
+        c.cabecalho(&mut out).map_err(erro)?;
+        linhas(&mut |l| c.escrever(l, &mut out).map_err(erro))?;
+        out.flush().map_err(erro)?;
+    } else {
+        let mut f = std::fs::File::open(origem).map_err(erro)?;
+        std::io::copy(&mut f, tmp.as_file_mut()).map_err(erro)?;
+    }
+    // O temporário nasce 0600; o salvo fica com as permissões de um arquivo novo comum.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tmp
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644));
+    }
+    tmp.persist(destino).map_err(|e| erro(e.error))?;
     Ok(())
 }
 
@@ -2456,6 +2597,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             validar_outro,
             validar_com_schema,
             salvar_exportado,
+            salvar_consulta,
             diff_estrutura,
             diff_valores,
             cancelar_diff_valores
@@ -2629,6 +2771,88 @@ pub fn run() {
 
 #[cfg(test)]
 mod testes {
+    #[test]
+    fn gravar_resultado_jsonl_e_csv() {
+        let d = tempfile::tempdir().unwrap();
+        let origem = d.path().join("r.jsonl");
+        std::fs::write(&origem, "{\"a\":1,\"b\":\"=x\"}\n\n{\"a\":2,\"c\":{}}\n").unwrap();
+        let (jsonl, csv) = (d.path().join("s.jsonl"), d.path().join("s.csv"));
+        super::gravar_resultado(&origem, &jsonl, false, &[]).unwrap();
+        assert_eq!(
+            std::fs::read(&jsonl).unwrap(),
+            std::fs::read(&origem).unwrap()
+        );
+        super::gravar_resultado(&origem, &csv, true, &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&csv).unwrap(),
+            ".a,.b,.c\r\n1,'=x,\r\n2,,{}\r\n"
+        );
+        // Colunas demais: erro sem criar o destino, e o que já existia fica intacto.
+        let largo: Vec<String> = (0..=nucleo::csv::MAX_COLUNAS)
+            .map(|i| format!("\"k{i}\":0"))
+            .collect();
+        std::fs::write(&origem, format!("{{{}}}\n", largo.join(","))).unwrap();
+        let destino = d.path().join("largo.csv");
+        let e = super::gravar_resultado(&origem, &destino, true, &[]).unwrap_err();
+        assert!(e.contains("colunas"), "{e}");
+        assert!(!destino.exists());
+        let e = super::gravar_resultado(&origem, &csv, true, &[]).unwrap_err();
+        assert!(e.contains("colunas"), "{e}");
+        assert_eq!(
+            std::fs::read_to_string(&csv).unwrap(),
+            ".a,.b,.c\r\n1,'=x,\r\n2,,{}\r\n"
+        );
+        // Nenhum temporário sobra na pasta.
+        let sobra: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".jasao-salvar-")
+            })
+            .collect();
+        assert!(sobra.is_empty(), "{sobra:?}");
+    }
+
+    /// Salvar não sobrescreve o arquivo aberto nem o resultado: pelo caminho, por link
+    /// simbólico, por link físico, e o resultado sobre ele mesmo.
+    #[test]
+    fn gravar_resultado_recusa_protegidos() {
+        let d = tempfile::tempdir().unwrap();
+        let aberto = d.path().join("aberto.jsonl");
+        let resultado = d.path().join("resultado.jsonl");
+        std::fs::write(&aberto, "{\"original\":1}\n").unwrap();
+        std::fs::write(&resultado, "1\n2\n").unwrap();
+        let protegidos = [aberto.clone(), resultado.clone()];
+        let recusa = |destino: &std::path::Path, csv: bool| {
+            let e = super::gravar_resultado(&resultado, destino, csv, &protegidos).unwrap_err();
+            assert!(e.contains("aberto no jasão"), "{e}");
+        };
+        recusa(&aberto, false);
+        recusa(&aberto, true);
+        recusa(&resultado, false);
+        #[cfg(unix)]
+        {
+            let link = d.path().join("link.jsonl");
+            std::os::unix::fs::symlink(&aberto, &link).unwrap();
+            recusa(&link, false);
+            let fisico = d.path().join("fisico.jsonl");
+            std::fs::hard_link(&aberto, &fisico).unwrap();
+            recusa(&fisico, true);
+        }
+        assert_eq!(
+            std::fs::read_to_string(&aberto).unwrap(),
+            "{\"original\":1}\n"
+        );
+        assert_eq!(std::fs::read_to_string(&resultado).unwrap(), "1\n2\n");
+        // Outro arquivo qualquer: sobrescreve.
+        let outro = d.path().join("outro.jsonl");
+        std::fs::write(&outro, "velho").unwrap();
+        super::gravar_resultado(&resultado, &outro, false, &protegidos).unwrap();
+        assert_eq!(std::fs::read_to_string(&outro).unwrap(), "1\n2\n");
+    }
+
     #[test]
     fn link_so_http_em_ascii() {
         use super::link_valido;
@@ -3296,7 +3520,7 @@ mod testes {
         assert!(erro["falhas"][0]["coluna"].as_u64().unwrap() >= 5, "{erro}");
         assert_eq!(
             em(2, "consultar", json!({"filtro": ".x", "caminho": caminho})),
-            Ok(json!(2))
+            Ok(json!(1))
         );
         let a = fim();
         assert_eq!(
@@ -3307,10 +3531,39 @@ mod testes {
                 &a["primeiro_erro"][0],
                 &a["cancelado"]
             ),
-            (&json!(2), &json!(3), &json!(1), &json!(3), &json!(false))
+            (&json!(1), &json!(3), &json!(1), &json!(3), &json!(false))
         );
         let resultado = a["arquivo"].as_str().unwrap().to_owned();
         assert_eq!(std::fs::read_to_string(&resultado).unwrap(), "1\nnull\n2\n");
+        // Erro de sintaxe (digitando, ao vivo) não mexe na consulta mostrada.
+        assert!(
+            em(
+                2,
+                "consultar",
+                json!({"filtro": ".x | (", "caminho": caminho})
+            )
+            .is_err()
+        );
+        assert!(
+            std::path::Path::new(&resultado).exists(),
+            "erro de sintaxe apagou o resultado"
+        );
+        // Salvar o resultado: só o temporário atual do documento (antes do diálogo).
+        let salvar = |arquivo: &str| {
+            em(
+                2,
+                "salvar_consulta",
+                json!({"arquivo": arquivo, "csv": true, "nome": "x"}),
+            )
+        };
+        assert!(
+            salvar(caminho)
+                .unwrap_err()
+                .as_str()
+                .unwrap()
+                .contains("não está mais aberto")
+        );
+        assert!(salvar("/etc/passwd").is_err());
         // O resultado abre no lugar do original, no mesmo documento.
         assert_eq!(
             chamar("abrir", json!({ "caminho": resultado, "id": 2 })),
@@ -3389,6 +3642,34 @@ mod testes {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+
+        // Corrida de gerações: a consulta presa A é trocada por B; só o fim de B chega, e o
+        // temporário de A some.
+        let velha = em(
+            2,
+            "consultar",
+            json!({"filtro": "def f: f; f", "caminho": caminho}),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let nova = em(2, "consultar", json!({"filtro": ".x", "caminho": caminho})).unwrap();
+        let a = fim();
+        assert_eq!(a["geracao"], nova, "{a}");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(
+            rx.try_iter()
+                .all(|e| e["geracao"] != velha || e["fim"] != true),
+            "fim da consulta velha chegou"
+        );
+        let prefixo = format!("jasao-consulta-{}-{velha}-", std::process::id());
+        assert!(
+            std::fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with(&prefixo)),
+            "temporário da consulta velha ficou"
+        );
+        assert_eq!(em(2, "fechar_consulta", json!({})), Ok(Value::Null));
 
         // Achado 9: FIFO é recusado na hora, sem abrir (abrir bloquearia até alguém escrever).
         #[cfg(unix)]
