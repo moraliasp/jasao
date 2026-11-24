@@ -478,6 +478,28 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 - A régua não aparece no modo Tabela (o registro selecionado não é posição no arquivo depois de ordenar).
 - Fixar/ocultar/ordem valem por documento na sessão; não são guardados.
 
+## Arquivo vivo (Fase 5, 24/11/2026)
+
+**Escolha:** seguir um JSONL que cresce (como `tail -f`) sem mapear o original. `nucleo::Vivo` lê o arquivo do usuário só com `read` e copia as linhas completas para um arquivo do próprio app na pasta de cache (`create_new`, 0600, apagado do diretório logo depois de aberto no Unix). Árvore, índice e Tabela leem o mapa dessa cópia, que só cresce: truncar, rotacionar ou reescrever o original não derruba o processo.
+
+**Por que a cópia:** `mmap` de um arquivo que encolhe dá SIGBUS ao tocar uma página que deixou de existir (achado 14), e não há como o processo se proteger depois de mapeado. Ler com `read` e mapear algo que só o app escreve fecha o problema. Custo: o arquivo seguido ocupa o dobro em disco enquanto a aba está aberta (a cópia some ao fechar). Teto: o mesmo `max_saida` da descompactação (10 GiB).
+
+**Detectar reescrita:** a cada leitura, (1) identidade do arquivo, `(dev, ino)` no Unix, pega a rotação (`mv log log.1; novo log`); (2) os últimos 64 bytes já copiados ("rabo") são conferidos no original e pegam truncamento e reescrita no lugar, mesmo quando o arquivo novo é maior. Qualquer diferença vira `Mudanca::Reescrito`: o app reabre do zero e avisa no status. O 1º `seguir` confere o mesmo contra uma `Marca` (identidade, tamanho e últimos 64 bytes, lidos com `read`) tirada no `abrir`: se o arquivo foi trocado entre abrir e seguir, reabre em vez de acrescentar à árvore de antes. Pausar não solta a cópia: retomar confere contra a última leitura, então arquivo trocado durante a pausa também reabre. Arquivo que sumiu (no meio de uma rotação, apagado) vira erro, e a interface pausa com o motivo.
+
+**Linha parcial:** tudo o que chega vai para a cópia, mas só o trecho até o último `\n` é mapeado e indexado; o resto entra quando a linha terminar. A parcial não fica na memória nem é relida a cada leitura, e o rabo a inclui (reescrita no meio dela é notada). O teto de 10 GiB vale para tudo o que foi lido, parcial inclusive: um JSON minificado de uma linha que cresce sem `\n` para no teto com erro.
+
+**Incremental:** `IndiceLinhas::estender` indexa só os bytes novos; `Arvore::crescer` mantém os registros abertos e soma as linhas novas. A varredura em 2º plano (inválidas, inferência, Tabela, régua) é refeita a cada crescimento, pelo mesmo caminho da abertura (`instalar`).
+
+**Interface:** botão Seguir/Pausar (`aria-pressed`) ao lado do status, só para arquivo do usuário aberto como está (não exemplo, não resultado de consulta). Polling a cada 1 s (`seguir`); pausar só para de chamar (leitura em voo na hora da pausa é aplicada na aba, que fica igual ao documento no Rust). Se a tela está no fim, rola até as linhas novas; senão acumula "+N novas", que leva ao fim ao clicar.
+
+**Sem dependência nova:** polling em vez de `notify`. Uma leitura sem novidade custa um `stat` e 64 bytes; `notify` traria código de plataforma (FSEvents, inotify, ReadDirectoryChangesW) para ganhar menos de 1 s de latência.
+
+**Achado 14: resolvido só no modo seguir.** Abrir sem seguir continua mapeando o original (é o que dá a 1ª tela em 0,28 s num arquivo de 1 GB); copiar sempre custaria o arquivo inteiro antes da 1ª tela. Se o arquivo encolher por baixo de uma aba que não está seguindo, o app ainda pode cair.
+
+**Testado (núcleo, `vivo::testes`):** `crescimento`, `linha_parcial`, `truncamento_sem_sigbus` (2.000 linhas, trunca a 0, lê todos os bytes do mapa antigo; depois reescrita no lugar maior), `rotacao` (Unix), `recusa_compactado`, `copia_nao_fica_no_disco`, `estender_igual_a_construir`, `teto`, `parcial_reescrita`, `continuar_confere_a_marca`; no app, `seguir_pelo_ipc` (concessão exigida, crescimento com linha parcial, truncamento reabre, troca durante a pausa reabre, troca entre abrir e o 1º seguir reabre). Mutações plausíveis, todas derrubadas: mapear o original em vez da cópia (`truncamento_sem_sigbus` morre de SIGBUS, prova do achado 14), tirar o cheque de identidade (`rotacao`), tirar o cheque do rabo (`truncamento_sem_sigbus`), copiar até o fim em vez de até o último `\n` (`linha_parcial`), esquecer o início do 1º bloco novo em `estender` (`estender_igual_a_construir`, `crescimento`); `Marca` sempre conferindo (`continuar_confere_a_marca`); sem teto (`teto`); rabo sem a linha parcial (`parcial_reescrita`); mapear a parcial ou contá-la como copiada (`linha_parcial`).
+
+**Não testado:** Windows (a identidade só existe no Unix; lá só o rabo detecta reescrita, e rotação com prefixo igual passa); a interface à mão (botão, indicador, rolar ao fim); desempenho de seguir um arquivo grande que cresce rápido (cada crescimento refaz a varredura inteira e clona o índice); a janela curta, no 1º seguir, em que threads antigas ainda seguram o mapa do original; a janela entre conferir o rabo e copiar (reescrita exatamente nesse intervalo pode juntar bytes velhos e novos numa leitura; a seguinte confere o rabo de novo); a janela entre mapear no `abrir` e ler a `Marca` (troca nela faz o 1º seguir acrescentar ao arquivo trocado).
+
 ## Consulta jq ao vivo, filtros salvos e CSV (Fase 5, 24/11/2026)
 
 **Linha de comando:** `jasao jq '<filtro>' arquivo [--saida jsonl|csv] [--max-resultados N] [--max-mb N] [--tempo-max S]` (`consultar` continua valendo). JSONL é o padrão. Passar de um teto de saída imprime o que coube, avisa no stderr e sai com código 1: resultado parcial nunca passa por completo em script.
@@ -508,4 +530,3 @@ O teto de saída é imposto no receptor, na ordem do arquivo: o resultado parcia
 - Aspas RFC 4180 quando a célula tem `,`, `"`, CR ou LF; linhas em CRLF.
 
 **Parquet fica fora.** O crate `parquet` puxa o `arrow` e centenas de dependências transitivas, com vários MB a mais no binário, para um formato que quem precisa converte do JSONL com uma linha (DuckDB, pandas). Volta à mesa se aparecer uso real.
-
