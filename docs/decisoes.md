@@ -248,7 +248,7 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Recentes:** os últimos 10 arquivos abertos (fixo, sem configuração), mais novo primeiro; abrir de novo sobe o arquivo para o topo. Ficam em `recentes.json` no diretório de dados do app (`~/Library/Application Support/br.com.moralia.jasao/` no macOS, `%APPDATA%\br.com.moralia.jasao\` no Windows, `~/.local/share/br.com.moralia.jasao/` no Linux): uma lista JSON só de caminhos, sem conteúdo de arquivo, que nunca sai da máquina. Código em `app/src-tauri/src/recentes.rs`.
 
-**É o único dado que o app guarda entre execuções.** Além dele, o app só escreve cache descartável (descompactados de `.gz`/`.zst`, ver "Entrada compactada", e o resultado temporário da consulta jq); os arquivos abertos nunca são escritos. Preferência nova, abas restauradas ou qualquer outro estado salvo exige revisar esta frase.
+**O que o app guarda entre execuções:** esta lista; e, no `localStorage` da interface, a preferência de visão ao abrir e os filtros jq salvos (ver "Consulta jq ao vivo, filtros salvos e CSV"). Nada disso sai da máquina. Além disso, o app só escreve cache descartável (descompactados de `.gz`/`.zst`, ver "Entrada compactada", e o resultado temporário da consulta jq) e o que o usuário manda salvar num diálogo; os arquivos abertos nunca são escritos. Estado salvo novo (abas restauradas, por exemplo) exige revisar esta frase.
 
 **Gravação:** temporário na mesma pasta + `rename` (`tempfile::persist`), com `sync_all` antes: quem lê vê a lista antiga ou a nova, nunca metade. Arquivo ausente, ilegível ou corrompido vira lista vazia, sem erro e sem travar a abertura; a próxima abertura regrava a lista. Falha ao gravar só vai para o log: não impede abrir o arquivo. "Limpar recentes" apaga o arquivo, em vez de gravar lista vazia.
 
@@ -477,4 +477,35 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 - JSON em várias linhas (formatado): o registro é a linha, então a tabela não se aplica (`json_invalido`/`nao_objetos`); abrir na Árvore a partir da célula cai no início da linha.
 - A régua não aparece no modo Tabela (o registro selecionado não é posição no arquivo depois de ordenar).
 - Fixar/ocultar/ordem valem por documento na sessão; não são guardados.
+
+## Consulta jq ao vivo, filtros salvos e CSV (Fase 5, 24/11/2026)
+
+**Linha de comando:** `jasao jq '<filtro>' arquivo [--saida jsonl|csv] [--max-resultados N] [--max-mb N] [--tempo-max S]` (`consultar` continua valendo). JSONL é o padrão. Passar de um teto de saída imprime o que coube, avisa no stderr e sai com código 1: resultado parcial nunca passa por completo em script.
+
+**Tetos, todos no núcleo (`Consulta`), cada um com teste que falha se for desligado:**
+
+| Teto | Padrão | Ao estourar |
+|---|---|---|
+| Resultados no total (`com_teto_saida`) | sem teto; CLI `--max-resultados` | para tudo, `cortado` |
+| Bytes de saída no total | app 1 GiB (`filho::TETO_SAIDA`); CLI `--max-mb`, CSV sem `--max-mb` 256 MiB | para tudo, `cortado` |
+| Bytes por lote de um trabalhador | 8 MiB (`MAX_BYTES_LOTE_PADRAO`) | entrega o lote e segue: a memória de bloco adiantado fica limitada mesmo com resultados grandes |
+| Resultados por registro (`com_teto_registro`) | sem teto | erro naquela linha ("o registro passou de N resultados"), o resto segue |
+| Tempo por registro | sem teto | erro naquela linha |
+
+O teto de saída é imposto no receptor, na ordem do arquivo: o resultado parcial é sempre um prefixo do completo. Filtro que gira sem entregar nada (`last(range(1e12))`, `def f: f; f`) não para por teto de saída; quem o para é o isolamento já existente: o app mata o processo filho (cancelar, ou consulta nova) e a CLI tem o vigia de `--tempo-max`. Os testes de `range(1e12)`, `repeat(1)` e `recurse` sem fim cobrem os dois lados.
+
+**Ao vivo:** digitar roda o filtro depois de 400 ms sem tecla; o Rust cancela a consulta anterior ao receber a nova (o filho dela é morto). Enter roda na hora. Ao vivo, erro de sintaxe aparece na linha de estado mas o cursor não pula para o erro (só no Enter), e abrir o resultado não tira o foco do campo. O mesmo filtro com resultado aberto não roda de novo.
+
+**Filtros salvos:** botão ★ ao lado do campo salva ou tira o filtro atual; a lista aparece como sugestão do campo (`<datalist>`, preenchida por `option.value`, nunca HTML). Fica no `localStorage` (chave `jasao.filtros`): até 50 filtros de até 16 KiB (o teto do Rust). O que vem de lá é lido como não confiável: JSON fora do formato vira lista vazia, item que não é texto ou passa do teto é descartado. Armazenamento bloqueado: a lista vale só na execução.
+
+**Salvar resultado:** botões "Salvar JSONL…" e "Salvar CSV…" com resultado aberto. O IPC (`salvar_consulta`) só aceita o temporário atual do próprio documento: caminho vindo da interface que não seja esse é recusado antes do diálogo. JSONL é cópia do temporário. CSV são duas passadas no temporário (colunas, depois linhas), memória só dos nomes das colunas; erro de colunas acontece antes de criar o destino.
+
+**Regra do CSV** (`core/src/csv.rs`):
+- Coluna = caminho jq da folha relativo ao resultado (`.a.b`, `.itens[0]`, `.["com espaço"]`); resultado escalar vai na coluna `.`. Objeto e lista vazios são folhas (`{}`, `[]`).
+- Colunas na ordem da primeira aparição. Teto de 10.000 colunas e 256 níveis: passar é erro, sem arquivo parcial.
+- Célula: `null` vazia, booleano como texto, número exato como veio (inteiro grande não perde dígito), caminho ausente vazio.
+- **Injeção de fórmula:** texto e nome de coluna que começam com `=`, `+`, `-`, `@`, tab, CR ou as formas de largura total `＝ ＋ － ＠` ganham `'` na frente. Número não (`-5` continua número).
+- Aspas RFC 4180 quando a célula tem `,`, `"`, CR ou LF; linhas em CRLF.
+
+**Parquet fica fora.** O crate `parquet` puxa o `arrow` e centenas de dependências transitivas, com vários MB a mais no binário, para um formato que quem precisa converte do JSONL com uma linha (DuckDB, pandas). Volta à mesa se aparecer uso real.
 

@@ -5,6 +5,7 @@ pub mod busca;
 pub mod caminho;
 pub mod compactado;
 pub mod consulta;
+pub mod csv;
 pub mod diff;
 pub mod erros;
 pub mod estrutura;

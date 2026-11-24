@@ -196,6 +196,11 @@ const pt = {
     cancelada: "Consulta cancelada",
     cortada: "resultado parcial: a saída passou do teto de tamanho e a consulta parou",
     sintaxe: (l: number, c: number, m: string) => `Erro no filtro, linha ${l}, coluna ${c}: ${m}`,
+    salvar: "Salvar filtro",
+    esquecer: "Tirar dos filtros salvos",
+    jsonl: "Salvar JSONL…",
+    csv: "Salvar CSV…",
+    salvo: (c: string) => `Salvo em ${c}`,
   },
   regua: {
     rotulo: "Posição no arquivo",
@@ -456,6 +461,11 @@ const en: Textos = {
     cancelada: "Query canceled",
     cortada: "partial result: the output hit the size cap and the query stopped",
     sintaxe: (l: number, c: number, m: string) => `Filter error, line ${l}, column ${c}: ${m}`,
+    salvar: "Save filter",
+    esquecer: "Remove from saved filters",
+    jsonl: "Save JSONL…",
+    csv: "Save CSV…",
+    salvo: (c: string) => `Saved to ${c}`,
   },
   regua: {
     rotulo: "Position in file",

@@ -167,7 +167,7 @@ fn consultar(
         ..Default::default()
     };
     let consulta = match Consulta::nova(filtro) {
-        Ok(c) => c,
+        Ok(c) => c.com_teto_saida(None, Some(TETO_SAIDA)),
         Err(e) => return falhou(e.to_string()),
     };
     let arquivo = match abrir_linhas(caminho) {
@@ -183,18 +183,12 @@ fn consultar(
         Err(e) => return falhou(format!("{}: {e}", destino.display())),
     };
     let cancelar = AtomicBool::new(false);
-    let (mut gravado, mut bytes, mut cortado) = (0u64, 0u64, false);
+    let mut gravado = 0u64;
     let mut falha: Option<io::Error> = None;
     let mut ultimo = Instant::now();
     let mut out = BufWriter::new(saida);
     let ao_lote = |lote: LoteConsulta| {
         for r in &lote.resultados {
-            bytes += r.json.len() as u64 + 1;
-            if bytes > TETO_SAIDA {
-                cortado = true;
-                cancelar.store(true, Relaxed);
-                return;
-            }
             if let Err(e) = writeln!(out, "{}", r.json) {
                 falha.get_or_insert(e);
                 cancelar.store(true, Relaxed);
@@ -233,7 +227,7 @@ fn consultar(
             .first()
             .map(|e| (e.linha, e.motivo.clone())),
         fim: true,
-        cortado,
+        cortado: resumo.cortado,
         ..Default::default()
     }
 }

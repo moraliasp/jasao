@@ -1518,6 +1518,80 @@ fn fechar_consulta(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
     Ok(())
 }
 
+/// Salva o resultado mostrado da consulta (`arquivo`, o temporário que o evento `consulta`
+/// entregou) em JSONL ou CSV, pelo diálogo de salvar no backend. Só o resultado atual do
+/// documento: caminho que não é o dele (outro arquivo, consulta nova já rodando) é recusado.
+/// Devolve o caminho salvo, ou `None` se o usuário cancelou.
+#[tauri::command]
+async fn salvar_consulta<R: Runtime>(
+    id: u32,
+    arquivo: String,
+    csv: bool,
+    nome: String,
+    janela: tauri::WebviewWindow<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let atual = estado
+        .doc(id)?
+        .consulta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .arquivo
+        .clone();
+    let Some(origem) = atual.filter(|a| a.as_os_str() == arquivo.as_str()) else {
+        return Err("o resultado da consulta não está mais aberto".into());
+    };
+    let (filtro, ext) = if csv {
+        ("CSV", "csv")
+    } else {
+        ("JSONL", "jsonl")
+    };
+    let nome = Path::new(&nome)
+        .file_stem()
+        .map(|n| format!("{}.{ext}", n.to_string_lossy()))
+        .unwrap_or_default();
+    let destino = janela
+        .dialog()
+        .file()
+        .set_parent(&janela)
+        .set_file_name(nome)
+        .add_filter(filtro, &[ext])
+        .blocking_save_file();
+    let Some(p) = destino.and_then(|f| f.into_path().ok()) else {
+        return Ok(None);
+    };
+    gravar_resultado(&origem, &p, csv)?;
+    Ok(Some(p.to_string_lossy().into_owned()))
+}
+
+/// Copia o JSONL do resultado ou o converte em CSV (`nucleo::csv`, duas passadas no arquivo:
+/// em memória só os nomes das colunas). Erro de CSV (colunas demais) sai antes de criar `destino`.
+fn gravar_resultado(origem: &Path, destino: &Path, csv: bool) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, BufWriter, Write};
+    let erro = |e: std::io::Error| format!("{}: {e}", destino.display());
+    if !csv {
+        return std::fs::copy(origem, destino).map(|_| ()).map_err(erro);
+    }
+    let linhas = |f: &mut dyn FnMut(&[u8]) -> Result<(), String>| -> Result<(), String> {
+        let arquivo = std::fs::File::open(origem).map_err(|e| e.to_string())?;
+        let (mut r, mut l) = (BufReader::new(arquivo), Vec::new());
+        while r.read_until(b'\n', &mut l).map_err(|e| e.to_string())? > 0 {
+            if !l.trim_ascii().is_empty() {
+                f(&l)?;
+            }
+            l.clear();
+        }
+        Ok(())
+    };
+    let mut c = nucleo::csv::Csv::default();
+    linhas(&mut |l| c.ver(l))?;
+    let mut out = BufWriter::new(std::fs::File::create(destino).map_err(erro)?);
+    c.cabecalho(&mut out).map_err(erro)?;
+    linhas(&mut |l| c.escrever(l, &mut out).map_err(erro))?;
+    out.flush().map_err(erro)
+}
+
 /// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
 /// (no máximo a cada `INTERVALO`, e no fim); a busca anterior é cancelada e seus achados somem.
 /// Padrão vazio só limpa. Devolve a geração da busca, que vem em cada evento.
@@ -1673,7 +1747,8 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             fechar_consulta,
             exportar,
             cancelar_validacao,
-            salvar_exportado
+            salvar_exportado,
+            salvar_consulta
         ])
 }
 
@@ -1844,6 +1919,33 @@ pub fn run() {
 
 #[cfg(test)]
 mod testes {
+    #[test]
+    fn gravar_resultado_jsonl_e_csv() {
+        let d = tempfile::tempdir().unwrap();
+        let origem = d.path().join("r.jsonl");
+        std::fs::write(&origem, "{\"a\":1,\"b\":\"=x\"}\n\n{\"a\":2,\"c\":{}}\n").unwrap();
+        let (jsonl, csv) = (d.path().join("s.jsonl"), d.path().join("s.csv"));
+        super::gravar_resultado(&origem, &jsonl, false).unwrap();
+        assert_eq!(
+            std::fs::read(&jsonl).unwrap(),
+            std::fs::read(&origem).unwrap()
+        );
+        super::gravar_resultado(&origem, &csv, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&csv).unwrap(),
+            ".a,.b,.c\r\n1,'=x,\r\n2,,{}\r\n"
+        );
+        // Colunas demais: erro antes de criar o destino.
+        let largo: Vec<String> = (0..=nucleo::csv::MAX_COLUNAS)
+            .map(|i| format!("\"k{i}\":0"))
+            .collect();
+        std::fs::write(&origem, format!("{{{}}}\n", largo.join(","))).unwrap();
+        let destino = d.path().join("largo.csv");
+        let e = super::gravar_resultado(&origem, &destino, true).unwrap_err();
+        assert!(e.contains("colunas"), "{e}");
+        assert!(!destino.exists());
+    }
+
     #[test]
     fn link_so_http_em_ascii() {
         use super::link_valido;
@@ -2257,6 +2359,22 @@ mod testes {
         );
         let resultado = a["arquivo"].as_str().unwrap().to_owned();
         assert_eq!(std::fs::read_to_string(&resultado).unwrap(), "1\nnull\n2\n");
+        // Salvar o resultado: só o temporário atual do documento (antes do diálogo).
+        let salvar = |arquivo: &str| {
+            em(
+                2,
+                "salvar_consulta",
+                json!({"arquivo": arquivo, "csv": true, "nome": "x"}),
+            )
+        };
+        assert!(
+            salvar(caminho)
+                .unwrap_err()
+                .as_str()
+                .unwrap()
+                .contains("não está mais aberto")
+        );
+        assert!(salvar("/etc/passwd").is_err());
         // O resultado abre no lugar do original, no mesmo documento.
         assert_eq!(
             chamar("abrir", json!({ "caminho": resultado, "id": 2 })),
