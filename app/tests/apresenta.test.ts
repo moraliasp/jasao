@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { html, type No, selo } from "../src/apresenta.ts";
 import { detectar, type Inteligente, MAX_FORMATADO } from "../src/valores.ts";
 import { daPrevia } from "../src/apresenta.ts";
+import { t } from "../src/i18n.ts";
 
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
 const HOSTIL = `<img src=x onerror=alert(1)>"'><script>x</script>`;
@@ -111,9 +112,14 @@ test("URL de prévia cortada: host só se terminou dentro da prévia", () => {
   assert.match(s1, />exemplo\.test<\/button>/);
   assert.match(s1, /title="https:\/\/exemplo\.test\/a+…"/);
   // Host que não coube na prévia: o selo não mostra um host que o clique talvez não abra.
-  const s2 = selo(no(`https://${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.${"e".repeat(60)}.test/x`));
-  assert.doesNotMatch(s2, /[bcde]{20}<\/button>/);
-  assert.match(s2, /data-link/);
+  const texto = (h: string) => /<\/svg>([^<]*)<\/button>/.exec(h)?.[1];
+  for (const v of [`https://${"a".repeat(300)}`, `https://${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.${"e".repeat(60)}.test/x`]) {
+    const l = no(v);
+    assert.ok(l.previa.endsWith("…"), v);
+    const s2 = selo(l);
+    assert.match(s2, /data-link/);
+    assert.equal(texto(s2), t.inteligente.abrirCurto, v);
+  }
 });
 
 test("reindentado acima de MAX_FORMATADO fica no texto cru", () => {

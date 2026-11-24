@@ -195,7 +195,7 @@ export function reindentar(s: string, passo = "  "): string | null {
   const out: string[] = [];
   let nivel = 0;
   let abriu = false; // o último pedaço é a quebra logo depois de `{`/`[`
-  let indentacao = 0; // bytes que a reindentação acrescenta; os tokens somam no máximo `s.length`
+  let indentacao = 0; // bytes que a reindentação acrescenta (quebras, recuo, espaço após `:`); os tokens somam no máximo `s.length`
   const quebra = () => {
     indentacao += 1 + passo.length * nivel;
     return "\n" + passo.repeat(nivel);
@@ -215,7 +215,10 @@ export function reindentar(s: string, passo = "  "): string | null {
       else out.push(quebra());
       out.push(tok);
     } else if (c === ",") out.push(",", quebra());
-    else if (c === ":") out.push(": ");
+    else if (c === ":") {
+      out.push(": ");
+      indentacao++; // o espaço depois de `:`
+    }
     else out.push(tok);
     abriu = false;
     if (indentacao + s.length > MAX_FORMATADO) return s;
