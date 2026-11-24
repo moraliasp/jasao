@@ -49,6 +49,9 @@ const PILHA: usize = 256 << 20;
 /// com `PILHA` o filtro de 16 KiB compila e roda até em debug (com 128 MiB, não).
 pub const MAX_FILTRO: usize = 16 << 10;
 const ADIANTE_MAX: usize = 64;
+/// Bytes que um trabalhador junta antes de entregar (com `MAX_LOTE_PADRAO`, o teto de memória
+/// por trabalhador: um bloco adiantado espera a sua vez com no máximo isso em mãos).
+pub const MAX_BYTES_LOTE_PADRAO: usize = 8 << 20;
 
 /// Um valor produzido pelo filtro: linha de origem (a partir de 0; 0 no documento único) e o
 /// valor em JSON compacto.
@@ -85,6 +88,8 @@ pub struct ResumoConsulta {
     pub primeiros_erros: Vec<ErroLinha>,
     pub cancelado: bool,
     pub tempo_esgotado: bool,
+    /// A saída passou do teto de `com_teto_saida`: entregue até o teto, parou.
+    pub cortado: bool,
 }
 
 /// Um problema no texto do filtro: faixa em bytes, linha e coluna (a partir de 1, coluna em
@@ -120,7 +125,10 @@ pub struct Consulta {
     filtro: Filtro,
     bloco: usize,
     max_lote: usize,
+    max_bytes_lote: usize,
     tempo_max: Option<Duration>,
+    max_resultados: u64,
+    max_bytes: u64,
 }
 
 impl Consulta {
@@ -170,7 +178,10 @@ impl Consulta {
             filtro,
             bloco: BLOCO_PADRAO,
             max_lote: MAX_LOTE_PADRAO,
+            max_bytes_lote: MAX_BYTES_LOTE_PADRAO,
             tempo_max: None,
+            max_resultados: u64::MAX,
+            max_bytes: u64::MAX,
         })
     }
 
@@ -183,6 +194,20 @@ impl Consulta {
     /// Teto de resultados por lote (e em memória por trabalhador).
     pub fn com_max_lote(mut self, n: usize) -> Self {
         self.max_lote = n.max(1);
+        self
+    }
+
+    /// Teto de bytes por lote (e em memória por trabalhador), além de `com_max_lote`.
+    pub fn com_max_bytes_lote(mut self, n: usize) -> Self {
+        self.max_bytes_lote = n.max(1);
+        self
+    }
+
+    /// Teto de saída: entrega no máximo `resultados` valores e `bytes` de JSON (cada um conta
+    /// com o `\n`), depois para com `ResumoConsulta::cortado`.
+    pub fn com_teto_saida(mut self, resultados: Option<u64>, bytes: Option<u64>) -> Self {
+        self.max_resultados = resultados.unwrap_or(u64::MAX);
+        self.max_bytes = bytes.unwrap_or(u64::MAX);
         self
     }
 
@@ -225,7 +250,8 @@ impl Consulta {
     ) -> ResumoConsulta {
         let prazo = self.tempo_max.map(|t| Instant::now() + t);
         let esgotou = || prazo.is_some_and(|p| Instant::now() >= p);
-        let parar = || cancelar.load(Relaxed) || esgotou();
+        let cortar = AtomicBool::new(false);
+        let parar = || cancelar.load(Relaxed) || cortar.load(Relaxed) || esgotou();
 
         let base = if dados.starts_with(BOM) { BOM.len() } else { 0 };
         let blocos = if documento {
@@ -256,7 +282,9 @@ impl Consulta {
             primeiros_erros: Vec::new(),
             cancelado: false,
             tempo_esgotado: false,
+            cortado: false,
         };
+        let mut bytes_saida = 0u64;
         let trabalhadores = thread::available_parallelism()
             .map_or(1, |n| n.get())
             .min(blocos.len())
@@ -340,7 +368,20 @@ impl Consulta {
                     if parar() {
                         break 'receber;
                     }
-                    resumo.resultados += parte.resultados.len() as u64;
+                    let mut resultados = parte.resultados;
+                    let livre = self.max_resultados - resumo.resultados;
+                    if resultados.len() as u64 > livre {
+                        resultados.truncate(livre as usize);
+                        resumo.cortado = true;
+                    }
+                    if let Some(i) = resultados.iter().position(|r| {
+                        bytes_saida += r.json.len() as u64 + 1;
+                        bytes_saida > self.max_bytes
+                    }) {
+                        resultados.truncate(i);
+                        resumo.cortado = true;
+                    }
+                    resumo.resultados += resultados.len() as u64;
                     resumo.erros += parte.erros;
                     let vaga = MAX_ERROS_GUARDADOS - resumo.primeiros_erros.len();
                     resumo
@@ -353,19 +394,26 @@ impl Consulta {
                         entregues.store(prox, Relaxed);
                     }
                     let fim = prox == blocos.len();
-                    if !parte.resultados.is_empty() || fim || resumo.linhas - ultimo_aviso >= passo
+                    if !resultados.is_empty()
+                        || fim
+                        || resumo.cortado
+                        || resumo.linhas - ultimo_aviso >= passo
                     {
                         ultimo_aviso = resumo.linhas;
                         ao_lote(LoteConsulta {
-                            resultados: parte.resultados,
+                            resultados,
                             linhas: resumo.linhas,
                             total_linhas,
                         });
                     }
+                    if resumo.cortado {
+                        cortar.store(true, Relaxed);
+                        break 'receber;
+                    }
                 }
             }
             drop(rx);
-            resumo.cancelado = prox < blocos.len();
+            resumo.cancelado = prox < blocos.len() && !resumo.cortado;
             resumo.tempo_esgotado = resumo.cancelado && esgotou();
         });
         resumo
@@ -425,17 +473,20 @@ impl Consulta {
                 return false;
             }
             match r {
-                Ok(v) => saida.resultados.push(Resultado {
-                    linha,
-                    json: para_json(&v),
-                }),
+                Ok(v) => {
+                    let json = para_json(&v);
+                    saida.bytes += json.len();
+                    saida.resultados.push(Resultado { linha, json });
+                }
                 Err(e) => {
                     // Como no jq: o erro encerra os resultados desta entrada.
                     saida.erro(linha, e.to_string());
                     break;
                 }
             }
-            if saida.resultados.len() >= self.max_lote && !enviar(saida.tirar(false), false) {
+            let cheio =
+                saida.resultados.len() >= self.max_lote || saida.bytes >= self.max_bytes_lote;
+            if cheio && !enviar(saida.tirar(false), false) {
                 return false;
             }
         }
@@ -460,6 +511,8 @@ struct Saida {
     erros: u64,
     guardados: Vec<ErroLinha>,
     linhas: usize,
+    /// Bytes de JSON em `resultados`.
+    bytes: usize,
 }
 
 impl Saida {
@@ -471,6 +524,7 @@ impl Saida {
     }
 
     fn tirar(&mut self, fim: bool) -> Parte {
+        self.bytes = 0;
         Parte {
             resultados: std::mem::take(&mut self.resultados),
             erros: std::mem::take(&mut self.erros),
@@ -487,7 +541,7 @@ fn contar_linhas(b: &[u8]) -> usize {
 }
 
 /// Se o JSON passa de `max` níveis de `[`/`{` (fora de strings). Não valida nada mais.
-fn aninhamento_excede(texto: &[u8], max: usize) -> bool {
+pub(crate) fn aninhamento_excede(texto: &[u8], max: usize) -> bool {
     let (mut nivel, mut em_string, mut escape) = (0usize, false, false);
     for &c in texto {
         if em_string {
@@ -801,6 +855,71 @@ mod testes {
         assert_eq!(lotes, 3);
         assert!(r.linhas < r.total_linhas);
         assert_eq!(r.linhas, ultimo);
+    }
+
+    #[test]
+    fn teto_de_saida_em_resultados() {
+        // 3 linhas × 100 resultados, teto 150: entrega exatamente 150 e para sem "cancelado".
+        let c = Consulta::nova("range(100)")
+            .unwrap()
+            .com_bloco(4)
+            .com_max_lote(7)
+            .com_teto_saida(Some(150), None);
+        let mut v = 0;
+        let r = c.executar_jsonl(b"1\n2\n3\n", &AtomicBool::new(false), |l| {
+            v += l.resultados.len()
+        });
+        assert!(r.cortado && !r.cancelado && !r.tempo_esgotado, "{r:?}");
+        assert_eq!((v, r.resultados), (150, 150));
+        // No teto exato não corta.
+        let c = Consulta::nova("range(100)")
+            .unwrap()
+            .com_teto_saida(Some(300), None);
+        let r = c.executar_jsonl(b"1\n2\n3\n", &AtomicBool::new(false), |_| {});
+        assert!(!r.cortado && r.resultados == 300, "{r:?}");
+    }
+
+    #[test]
+    fn teto_de_saida_em_bytes() {
+        // Cada resultado é `"xxxxxxxx"` + `\n` = 11 bytes; teto 100 cabe 9.
+        let c = Consulta::nova("range(50) | \"xxxxxxxx\"")
+            .unwrap()
+            .com_max_lote(4)
+            .com_teto_saida(None, Some(100));
+        let mut bytes = 0;
+        let r = c.executar_documento(b"null", &AtomicBool::new(false), |l| {
+            bytes += l.resultados.iter().map(|r| r.json.len() + 1).sum::<usize>()
+        });
+        assert!(r.cortado && !r.cancelado, "{r:?}");
+        assert_eq!((r.resultados, bytes), (9, 99));
+    }
+
+    #[test]
+    fn teto_de_saida_para_filtro_que_explode() {
+        // Sem teto, `range(1e12)` numa linha só pararia por cancelamento.
+        let c = Consulta::nova("range(1e12)")
+            .unwrap()
+            .com_teto_saida(Some(25_000), None);
+        let r = c.executar_jsonl(b"null\n", &AtomicBool::new(false), |_| {});
+        assert!(r.cortado && r.resultados == 25_000, "{r:?}");
+    }
+
+    #[test]
+    fn lote_tem_teto_de_bytes() {
+        // Um registro com 200 resultados de ~1 KB: sem o teto de bytes, um lote só (max_lote alto).
+        let linha = format!("{{\"s\":\"{}\"}}\n", "a".repeat(1000));
+        let c = Consulta::nova(".s as $s | range(200) | $s")
+            .unwrap()
+            .com_max_bytes_lote(4096);
+        let (mut lotes, mut total) = (0, 0);
+        c.executar_jsonl(linha.as_bytes(), &AtomicBool::new(false), |l| {
+            let b: usize = l.resultados.iter().map(|r| r.json.len()).sum();
+            assert!(b < 4096 + 1002, "lote de {b} bytes");
+            lotes += usize::from(!l.resultados.is_empty());
+            total += l.resultados.len();
+        });
+        assert_eq!(total, 200);
+        assert!(lotes >= 40, "{lotes} lotes");
     }
 
     #[test]
