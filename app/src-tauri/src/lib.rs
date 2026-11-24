@@ -3091,6 +3091,35 @@ mod testes {
         let erro = em(5, "formatado", json!({"registro": 1})).unwrap_err();
         assert!(erro.as_str().unwrap().contains("passa do teto"), "{erro}");
 
+        // Segredo com 2 valores distintos: não vira discriminador nem sai em laudo, estrutura, régua.
+        let mut sg = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut sg,
+            b"{\"token\":\"hunter2xyz\",\"a\":1}\n{\"token\":\"s3cr3tvalue\",\"b\":2}\n",
+        )
+        .unwrap();
+        conceder(sg.path());
+        let id = chamar("abrir", json!({ "caminho": sg.path().to_str().unwrap() })).unwrap()["id"]
+            .as_u64()
+            .unwrap() as u32;
+        let resumo = (0..200)
+            .map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                em(id, "resumo", json!({})).unwrap()
+            })
+            .find(|r| r["coloriu"] == true)
+            .expect("2ª passada não terminou");
+        let tudo = format!(
+            "{resumo}{}{}",
+            em(id, "laudo", json!({})).unwrap(),
+            em(id, "estrutura", json!({})).unwrap()
+        );
+        assert!(tudo.contains(".token"), "{tudo}");
+        assert!(
+            !tudo.contains("hunter2xyz") && !tudo.contains("s3cr3tvalue"),
+            "{tudo}"
+        );
+
         // Pasta: `pastas` avisa e `abrir` recusa com mensagem clara.
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_str().unwrap();

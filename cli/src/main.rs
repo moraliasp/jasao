@@ -30,7 +30,9 @@
 //!                                         contra registro N; mesmos códigos de saída
 //!   laudo <arquivo> [--json] [--teto SEG] o que o arquivo é, a forma e o que merece atenção, em
 //!                                         Markdown; para a leitura depois de SEG (padrão 30) e
-//!                                         diz que o laudo é parcial
+//!                                         diz que o laudo é parcial. Sai com 0 quando o laudo
+//!                                         sai, mesmo parcial, com linhas inválidas ou binário (o
+//!                                         texto diz); 1 se o arquivo não abre; 2 em uso errado
 //!
 //! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir` e `diff` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
@@ -61,9 +63,11 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    \x20   3 não deu para validar (arquivo não abre, schema recusado)\n  \
                    diff <antes> <depois> [--json] [--falha-em quebra|qualquer]\n  \
                    diff --valores <antes> <depois> [--json] [--falha-em qualquer]\n  \
-                   laudo <arquivo> [--json] [--teto SEG]\n\
                    \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
-                   \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
+                   \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)\n  \
+                   laudo <arquivo> [--json] [--teto SEG]\n\
+                   \x20   saída do laudo: 0 laudo saiu (mesmo parcial, com linhas inválidas ou binário) ·\n\
+                   \x20   1 arquivo não abre · 2 uso errado";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

@@ -297,6 +297,8 @@ pub fn markdown(l: &Laudo, nome: &str) -> String {
     }
 
     let _ = writeln!(m, "\n## Forma\n");
+    // Sem registro lido não há base para afirmar ausência (de formatos, opcionais ou avisos).
+    let sem_base = l.registros == 0;
     match &l.discriminador {
         Some(f) => {
             let n = (f.variantes.len() + f.mais) as u64;
@@ -318,6 +320,9 @@ pub fn markdown(l: &Laudo, nome: &str) -> String {
                 vs.join(", "),
             );
         }
+        None if sem_base => {
+            let _ = writeln!(m, "- Nenhum registro lido: sem base para dizer a forma.");
+        }
         None => {
             let _ = writeln!(
                 m,
@@ -325,7 +330,8 @@ pub fn markdown(l: &Laudo, nome: &str) -> String {
             );
         }
     }
-    if l.opcionais.is_empty() {
+    if l.opcionais.is_empty() && sem_base {
+    } else if l.opcionais.is_empty() {
         let _ = writeln!(m, "- Nenhum campo do topo falta em algum registro.");
     } else {
         for o in &l.opcionais {
@@ -372,7 +378,9 @@ pub fn markdown(l: &Laudo, nome: &str) -> String {
             l.atencao_mais
         );
     }
-    if vazio {
+    if sem_base && l.atencao.is_empty() {
+        let _ = writeln!(m, "- Nenhum registro lido: sem base para avisos de campo.");
+    } else if vazio {
         let _ = writeln!(m, "- Nenhum aviso.");
     }
 
@@ -551,6 +559,52 @@ mod testes {
         );
         assert!(!tudo.contains("ghp_0123"), "{tudo}");
         assert!(!tudo.contains("hunter2"), "{tudo}");
+    }
+
+    #[test]
+    fn segredo_com_valores_distintos_nao_vira_discriminador() {
+        // Dois valores distintos: antes o campo virava discriminador e os valores saíam.
+        let d = "{\"token\":\"hunter2xyz\",\"a\":1}\n{\"token\":\"s3cr3tvalue\",\"b\":2}\n";
+        let l = laudo(d);
+        assert!(l.discriminador.is_none(), "{:?}", l.discriminador);
+        assert!(
+            l.atencao
+                .iter()
+                .any(|a| a.aviso == "segredo" && a.caminho == ".token")
+        );
+        let tudo = format!(
+            "{}{l:?}{}",
+            markdown(&l, "x"),
+            serde_json::to_string(&l).unwrap()
+        );
+        assert!(
+            !tudo.contains("hunter2xyz") && !tudo.contains("s3cr3tvalue"),
+            "{tudo}"
+        );
+    }
+
+    #[test]
+    fn sem_registro_nao_afirma_ausencia() {
+        let md = markdown(&laudo(""), "x");
+        assert!(md.contains("sem base para dizer a forma"), "{md}");
+        assert!(md.contains("sem base para avisos"), "{md}");
+        for falso in ["Um formato só", "Nenhum campo do topo", "Nenhum aviso"] {
+            assert!(!md.contains(falso), "{falso}: {md}");
+        }
+        // Cancelado antes de ler (o que o teto zero faz): 0 de 2 linhas, também sem afirmar ausência.
+        let d = "{\"a\":1}\n{\"b\":2}\n";
+        let inf = estrutura::inferir(d.as_bytes(), &AtomicBool::new(true), |_| {});
+        let l = Laudo::de(Conteudo::Objetos, d.len() as u64, &inf);
+        assert_eq!((l.registros, l.varridas, l.total), (0, 0, 2));
+        let md = markdown(&l, "x");
+        assert!(
+            md.contains("**Parcial:**") && md.contains("sem base para dizer a forma"),
+            "{md}"
+        );
+        assert!(
+            !md.contains("Um formato só") && !md.contains("Nenhum aviso"),
+            "{md}"
+        );
     }
 
     #[test]

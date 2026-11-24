@@ -64,3 +64,12 @@ test("tetos e parcial aparecem como texto", () => {
   assert.ok(h.includes(t.laudo.maisOpcionais("4")) && h.includes(t.laudo.maisAvisos("7")), h);
   assert.ok(h.includes(t.laudo.formas("4", "<code>.tipo</code>")) && h.includes(t.laudo.eMais("2")), h);
 });
+
+test("segredo com valores distintos: o painel não mostra valor nenhum", () => {
+  // O core não manda discriminador para campo de segredo (teste em estrutura.rs e no IPC);
+  // aqui, o que ele manda nesse caso: só o caminho com o aviso.
+  const segredo: Laudo = { ...l, discriminador: null, atencao: [{ aviso: "segredo", caminho: ".token", indice: 1 }] };
+  const h = laudoHtml(segredo, sem, t, fmt);
+  assert.ok(h.includes("<code>.token</code>") && h.includes(t.estrutura.avisos.segredo), h);
+  for (const v of ["hunter2xyz", "s3cr3tvalue"]) assert.ok(!h.includes(v), h);
+});
