@@ -1,6 +1,6 @@
 # Radar: Jasão × top 5
 
-Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em a8492da (#6 a #40 mergeados). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
+Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 0f4af8a (#6 a #46 mergeados). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
 
 **Premissa: o Jasão é gratuito.** A barra a bater são os pagos (Dadroit, OK JSON Pro), e o adversário de preço são os grátis (JSON Hero, quicktype, Compass). Nenhum deles entrega o pacote completo: gratuito, desktop, arquivo de 10 GB, estrutura, diff e export.
 
@@ -36,13 +36,13 @@ Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 
 | **Presença e evidência por campo** | ✅ core e CLI (#8), modo Estrutura na interface (#21): tipos e "N de M" por caminho | ❌ | ❌ | ◐ | ◐ | ✅ só no Mongo |
 | **União discriminada** | ✅ core (#8) e interface (#21): uma linha por variante, Enter abre o 1º registro; falta filtro por variante | ❌ | ❌ | ◐ anyOf | ◐ | ❌ |
 | **Diff estrutural: quebra × compatível** | ◐ core e CLI (#39): `jasao diff`, taxonomia no padrão oasdiff/buf, na dúvida é quebra; falta interface e diff de valores | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Zod + Schema validados no arquivo** | ✅ core e CLI (#32), interface (#35): Zod 4 e Schema 2020-12 com união discriminada, conferidos registro a registro, 1 GB em 1–3 s | ❌ | ❌ | ◐ só Schema | ◐ sem validar | ◐ só Schema |
+| **Zod + Schema validados no arquivo** | ✅ core e CLI (#32), interface (#35): Zod 4 e Schema 2020-12 com união discriminada, conferidos registro a registro, 1 GB em 1–3 s; tipos TypeScript e `jasao validar` contra estrutura salva ou schema de fora (#45) | ❌ | ❌ | ◐ só Schema | ◐ sem validar | ◐ só Schema |
 | Gratuito | ✅ | ❌ | ◐ | ✅ | ✅ | ✅ |
 
 ## Gaps, em ordem
 
 1. **Benchmark público de 1 GB contra o Dadroit.** O #38 mediu os tetos internos (1ª tela 0,28 s, índice 0,29 s, estrutura 3,41 s, busca 0,59–0,73 s, ≤63 MB além do mmap), mas o Dadroit não foi comparado e nada foi publicado. É o único argumento que o pago tem e que o Jasão pode tirar de graça.
-2. **Diff na interface**, mais o diff de valores. O core e a CLI (#39) já classificam quebra × compatível; nenhum concorrente faz isso.
+2. **Diff na interface**, mais o diff de valores. O core e a CLI (#39) já classificam quebra × compatível; a interface está em PR (#42). Nenhum concorrente faz isso.
 3. **1ª tela no limite de 300 ms** (0,28 s no #38): qualquer regressão estoura a meta; a checagem de 10% no CI foi proposta e ainda não está ligada.
 
 ## Candidatos a "muito especial", de graça
@@ -64,3 +64,4 @@ Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 
 - 23/11/2026 (tarde): mergeados #23 e #25 (tetos de memória), #26 a #31 (segurança e CI) e #32 (export Zod e Schema no core e na CLI). Em PR: interface do export (#35).
 - 24/11/2026: mergeados #33 e #34 (Tabela), #35 (Exportar na interface), #38 (benchmarks internos de 1 GB) e #39 (diff estrutural no core e na CLI). Tabela e Zod + Schema passam a ✅, diff a ◐; o Jasão vai a 23 de 26 pontos com o que está na `main`. Em PR: valores inteligentes (#40).
 - 24/11/2026 (noite): mergeado #40 (valores inteligentes na árvore e no painel do valor, tudo local: o link só abre com clique e o JWT nunca é conferido nem enviado). Valores inteligentes passa a ✅ e empata com as prévias do JSON Hero. Recontagem eixo a eixo: 25 de 26 pontos, e o único ponto aberto é o diff estrutural sem interface; as somas de 22/11 (20) e 24/11 (25) foram corrigidas para 18 e 23 nesta recontagem.
+- 24/11/2026 (tarde): mergeados #44 (seguir arquivo vivo, como `tail -f`), #45 (tipos TypeScript e `jasao validar` contra estrutura salva ou JSON Schema de fora, com `$ref` só local e custo limitado) e #46 (MessagePack, CBOR, BSON, YAML e TOML como entrada). O export fica mais largo, mas o placar não muda: 25 de 26. Arquivo vivo e formatos ficam fora do placar até haver fonte do que os concorrentes fazem. Em PR: interface do diff (#42), avisos da Estrutura (#43) e jq ao vivo (#47).
