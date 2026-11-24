@@ -3017,6 +3017,10 @@ mod testes {
         );
     }
 
+    /// Os temporários de consulta levam pid e geração (por documento) no nome: dois testes que
+    /// consultam no mesmo processo se confundiriam na conferência do temporário da velha.
+    static CONSULTAS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Garantia da máscara: nenhum caminho de saída do IPC devolve o valor de um campo sensível
     /// (dados sintéticos). Só `valor_cru`, pedido campo a campo, mostra o original.
     #[test]
@@ -3205,6 +3209,7 @@ mod testes {
         app.listen("consulta", move |e| {
             let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
         });
+        let _so_um = CONSULTAS.lock().unwrap_or_else(|e| e.into_inner());
         let saidas = tempfile::tempdir().unwrap();
         let consulta_de = |filtro: &str, anonimizar: bool| {
             em(
@@ -3245,12 +3250,14 @@ mod testes {
             anon,
             "o sal é da sessão: mesmo valor, mesmo código"
         );
+        assert_eq!(em("fechar_consulta", json!({})), Ok(Value::Null));
     }
 
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
 
     #[test]
     fn comandos_pelo_ipc() {
+        let _so_um = CONSULTAS.lock().unwrap_or_else(|e| e.into_inner());
         let mut f = tempfile::NamedTempFile::new().unwrap();
         std::io::Write::write_all(&mut f, b"{\"a\":[1,2]}\n{\"b\":tru}\n").unwrap();
         let mut tipos = tempfile::NamedTempFile::new().unwrap();

@@ -672,7 +672,7 @@ O mapa mascarado é uma cópia privada do `mmap` (`map_copy`, copy-on-write): s�
 
 **Fatias futuras (não feitas aqui):** CPF ou token dentro de texto livre (`"obs": "cpf 111.444.777-35 do cliente"` só sai mascarado se a chave for sensível); CPF ou token usado como chave de mapa (`{"111.444.777-35": {...}}`: a chave nunca é mascarada, é estrutura); anonimizar em fluxo (acima).
 
-**Não testado:** a interface à mão (painel, botão, "anon"); YAML/TOML/binários convertidos passam pelo mesmo `ArquivoLinhas`, mas sem teste próprio; o export JSONL/CSV do jq (#47) ainda não está na `main`.
+**Não testado:** a interface à mão (painel, botão, "anon"); YAML/TOML/binários convertidos passam pelo mesmo `ArquivoLinhas`, mas sem teste próprio. O export JSONL/CSV do jq (#47) é coberto: no app, `gravar_resultado` em JSONL e CSV sobre o resultado mascarado (`segredo_nao_sai_pelo_ipc`); no CLI, `jq --saida csv|jsonl`, com e sem `--anonimizar` (`cli/tests/mascara.rs`). A cópia anonimizada é feita no processo filho e conta no teto de heap dele (`filho::TETO_MEMORIA`, `--max-memoria-mb`).
 
 ## Filtro por variante e por caminho (Fase 2, 24/11/2026)
 
