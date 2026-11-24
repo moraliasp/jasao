@@ -1,13 +1,21 @@
 // Detecção dos valores inteligentes (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectar, MAX_BASE64, MAX_JSON_TEXTO, MAX_NIVEL, pista, reindentar, relativo } from "../src/valores.ts";
+import { detectar, MAX_BASE64, MAX_JSON_TEXTO, MAX_NIVEL, MAX_URL, pista, reindentar, relativo } from "../src/valores.ts";
 
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-test("época em ms sempre; em segundos só com nome de campo de data", () => {
-  assert.deepEqual(detectar("numero", "1700000000000", "id"), { tipo: "epoca", ms: 1700000000000, unidade: "ms" });
+test("época em s e ms só com nome de campo de data, com fronteira de palavra", () => {
+  assert.deepEqual(detectar("numero", "1700000000000", "atualizado_ms"), { tipo: "epoca", ms: 1700000000000, unidade: "ms" });
+  for (const k of ["criadoEm", "criado_em", "createdAt", "created_at", "updatedAt", "nascimento_date", "startTime", "timestamp", "ts", "momento"])
+    assert.equal(detectar("numero", "1700000000", k)?.tipo, "epoca", k);
+  // Sem pista: id, EAN-13, e nomes que só terminam parecido.
+  for (const k of ["item", "lat", "format", "system", "id", "x", "ean", "STATEM"]) {
+    assert.equal(detectar("numero", "1700000000", k), null, k);
+    assert.equal(detectar("numero", "1700000000000", k), null, k);
+  }
+  assert.equal(detectar("numero", "1234567890123", "x"), null);
   assert.deepEqual(detectar("numero", "1700000000", "criado_em"), { tipo: "epoca", ms: 1700000000000, unidade: "s" });
   assert.deepEqual(detectar("numero", "1700000000", "createdAt")?.tipo, "epoca");
   assert.equal(detectar("numero", "1700000000", "id"), null);
@@ -19,7 +27,12 @@ test("época em ms sempre; em segundos só com nome de campo de data", () => {
 
 test("data ISO 8601 com e sem hora e fuso", () => {
   assert.deepEqual(detectar("texto", "2024-02-29T13:45:00Z", null), { tipo: "data", ms: Date.UTC(2024, 1, 29, 13, 45) });
-  assert.equal(detectar("texto", "2024-02-29", null)?.tipo, "data");
+  // Sem fuso é hora local, também só com a data.
+  assert.deepEqual(detectar("texto", "2024-02-29", null), { tipo: "data", ms: new Date(2024, 1, 29).getTime() });
+  assert.deepEqual(detectar("texto", "2024-02-29T13:45", null), { tipo: "data", ms: new Date(2024, 1, 29, 13, 45).getTime() });
+  assert.deepEqual(detectar("texto", "2024-02-29T13:45:00.5-03:00", null), { tipo: "data", ms: Date.UTC(2024, 1, 29, 16, 45, 0, 500) });
+  for (const d of ["2024-02-30", "2023-02-29", "2024-04-31", "2024-00-10", "2024-01-01T12:60", "2024-01-01T12:00+24:00"])
+    assert.equal(detectar("texto", d, null), null, d);
   assert.equal(detectar("texto", "2024-02-29 13:45:00.123-03:00", null)?.tipo, "data");
   assert.equal(detectar("texto", "2024-13-01", null), null);
   assert.equal(detectar("texto", "2024-02-29T25:00", null), null);
@@ -93,15 +106,37 @@ test("texto comum e outros tipos não viram nada", () => {
   assert.equal(detectar("objeto", "{}", null), null);
 });
 
-test("pista pela prévia cortada", () => {
-  assert.equal(pista("data:image/png;base64,iVBO"), "imagem");
-  assert.equal(pista(PNG.slice(0, 20)), "imagem");
-  assert.equal(pista("eyJhbGciOi.eyJzdWIi"), "jwt");
-  assert.equal(pista(' {"a":'), "json");
-  assert.equal(pista("https://exemplo.test/muito/longo"), "url");
-  assert.equal(pista("Parágrafo 1"), null);
+test("pista pela prévia cortada só com o que a prévia confirma", () => {
+  const n = 5000;
+  assert.equal(pista("data:image/png;base64,iVBORw0KGgo", n), "imagem");
+  assert.equal(pista(PNG.slice(0, 40), n), "imagem");
+  assert.equal(pista("data:image/png;base64,iVBO isto não é base64", n), null);
+  assert.equal(pista("iVBORw0KGgo e depois um texto", n), null);
+  assert.equal(pista("data:image/png;base64,iVBO", MAX_BASE64 + 10), null);
+  const cab = b64url('{"alg":"HS256","typ":"JWT"}');
+  assert.equal(pista(`${cab}.eyJzdWIi`, n), "jwt");
+  assert.equal(pista(`${b64url('{"x":1}')}.eyJzdWIi`, n), null); // cabeçalho sem "alg"
+  assert.equal(pista("eyJhbGciOi.eyJzdWIi", n), null); // cabeçalho cortado não decodifica
+  assert.equal(pista("https://exemplo.test/muito/longo", 300), "url");
+  assert.equal(pista("https://exemplo.test/ e depois um parágrafo", 300), null);
+  assert.equal(pista("https://exemplo.test/longo", MAX_URL + 10), null);
+  assert.equal(pista(' {"a":', n), "json"); // só para o painel buscar o inteiro; o selo não mostra
+  assert.equal(pista("Parágrafo 1", n), null);
 });
 
 test("reindentar preserva texto com pontuação dentro de strings", () => {
   assert.equal(reindentar('{"a":"x, {y}: [z]","b":[]}'), '{\n  "a": "x, {y}: [z]",\n  "b": []\n}');
+  assert.equal(reindentar('[{},[],{"a":[{}]}]'), '[\n  {},\n  [],\n  {\n    "a": [\n      {}\n    ]\n  }\n]');
+});
+
+test("perto de 1 MiB a detecção é linear (não trava a seleção)", () => {
+  const arr = `[${Array(130000).fill('{"a":1}').join(",")}]`; // ~1 MB, muitos fechamentos
+  const vazios = `[${Array(340000).fill("{}").join(",")}]`; // ~1 MB de vazios
+  const jwt = `${b64url('{"alg":"none"}')}.${b64url(`{"l":[${Array(70000).fill('{"a":1}').join(",")}]}`)}.x`;
+  for (const [nome, s, tipo] of [["array", arr, "json"], ["vazios", vazios, "json"], ["jwt", jwt, "jwt"]]) {
+    assert.ok(s.length <= MAX_BASE64, nome);
+    const t0 = performance.now();
+    assert.equal(detectar("texto", s, null)?.tipo, tipo, nome);
+    assert.ok(performance.now() - t0 < 2000, `${nome}: ${Math.round(performance.now() - t0)} ms`);
+  }
 });

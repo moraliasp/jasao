@@ -26,15 +26,19 @@ export type Pista = "imagem" | "jwt" | "json" | "url";
 // 2001-01-01 a 2100-01-01: fora disso um número de 10 ou 13 dígitos é mais provável ser id.
 const EPOCA_MIN = 978307200000;
 const EPOCA_MAX = 4102444800000;
-// Em segundos, 10 dígitos são comuns em ids: exige nome de campo que pareça data.
-const PISTA_DATA = /(^|_)(ts|data|date|time|hora|em|desde|quando|momento|criado|timestamp)$|(Em|At|_at|Date|Time)$/i;
-const ISO = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])([T ]([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d{1,9})?)?(Z|[+-]([01]\d|2[0-3]):?[0-5]\d)?)?$/;
+// 10 e 13 dígitos também são id, EAN-13 e afins: só vira data com nome de campo que pareça data,
+// com fronteira de palavra (snake_case ou camelCase), para `item`, `lat`, `format` não casarem.
+const PISTA_SNAKE = /(^|[_-])(ts|ms|data|date|time|hora|em|at|desde|quando|momento|criado|atualizado|timestamp|epoch)$/i;
+const PISTA_CAMEL = /[a-z\d](Em|At|Ts|Ms|Data|Date|Time|Hora|Timestamp)$/;
+const ISO = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|([+-])(\d{2}):?(\d{2}))?)?$/;
 const HEX = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 const CANAL = String.raw`\s*(\d{1,3}(\.\d+)?%?)\s*`;
 const ALFA = String.raw`\s*(0|1|0?\.\d+|\d{1,3}%)\s*`;
 const RGB = new RegExp(`^rgba?\\(${CANAL},${CANAL},${CANAL}(,${ALFA})?\\)$`, "i");
 const DATA_URI = /^data:image\/(png|jpeg|gif|webp|bmp|avif|svg\+xml);base64,([A-Za-z0-9+/]+={0,2})$/;
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const DATA_URI_INICIO = /^data:image\/(png|jpeg|gif|webp|bmp|avif|svg\+xml);base64,[A-Za-z0-9+/]*={0,2}$/;
+const B64_INICIO = /^[A-Za-z0-9+/]{16,}={0,2}$/;
 // Base64 cru sem `data:`: só os formatos com assinatura inequívoca no começo.
 const MAGICA: [string, string][] = [["iVBORw0KGgo", "png"], ["/9j/", "jpeg"], ["R0lGOD", "gif"]];
 const JWT = /^(eyJ[A-Za-z0-9_-]+)\.(eyJ[A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*$/;
@@ -47,9 +51,10 @@ export function detectar(tipo: string, valor: string, chave: string | null): Int
   if (tipo === "numero") return epoca(valor, chave);
   if (tipo !== "texto" || !valor) return null;
   const s = valor;
-  if (ISO.test(s)) {
-    const ms = Date.parse(s.replace(" ", "T"));
-    return Number.isFinite(ms) ? { tipo: "data", ms } : null;
+  const iso = ISO.exec(s);
+  if (iso) {
+    const ms = dataIso(iso);
+    return ms === null ? null : { tipo: "data", ms };
   }
   if (HEX.test(s) || (RGB.test(s) && canaisValidos(s))) return { tipo: "cor", css: s };
   if (/^https?:\/\//i.test(s)) return url(s);
@@ -65,13 +70,30 @@ export function detectar(tipo: string, valor: string, chave: string | null): Int
   return jsonNoTexto(s);
 }
 
-/** Pista pela prévia cortada da árvore (sem as aspas finais, que ficaram para trás). */
-export function pista(inicio: string): Pista | null {
-  if (inicio.startsWith("data:image/") || MAGICA.some(([m]) => inicio.startsWith(m))) return "imagem";
-  if (/^eyJ[A-Za-z0-9_-]+\.eyJ/.test(inicio)) return "jwt";
-  if (/^\s*[{[]/.test(inicio)) return "json";
-  if (/^https?:\/\//i.test(inicio)) return "url";
+/**
+ * Pista pela prévia cortada da árvore (o começo do texto, sem as aspas finais), conferida no que a
+ * prévia já mostra: cada caractere no alfabeto do tipo, cabeçalho do JWT decodificado, começo de
+ * URL válido. `bytes` é o tamanho do valor no arquivo, para não prometer o que passa dos tetos.
+ * JSON não dá para confirmar pelo começo (`[2026-11-23] log` também começa com `[`): a pista
+ * "json" só diz ao painel que vale buscar o valor inteiro, e o selo da árvore não a mostra.
+ */
+export function pista(inicio: string, bytes: number): Pista | null {
+  if (bytes <= MAX_BASE64 && (DATA_URI_INICIO.test(inicio) || (MAGICA.some(([m]) => inicio.startsWith(m)) && B64_INICIO.test(inicio))))
+    return "imagem";
+  const jwt = /^(eyJ[A-Za-z0-9_-]+)\.eyJ[A-Za-z0-9_-]*$/.exec(inicio);
+  if (jwt && bytes <= MAX_BASE64 && /"alg"\s*:/.test(jsonDe(base64url(jwt[1])) ?? "")) return "jwt";
+  if (bytes <= MAX_URL && /^https?:\/\//i.test(inicio) && !/[\s\p{Cc}"\\]/u.test(inicio) && URL.canParse(inicio)) return "url";
+  if (bytes <= MAX_JSON_TEXTO && /^\s*[{[]/.test(inicio)) return "json";
   return null;
+}
+
+/** Host para mostrar no selo de link (vazio se não der). */
+export function hostDe(u: string): string {
+  try {
+    return new URL(u).host;
+  } catch {
+    return "";
+  }
 }
 
 function epoca(cru: string, chave: string | null): Inteligente | null {
@@ -79,8 +101,25 @@ function epoca(cru: string, chave: string | null): Inteligente | null {
   const emMs = cru.length === 13;
   const ms = emMs ? Number(cru) : Number(cru) * 1000;
   if (ms < EPOCA_MIN || ms >= EPOCA_MAX) return null;
-  if (!emMs && !PISTA_DATA.test(chave ?? "")) return null;
+  if (!chave || !(PISTA_SNAKE.test(chave) || PISTA_CAMEL.test(chave))) return null;
   return { tipo: "epoca", ms, unidade: emMs ? "ms" : "s" };
+}
+
+/**
+ * Instante da data ISO, conferindo cada componente (2024-02-30 e 25:00 não passam) sem depender
+ * do `Date.parse`. Sem fuso, é hora local, também na forma só com a data.
+ */
+function dataIso(m: RegExpExecArray): number | null {
+  const [a, me, d, h = 0, mi = 0, se = 0] = [1, 2, 3, 4, 5, 6].map((i) => (m[i] === undefined ? undefined : Number(m[i])));
+  const ms = m[7] ? Number(m[7].slice(0, 3).padEnd(3, "0")) : 0;
+  if (me! < 1 || me! > 12 || h! > 23 || mi! > 59 || se! > 59) return null;
+  const dia = new Date(Date.UTC(a!, me! - 1, d!));
+  if (dia.getUTCFullYear() !== a || dia.getUTCMonth() !== me! - 1 || dia.getUTCDate() !== d) return null;
+  if (!m[8]) return new Date(a!, me! - 1, d!, h, mi, se, ms).getTime();
+  const [oh, om] = [Number(m[10] ?? 0), Number(m[11] ?? 0)];
+  if (oh > 23 || om > 59) return null;
+  const desvio = m[8] === "Z" ? 0 : (m[9] === "-" ? -1 : 1) * (oh * 60 + om) * 6e4;
+  return Date.UTC(a!, me! - 1, d!, h, mi, se, ms) - desvio;
 }
 
 function canaisValidos(s: string): boolean {
@@ -149,23 +188,32 @@ function jsonNoTexto(s: string): Inteligente | null {
  * de `MAX_NIVEL` níveis.
  */
 export function reindentar(s: string, passo = "  "): string | null {
-  let out = "";
+  // Pedaços num array (e não `out +=` com regex no fim): vazio só desfaz o último pedaço, e o
+  // custo fica linear no tamanho do texto.
+  const out: string[] = [];
   let nivel = 0;
+  let abriu = false; // o último pedaço é a quebra logo depois de `{`/`[`
   const quebra = () => "\n" + passo.repeat(nivel);
   for (const [tok] of s.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\],:]|[^\s{}[\],:"]+|\s+/g)) {
     const c = tok[0];
+    if (/^\s/.test(c)) continue;
     if (c === "{" || c === "[") {
       if (++nivel > MAX_NIVEL) return null;
-      out += tok + quebra();
-    } else if (c === "}" || c === "]") {
+      out.push(tok, quebra());
+      abriu = true;
+      continue;
+    }
+    if (c === "}" || c === "]") {
       nivel--;
-      // Vazio: `{` seguido de `}` fica `{}`.
-      out = /[{[]\n\s*$/.test(out) ? out.replace(/\n\s*$/, "") + tok : out + quebra() + tok;
-    } else if (c === ",") out += "," + quebra();
-    else if (c === ":") out += ": ";
-    else if (!/^\s/.test(c)) out += tok;
+      if (abriu) out.pop(); // vazio: `{` seguido de `}` fica `{}`
+      else out.push(quebra());
+      out.push(tok);
+    } else if (c === ",") out.push(",", quebra());
+    else if (c === ":") out.push(": ");
+    else out.push(tok);
+    abriu = false;
   }
-  return out;
+  return out.join("");
 }
 
 const UNIDADES: [Intl.RelativeTimeFormatUnit, number][] = [

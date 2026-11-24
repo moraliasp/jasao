@@ -109,6 +109,7 @@ const pt = {
     jsonCurto: "JSON no texto",
     itens: (n: number) => `${n} ${n === 1 ? "item" : "itens"}`,
     erroLink: (m: string) => `Não deu para abrir o link: ${m}`,
+    naoLink: "O valor inteiro não é um link http(s): nada foi aberto",
   },
   copiado: "Copiado",
   copiar: {
@@ -332,6 +333,7 @@ const en: Textos = {
     jsonCurto: "JSON in text",
     itens: (n: number) => `${n} ${n === 1 ? "item" : "items"}`,
     erroLink: (m: string) => `Could not open the link: ${m}`,
+    naoLink: "The full value is not an http(s) link: nothing was opened",
   },
   copiado: "Copied",
   copiar: {
