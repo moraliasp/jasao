@@ -51,7 +51,7 @@ fn main() -> ExitCode {
             }
         },
         ["consultar", resto @ ..] => match opcoes_consulta(resto) {
-            Some(op) => consultar(op, &mut tela()),
+            Some(op) => consultar(op, &mut tela(), &mut erro()),
             None => {
                 eprintln!("{USO}");
                 return ExitCode::from(2);
@@ -139,20 +139,19 @@ fn tela() -> Terminal<io::BufWriter<io::StdoutLock<'static>>> {
     }
 }
 
+/// O stderr, neutralizado se for terminal: os erros do jq citam valores do arquivo.
+fn erro() -> Terminal<io::StderrLock<'static>> {
+    let stderr = io::stderr();
+    Terminal {
+        neutralizar: stderr.is_terminal(),
+        out: stderr.lock(),
+    }
+}
+
 /// Controle que mexe no terminal, ou bidi/largura zero que engana quem lê.
 fn perigoso(c: char) -> bool {
     (c.is_control() && c != '\n' && c != '\t')
         || matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
-}
-
-/// `s` com controles e invisíveis trocados por `\u{..}` (para o stderr).
-fn neutro(s: &str) -> String {
-    let mut t = Terminal {
-        out: Vec::new(),
-        neutralizar: true,
-    };
-    let _ = t.write_all(s.as_bytes()); // Vec não falha
-    String::from_utf8_lossy(&t.out).into_owned()
 }
 
 impl<W: Write> Write for Terminal<W> {
@@ -307,7 +306,11 @@ fn opcoes_consulta<'a>(args: &[&'a str]) -> Option<OpcoesConsulta<'a>> {
 /// resultados, e filtro que não produz nada (`last(range(1e12))`, `def f: f; f`) nunca devolve.
 const FOLGA_TEMPO: Duration = Duration::from_secs(2);
 
-fn consultar(op: OpcoesConsulta, out: &mut Terminal<impl Write>) -> Resultado {
+fn consultar(
+    op: OpcoesConsulta,
+    out: &mut Terminal<impl Write>,
+    err: &mut Terminal<impl Write>,
+) -> Resultado {
     let consulta = Consulta::nova(op.filtro)?.com_tempo_max(op.tempo_max);
     let a = abrir(op.arquivo)?;
     if let Some(t) = op.tempo_max {
@@ -339,20 +342,17 @@ fn consultar(op: OpcoesConsulta, out: &mut Terminal<impl Write>) -> Resultado {
     }
     out.flush()?;
     for e in &resumo.primeiros_erros {
-        let motivo = if io::stderr().is_terminal() {
-            neutro(&e.motivo)
-        } else {
-            e.motivo.clone()
-        };
-        eprintln!("linha {}: {motivo}", e.linha + 1);
+        writeln!(err, "linha {}: {}", e.linha + 1, e.motivo)?;
     }
     if resumo.erros > resumo.primeiros_erros.len() as u64 {
-        eprintln!(
+        writeln!(
+            err,
             "… e mais {} erros",
             resumo.erros - resumo.primeiros_erros.len() as u64
-        );
+        )?;
     }
-    eprintln!(
+    writeln!(
+        err,
         "{} resultados · {} erros · {} de {} linhas · {:.1} MB em {:.2?}",
         resumo.resultados,
         resumo.erros,
@@ -360,7 +360,8 @@ fn consultar(op: OpcoesConsulta, out: &mut Terminal<impl Write>) -> Resultado {
         resumo.total_linhas,
         a.bytes().len() as f64 / 1e6,
         t.elapsed()
-    );
+    )?;
+    err.flush()?;
     if resumo.tempo_esgotado {
         return Err("tempo máximo esgotado; resultado parcial".into());
     }
@@ -627,8 +628,8 @@ mod testes {
             assert_eq!(perigoso(c), esperado, "U+{:04X}", c as u32);
             if esperado {
                 assert_eq!(
-                    neutro(&format!("a{c}b")),
-                    format!("a\\u{{{:x}}}b", c as u32)
+                    escrito(true, &[format!("a{c}b").as_bytes()]),
+                    format!("a\\u{{{:x}}}b", c as u32).as_bytes()
                 );
             }
         }
@@ -683,7 +684,16 @@ mod testes {
             documento: false,
             tempo_max: None,
         };
-        let con = no_terminal(|t| consultar(op, t));
+        let con = no_terminal(|t| {
+            consultar(
+                op,
+                t,
+                &mut Terminal {
+                    out: io::sink(),
+                    neutralizar: true,
+                },
+            )
+        });
         // C1 e bidi são válidos crus em texto JSON e saíam assim do jq.
         assert!(con.contains("\\u{9b}\\u{202e}"), "{con:?}");
         assert!(!con.chars().any(perigoso), "{con:?}");
@@ -701,6 +711,35 @@ mod testes {
         );
         let inf = no_terminal(|t| inferir(arquivo, false, t));
         assert!(!inf.chars().any(perigoso), "{inf:?}");
+    }
+
+    /// `inferir` imprime chaves do arquivo: chave com bidi e C1 sai neutralizada.
+    #[test]
+    fn inferir_neutraliza_chave() {
+        let f = Temporario::novo("inferir", "{\"a\u{202e}b\u{9b}\":1}\n");
+        let inf = no_terminal(|t| inferir(f.0.to_str().unwrap(), false, t));
+        assert!(inf.contains("a\\u{202e}b\\u{9b}"), "{inf:?}");
+        assert!(!inf.chars().any(perigoso), "{inf:?}");
+    }
+
+    /// O erro do jq cita o valor do arquivo: no stderr de terminal, sai neutralizado.
+    #[test]
+    fn erro_da_consulta_neutralizado() {
+        let f = Temporario::novo("erro-jq", HOSTIL);
+        let op = OpcoesConsulta {
+            filtro: "error(.k)",
+            arquivo: f.0.to_str().unwrap(),
+            documento: false,
+            tempo_max: None,
+        };
+        let mut err = Terminal {
+            out: Vec::new(),
+            neutralizar: true,
+        };
+        no_terminal(|t| consultar(op, t, &mut err));
+        let s = String::from_utf8(err.out).unwrap();
+        assert!(s.contains("\\u{9b}\\u{202e} ok"), "{s:?}");
+        assert!(!s.chars().any(perigoso), "{s:?}");
     }
 
     #[test]

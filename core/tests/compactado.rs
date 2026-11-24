@@ -164,7 +164,7 @@ fn cancelar_apaga_o_parcial() {
     let e = ArquivoLinhas::abrir_com(&p, &op)
         .err()
         .expect("não cancelou");
-    assert_eq!(e.kind(), ErrorKind::Interrupted);
+    assert!(nucleo::compactado::cancelada(&e), "{e}");
     assert_eq!(vistos.get(), 1);
     assert!(c.no_cache().is_empty(), "{:?}", c.no_cache());
 
@@ -178,6 +178,33 @@ fn cancelar_apaga_o_parcial() {
     assert_eq!(abrir(&p, &op).bytes(), dados);
     let (l, t) = ultimo.get();
     assert_eq!(l, t);
+}
+
+/// Cancelada antes de começar (o Cancelar chegou antes do `abrir`): falha na hora. O erro de
+/// cancelamento era `Interrupted`, que o gzip relê para sempre no cabeçalho.
+#[test]
+fn cancelada_antes_de_comecar_nao_trava() {
+    for (nome, bytes) in [("a.jsonl.gz", gz(JSONL)), ("a.jsonl.zst", zst(JSONL))] {
+        let c = Caso::novo();
+        let p = c.escrever(nome, &bytes);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let parar = AtomicBool::new(true);
+            let op = Opcoes {
+                cancelar: Some(&parar),
+                ..c.op()
+            };
+            let e = ArquivoLinhas::abrir_com(&p, &op)
+                .err()
+                .expect("não cancelou");
+            let _ = tx.send((nucleo::compactado::cancelada(&e), c.no_cache()));
+        });
+        let (cancelada, sobra) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("{nome}: travou com a abertura já cancelada"));
+        assert!(cancelada, "{nome}");
+        assert!(sobra.is_empty(), "{nome}: {sobra:?}");
+    }
 }
 
 #[test]
@@ -290,4 +317,46 @@ fn cache_so_do_dono() {
     for a in arquivos {
         assert_eq!(modo(&a), 0o600, "{}", a.display());
     }
+}
+
+/// A reserva cresce com o que sai, ainda durante a escrita (ver `Reserva` em `para_cache`): o
+/// cache velho sai antes de o descompactado terminar, não só na limpeza final.
+#[test]
+fn reserva_despeja_durante_a_escrita() {
+    let c = Caso::novo();
+    fs::create_dir_all(c.cache()).unwrap();
+    let velho = c.cache().join("0000000000000000.dados");
+    fs::write(&velho, vec![0u8; 1 << 20]).unwrap();
+    // zstd em fluxo não declara o tamanho: a estimativa inicial é o compactado (minúsculo).
+    let dados = repetido(4 << 20);
+    let p = c.escrever("s.zst", &zst(&dados));
+    // O último aviso de progresso vem depois da última escrita e antes da limpeza final.
+    let velho_no_fim = std::cell::Cell::new(None);
+    let progresso = |_: u64, _: u64| velho_no_fim.set(Some(velho.exists()));
+    let op = Opcoes {
+        teto_cache: 3 << 20,
+        progresso: Some(&progresso),
+        ..c.op()
+    };
+    assert_eq!(abrir(&p, &op).bytes(), dados);
+    assert_eq!(
+        velho_no_fim.get(),
+        Some(false),
+        "o cache velho só saiu no fim"
+    );
+}
+
+/// Link pré-plantado no lugar da pasta do cache: recusa, e nada vai para o alvo.
+#[cfg(unix)]
+#[test]
+fn pasta_do_cache_link_e_recusada() {
+    let c = Caso::novo();
+    let alvo = c.pasta.path().join("alvo");
+    fs::create_dir(&alvo).unwrap();
+    std::os::unix::fs::symlink(&alvo, c.cache()).unwrap();
+    let e = ArquivoLinhas::abrir_com(c.escrever("p.gz", &gz(JSONL)), &c.op())
+        .err()
+        .expect("abriu com a pasta do cache trocada por link");
+    assert!(e.to_string().contains("link simbólico"), "{e}");
+    assert_eq!(fs::read_dir(&alvo).unwrap().count(), 0);
 }

@@ -346,3 +346,16 @@ const en: Textos = {
 
 export type Motivo = keyof Textos["motivos"];
 export const t: Textos = navigator.language.toLowerCase().startsWith("pt") ? pt : en;
+
+/** Texto dos códigos de erro que o Rust devolve (`jasao:…`), ao abrir e na consulta (o filho
+ * abre o arquivo de novo); outro erro passa como veio. */
+export function erroDoRust(erro: unknown, x: Textos = t): string {
+  const e = String(erro);
+  const textos: Record<string, string> = {
+    "jasao:cancelada": x.compactado.cancelada,
+    "jasao:razao": x.compactado.recusada,
+    "jasao:teto": x.compactado.teto,
+    "jasao:negado": x.negado,
+  };
+  return textos[e] ?? e;
+}

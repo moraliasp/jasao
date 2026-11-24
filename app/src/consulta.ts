@@ -3,7 +3,7 @@
 // o original e apaga o temporário (`fechar_consulta`). Cada documento (aba) tem a sua consulta.
 import { listen } from "@tauri-apps/api/event";
 import { chamar } from "./doc";
-import { t } from "./i18n";
+import { erroDoRust, t } from "./i18n";
 import { indiceDe } from "./texto";
 
 interface Andamento {
@@ -80,7 +80,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     } catch (x) {
       e.rodando = false;
       const f = (x as { falhas?: Falha[]; mensagem?: string }).falhas?.[0];
-      if (!f) return mostrar(e, `${t.erro}: ${(x as { mensagem?: string }).mensagem ?? x}`, true);
+      if (!f) return mostrar(e, `${t.erro}: ${erroDoRust((x as { mensagem?: string }).mensagem ?? x)}`, true);
       mostrar(e, t.consulta.sintaxe(f.linha, f.coluna, f.mensagem), true);
       if (e !== s) return;
       const i = indiceDe(campo.value, f.linha, f.coluna);
@@ -93,7 +93,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
 
   async function fim(e: Estado, p: Andamento): Promise<void> {
     e.rodando = false;
-    if (p.falha) return mostrar(e, `${t.erro}: ${p.falha}`, true);
+    if (p.falha) return mostrar(e, `${t.erro}: ${erroDoRust(p.falha)}`, true);
     if (p.cancelado || !p.arquivo) return mostrar(e, t.consulta.cancelada);
     e.original ??= e.fonte;
     e.resultado = p.arquivo;
