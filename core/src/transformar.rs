@@ -149,8 +149,15 @@ pub fn criterio_jq(criterio: &Criterio) -> Result<String, String> {
         Criterio::Comum(segs, comum) => {
             // shortcut: o jq compara o valor decodificado, então grafias diferentes do mesmo
             // valor (1.5 e 1.50, "é" e "\u00e9") passam juntas aqui e ficam separadas na Tabela.
-            let v: serde_json::Value = serde_json::from_str(comum)
-                .map_err(|_| "valor cortado: salve pela consulta jq".to_owned())?;
+            let v: serde_json::Value = serde_json::from_str(comum).map_err(|_| {
+                if comum.ends_with('…') {
+                    "valor cortado: salve pela consulta jq"
+                } else {
+                    // Ex.: 1e999, que nenhum f64 representa.
+                    "número fora do alcance do jq: salve pela consulta jq"
+                }
+                .to_owned()
+            })?;
             format!("select(any({}; . == {v}))", caminho_jq(segs))
         }
         Criterio::Faixa(segs, negativo, expoente) => {
@@ -705,24 +712,47 @@ mod testes {
         assert_eq!(so(Criterio::Faixa(&n, true, Some(-1))), [4]);
         assert_eq!(so(Criterio::Faixa(&n, false, None)), [5]);
         assert_eq!(so(Criterio::Faixa(&n, false, Some(30))), [9]); // preso em 30
-        // Borda por ulp (1 abaixo de 1e3): o jq e o filtro da Tabela põem na mesma faixa.
-        let borda = b"{\"n\":999.9999999999999}\n";
-        for e in [2, 3] {
-            let jq = jsonl(
-                borda,
-                Fonte::filtro(&Criterio::Faixa(&n, false, Some(e))).unwrap(),
-                &t,
-            );
-            let rust = crate::perfil::na_faixa(b"999.9999999999999", false, Some(e));
-            assert_eq!(!jq.is_empty(), rust, "faixa 1e{e}");
+        // jq e o filtro da Tabela concordam em cada faixa: bordas por ulp, pisos e tetos (±30).
+        let vals = [
+            "999.9999999999999",
+            "1000",
+            "1e-35",
+            "5e-31",
+            "1e-30",
+            "9.999999999999999e-31",
+            "1e-29",
+            "1e35",
+            "1e30",
+            "-1e-35",
+            "1e-400",
+            "-0.0",
+            "4.9e-324",
+            "-1e-30",
+            "-999.9999999999999",
+        ];
+        for v in vals {
+            let linha = format!("{{\"n\":{v}}}\n");
+            for neg in [false, true] {
+                for e in [
+                    None,
+                    Some(-30),
+                    Some(-29),
+                    Some(2),
+                    Some(3),
+                    Some(29),
+                    Some(30),
+                ] {
+                    let c = Criterio::Faixa(&n, neg, e);
+                    let jq = !jsonl(linha.as_bytes(), Fonte::filtro(&c).unwrap(), &t).is_empty();
+                    let rust = crate::perfil::na_faixa(v.as_bytes(), neg, e);
+                    assert_eq!(jq, rust, "{v} na faixa neg={neg} {e:?}");
+                }
+            }
         }
-        assert!(crate::perfil::na_faixa(
-            b"999.9999999999999",
-            false,
-            Some(2)
-        ));
         // Valor cortado pelo perfil não tem tradução fiel: recusa em vez de salvar outro conjunto.
-        assert!(Fonte::filtro(&Criterio::Comum(&n, "\"abc…")).is_err());
+        let erro = |c| Fonte::filtro(&Criterio::Comum(&n, c)).unwrap_err();
+        assert!(erro("\"abc…").starts_with("valor cortado"));
+        assert!(erro("1e999").starts_with("número fora do alcance"));
     }
 
     /// Chave e valor com `"` e `\(` (interpolação do jq) entram como texto JSON, não como código.
