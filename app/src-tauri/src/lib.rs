@@ -1399,6 +1399,38 @@ fn valor(id: u32, v: usize, estado: State<'_, Estado>) -> Result<Option<String>,
     }
 }
 
+/// Abre `url` no navegador do sistema, nunca dentro do app. A interface só chama no clique ou no
+/// Enter do link e manda o `href` normalizado; aqui se recusa o que não for http(s) em ASCII
+/// visível, então nada vira argumento de outro programa nem de outro esquema (`file:`, `javascript:`).
+#[tauri::command]
+fn abrir_link(url: String) -> Result<(), String> {
+    if !link_valido(&url) {
+        return Err("link recusado: só http:// ou https://".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut c = std::process::Command::new("open");
+    #[cfg(windows)]
+    let mut c = std::process::Command::new("rundll32");
+    #[cfg(windows)]
+    c.arg("url.dll,FileProtocolHandler");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut c = std::process::Command::new("xdg-open");
+    let mut filho = c.arg(&url).spawn().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || filho.wait()); // recolhe o processo, sem zumbi
+    Ok(())
+}
+
+fn link_valido(url: &str) -> bool {
+    let resto = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    url.len() <= 2048
+        && resto.is_some_and(|r| !r.is_empty() && !r.starts_with('/'))
+        && url
+            .bytes()
+            .all(|b| (0x21..0x7f).contains(&b) && !b"\"<>\\^`{|}".contains(&b))
+}
+
 /// Roda o filtro jq `filtro` sobre `caminho` num processo filho (ver `filho`) e grava os
 /// resultados (JSON compacto, um por linha) num JSONL temporário, avisado no evento `consulta`.
 /// JSON único ou em várias linhas vira um documento; o resto, JSONL linha a linha. Assíncrono e
@@ -1636,6 +1668,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             regua_busca,
             caminhos,
             valor,
+            abrir_link,
             consultar,
             fechar_consulta,
             exportar,
@@ -1811,6 +1844,30 @@ pub fn run() {
 
 #[cfg(test)]
 mod testes {
+    #[test]
+    fn link_so_http_em_ascii() {
+        use super::link_valido;
+        assert!(link_valido("https://exemplo.test/a?b=1#c"));
+        assert!(link_valido("http://xn--exmplo-4of.test/%E2%80%AE"));
+        for u in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://",
+            "https:///x",
+            "https://a b.test",
+            "https://a.test/\"x",
+            "https://á.test",
+            "-a https://x.test",
+            "https://x.test\n",
+        ] {
+            assert!(!link_valido(u), "{u}");
+        }
+        assert!(!link_valido(&format!(
+            "https://x.test/{}",
+            "a".repeat(2048)
+        )));
+    }
+
     use super::*;
     use serde_json::{Value, json};
     use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
