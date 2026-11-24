@@ -527,3 +527,73 @@ pub fn schema_da_entrada_zod(r: &Resumo, op: Opcoes) -> String {
         },
     )
 }
+
+// ---------------------------------------------------------------------------------------------
+// Tipos TypeScript.
+
+/// Tipo TS do registro como está no arquivo: texto numérico continua `string` ("tratar como
+/// número" é conversão, e tipo não converte), inteiro e decimal viram `number`.
+fn ts_forma(f: &Forma, nivel: usize) -> String {
+    if f.alts.is_empty() {
+        return if f.nulo { "null" } else { "unknown" }.into();
+    }
+    let mut alts: Vec<String> = Vec::new();
+    for a in &f.alts {
+        let t = match a {
+            Alt::Booleano => "boolean".into(),
+            Alt::Inteiro { .. } | Alt::Numero => "number".into(),
+            Alt::Texto | Alt::TextoNumero => "string".into(),
+            Alt::Literal(l) => l.clone(),
+            Alt::Objeto(c) => ts_objeto(c, nivel),
+            Alt::Mapa(m) => format!("Record<string, {}>", ts_forma(m, nivel)),
+            Alt::Lista(e) => format!("Array<{}>", ts_forma(e, nivel)),
+            Alt::Uniao(_, vs) => {
+                let pad = "  ".repeat(nivel + 1);
+                vs.iter()
+                    .map(|c| format!("\n{pad}| {}", ts_objeto(c, nivel + 1)))
+                    .collect()
+            }
+        };
+        if !alts.contains(&t) {
+            alts.push(t);
+        }
+    }
+    if f.nulo {
+        alts.push("null".into());
+    }
+    alts.join(" | ")
+}
+
+fn ts_objeto(c: &[Campo], nivel: usize) -> String {
+    if c.is_empty() {
+        // Como o `z.object({})`: qualquer objeto.
+        return "Record<string, unknown>".into();
+    }
+    let pad = "  ".repeat(nivel + 1);
+    let corpo: String = c
+        .iter()
+        .map(|c| {
+            format!(
+                "{pad}{}{}: {};\n",
+                chave_ts(&c.nome),
+                if c.opcional { "?" } else { "" },
+                ts_forma(&c.forma, nivel + 1)
+            )
+        })
+        .collect();
+    format!("{{\n{corpo}{}}}", "  ".repeat(nivel))
+}
+
+/// Declaração TypeScript (`.d.ts`) do registro. União discriminada vira união de objetos com o
+/// discriminador literal; campo que falta em algum registro vira `?`. Só `op.literal` vale; quem
+/// confere o arquivo contra os tipos é o `schema_da_entrada_zod`.
+pub fn tipos(r: &Resumo, op: Opcoes) -> String {
+    let op = Opcoes {
+        numero: false,
+        ..op
+    };
+    let t = ts_forma(&modelo(r, op), 0);
+    // A união começa com quebra de linha (`\n  | {`): sem espaço antes.
+    let sep = if t.starts_with('\n') { "" } else { " " };
+    format!("export type Registro ={sep}{t};\n")
+}

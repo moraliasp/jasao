@@ -19,6 +19,14 @@ pub const MAX_FALHAS: usize = 20;
 const MAX_MOTIVO: usize = 300;
 /// Registros de JSON único conferidos por lote paralelo.
 const LOTE_UNICO: usize = 4096;
+/// Maior schema aceito (o de fora é entrada não confiável; o gerado fica muito abaixo).
+pub const MAX_SCHEMA: usize = 1 << 20;
+/// Maior aninhamento de objeto/lista no schema.
+pub const MAX_PROFUNDIDADE: usize = 64;
+/// Mais `$ref` que isto no schema é recusado: o `jsonschema` segue uma cadeia de `$ref` por
+/// recursão, e numa thread de 2 MiB a cadeia de 3 mil estoura a pilha em debug (2 mil passa;
+/// em release, 4 mil passa). Margem de 2× sobre o debug.
+pub const MAX_REFS: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Falha {
@@ -112,6 +120,107 @@ fn motivo(e: &jsonschema::ValidationError) -> String {
     }
 }
 
+/// Lê o schema de um arquivo sem trazer mais que `MAX_SCHEMA + 1` bytes para a memória: o
+/// excesso fica para `compilar` recusar. O erro cita o caminho.
+pub fn ler_schema(caminho: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    let erro = |e: &dyn std::fmt::Display| format!("{}: {e}", caminho.display());
+    let mut b = Vec::new();
+    std::fs::File::open(caminho)
+        .map_err(|e| erro(&e))?
+        .take(MAX_SCHEMA as u64 + 1)
+        .read_to_end(&mut b)
+        .map_err(|e| erro(&e))?;
+    String::from_utf8(b).map_err(|_| erro(&"não é UTF-8"))
+}
+
+/// Compila um schema tratado como não confiável: no máximo `MAX_SCHEMA` bytes e
+/// `MAX_PROFUNDIDADE` níveis; `$ref` só local (`#...`), nada buscado na rede nem no disco;
+/// `pattern` no motor `regex` (tempo linear, sem retrocesso). Ver `docs/decisoes.md`,
+/// "Validar contra schema de fora".
+pub fn compilar(schema: &str) -> Result<jsonschema::Validator, String> {
+    if schema.len() > MAX_SCHEMA {
+        return Err(format!(
+            "schema com {} bytes passa do limite de {MAX_SCHEMA}",
+            schema.len()
+        ));
+    }
+    let s: serde_json::Value = serde_json::from_str(schema).map_err(|e| e.to_string())?;
+    let mut refs = 0;
+    conferir_schema(&s, 1, false, &mut refs)?;
+    jsonschema::options()
+        .offline()
+        .with_pattern_options(jsonschema::PatternOptions::regex())
+        .build(&s)
+        .map_err(|e| e.to_string())
+}
+
+/// Profundidade e referências. O `serde_json` já para em 128 níveis, então a recursão aqui é
+/// limitada. `nomes`: objeto de nome → schema (`properties` e afins), onde a chave é dado
+/// (um campo pode se chamar `$ref`).
+fn conferir_schema(
+    v: &serde_json::Value,
+    nivel: usize,
+    nomes: bool,
+    refs: &mut usize,
+) -> Result<(), String> {
+    use serde_json::Value::{Array, Object};
+    if nivel > MAX_PROFUNDIDADE {
+        return Err(format!(
+            "schema com mais de {MAX_PROFUNDIDADE} níveis de aninhamento"
+        ));
+    }
+    match v {
+        Object(m) => {
+            for (k, f) in m {
+                // shortcut: `$ref` relativo a um `$id` embutido também é recusado; liberar se
+                // aparecer schema de fora legítimo que dependa disso.
+                if !nomes
+                    && matches!(k.as_str(), "$ref" | "$dynamicRef" | "$recursiveRef")
+                    && !f.as_str().is_some_and(|r| r.starts_with('#'))
+                {
+                    return Err(format!(
+                        "{k} fora do próprio schema é proibido (nada é buscado): {}",
+                        // Texto vai cru para `aspas` (que põe as aspas); outro valor, como JSON.
+                        crate::exportar::aspas(
+                            &f.as_str()
+                                .map_or_else(|| f.to_string(), str::to_owned)
+                                .chars()
+                                .take(120)
+                                .collect::<String>()
+                        )
+                    ));
+                }
+                if !nomes && matches!(k.as_str(), "$ref" | "$dynamicRef" | "$recursiveRef") {
+                    *refs += 1;
+                    if *refs > MAX_REFS {
+                        return Err(format!("schema com mais de {MAX_REFS} $ref"));
+                    }
+                }
+                // Valor de dado, não schema: um `{"$ref": ...}` ali não é referência.
+                if !nomes && matches!(k.as_str(), "const" | "enum" | "default" | "examples") {
+                    continue;
+                }
+                let filhos_sao_nomes = !nomes
+                    && matches!(
+                        k.as_str(),
+                        "properties"
+                            | "patternProperties"
+                            | "$defs"
+                            | "definitions"
+                            | "dependentSchemas"
+                    );
+                conferir_schema(f, nivel + 1, filhos_sao_nomes, refs)?;
+            }
+            Ok(())
+        }
+        Array(a) => a
+            .iter()
+            .try_for_each(|f| conferir_schema(f, nivel + 1, false, refs)),
+        _ => Ok(()),
+    }
+}
+
 /// Valida cada registro de `dados` (lido como `entrada`, a mesma da inferência) contra
 /// `schema`. Progresso e cancelamento como em `estrutura::inferir`. `Err` se o schema não
 /// compilar.
@@ -122,8 +231,7 @@ pub fn validar(
     cancelar: &AtomicBool,
     mut ao_progresso: impl FnMut(Progresso),
 ) -> Result<Validacao, String> {
-    let s: serde_json::Value = serde_json::from_str(schema).map_err(|e| e.to_string())?;
-    let v = jsonschema::draft202012::new(&s).map_err(|e| e.to_string())?;
+    let v = compilar(schema)?;
     let base = if dados.starts_with(BOM) { BOM.len() } else { 0 };
     let corpo = &dados[base..];
     let total = (memchr_iter(b'\n', corpo).count()

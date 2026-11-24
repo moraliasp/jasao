@@ -375,7 +375,7 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Conferido no app (ponte HTTP + navegador, dados fictícios gerados na hora):** união discriminada, número como texto, campo opcional, `null` e linha quebrada (3.000 registros: 2.999 passam, 1 linha inválida à parte); chaves hostis escapadas na tela, com "Travar no valor"; pt-BR, inglês e tema escuro; Copiar (texto igual ao mostrado); Esc. Arquivo de 1 GB (6.306.549 registros, build release, arquivo em cache, 18 núcleos): validação de 1,0 a 2,9 s quando tudo passa (Zod, Schema e literal) e 2,8 a 3,3 s quando reprova; CLI 1,3 a 2,7 s.
 
-**Pendências:** formatos (`date-time`, `email`, `uuid`) não são inferidos; uniões discriminadas só no topo (objetos aninhados com `tipo` saem como objeto com campos opcionais); `enum` para campo de poucos valores; tipos TS puros, Pydantic e afins ficam fora desta fase.
+**Pendências:** formatos (`date-time`, `email`, `uuid`) não são inferidos; uniões discriminadas só no topo (objetos aninhados com `tipo` saem como objeto com campos opcionais); `enum` para campo de poucos valores; Pydantic e afins ficam fora desta fase (tipos TS entraram em 24/11/2026, seção abaixo).
 
 ## Valores inteligentes (Fase 1, 23/11/2026)
 
@@ -478,3 +478,22 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 - A régua não aparece no modo Tabela (o registro selecionado não é posição no arquivo depois de ordenar).
 - Fixar/ocultar/ordem valem por documento na sessão; não são guardados.
 
+## Tipos TypeScript e validar contra schema de fora (Fase 4, 24/11/2026)
+
+**Tipos TS:** `exportar::tipos` imprime a mesma `Forma` do Zod e do Schema como `export type Registro = …`. União discriminada vira união de objetos com o discriminador literal (`| { tipo: "evento"; … }`); campo opcional, `campo?:`; nullable, `| null`; mapa, `Record<string, T>`; lista, `Array<T>`; objeto sem campo visto, `Record<string, unknown>`. Chaves e literais passam pelo mesmo `exportar::aspas`; identificador ASCII sai sem aspas e `__proto__` sai como `["__proto__"]`. **"Tratar como número" não se aplica aos tipos:** o tipo descreve o JSON como está, e tipo não converte; texto numérico continua `string` (a interface desliga a opção). A autovalidação usa `schema_da_entrada_zod`, que aceita exatamente o que o tipo descreve. Prova: dourados `app/tests/dourados/*.d.ts` e `app/tests/tipos.test.ts`, que roda o `tsc` do projeto em modo estrito: todo registro do próprio arquivo precisa caber no tipo, e casos com `@ts-expect-error` (discriminador errado, campo obrigatório faltando, tipo errado, valor travado, texto numérico) precisam ser recusados. Trocar `obs?` por `obs`, o literal do discriminador por `string`, `valor: string` por `number` ou tirar o `| null` reprova o teste.
+
+**Validar contra a estrutura ou contra um schema de fora.** "Estrutura salva" é um JSON Schema: o que `exportar --schema` grava (`--schema`) ou a estrutura inferida de um arquivo de referência (`--como`). CLI: `jasao validar <arquivo> --schema <schema.json> | --como <referência> [--literal]`. Saída: uma linha por falha (`linha N: caminho: motivo`, as 20 primeiras, neutralizadas no terminal) e o resumo no stderr. **Códigos de saída para CI:** 0 tudo passa; 1 algum registro falha ou alguma linha não é JSON; 2 uso errado; 3 não deu para validar (schema recusado, arquivo que não abre). Na interface (vista Exportar): "Validar outro arquivo…" valida um arquivo escolhido contra a estrutura do documento com as opções atuais, e "Validar com schema de fora…" valida o documento contra um schema escolhido. Os dois diálogos são do backend (como `escolher`), a webview não manda caminho; o resultado volta pelo mesmo evento `validacao` com geração, cancelar e Esc. Schema recusado aparece no status como erro.
+
+**Schema de fora é entrada não confiável.** `validar::compilar` é o único caminho para compilar schema (o gerado também passa por ele):
+- **Tamanho:** até 1 MiB (`MAX_SCHEMA`); `ler_schema` não lê mais que 1 MiB + 1 byte do disco.
+- **Profundidade:** até 64 níveis de objeto/lista (`MAX_PROFUNDIDADE`), conferida numa varredura própria antes do `jsonschema`. O `serde_json` já para em 128.
+- **`$ref` só local:** `$ref`, `$dynamicRef` e `$recursiveRef` precisam começar com `#`. URL (`https:`, `http:`, `file:`, `//`) e caminho relativo são recusados com mensagem, e além disso o `jsonschema` roda em modo `offline()`. Nada é buscado na rede nem no disco. Um `$schema` desconhecido também é recusado (não é buscado). Nome de campo `$ref` dentro de `properties`/`$defs` e afins, e `$ref` dentro de `const`/`enum`/`default`/`examples`, não contam (são dados, não referências).
+- **Até 1024 `$ref`** (`MAX_REFS`). Uma cadeia de `$ref` estoura a pilha de 2 MiB das threads do rayon. Medido em debug: 2000 passam e 3000 estouram; release aguenta 4000. 1024 deixa margem de 2× no pior caso. `$ref` cíclico (`{"$ref":"#"}`, a↔b) não trava nem estoura.
+- **`pattern` no motor `regex`** (`PatternOptions::regex()`): tempo linear, sem retrocesso. Lookaround e backreference não compilam (schema recusado); `^(a+)+$` contra 5.000 `a` + `b` termina (o teste exige menos de 5 s).
+- **Atalho conhecido:** `$ref` relativo a um `$id` embutido (`{"$id":"https://x/a","$ref":"b"}`) é recusado mesmo sendo resolvível sem rede. Só vale aceitar se aparecer schema real que precise disso.
+
+**Sem dependência nova:** tudo com `jsonschema` 0.63 (já no projeto, sem features padrão), `serde_json` e o `tsc` que já é devDependency do `app`.
+
+**Provas:** `core/tests/exportar.rs` (ref remoto em https/http/file/relativo/`//` e dentro de `anyOf`; ref recursivo; fundo e grande demais; 20 mil `$ref` recusados e 1023 validando numa thread de 2 MiB; regex sem retrocesso; meta-schema desconhecido); testes da CLI (`opcoes_validar`, falha listada e neutralizada, `--como`, `--literal`, ref remoto recusado); `comandos_pelo_ipc` no app (formato `ts`, validar outro arquivo, schema de fora que reprova e schema hostil recusado).
+
+**Não conferido:** os dois botões novos da vista Exportar não foram abertos no app (o comando e o evento foram testados pelo IPC, os diálogos não); `jasao validar` em arquivo de 1 GB não foi medido.
