@@ -152,6 +152,12 @@ const diff = criarDiff(diffEl, {
   },
   avisar: (msg) => void (status.textContent = msg),
   erro: (e) => erroAoAbrir(e),
+  abrir: async (caminhos) => {
+    const docs: (number | null)[] = [];
+    for (const c of caminhos) docs.push((await abrirEmAba(c)) ? (lista.find((a) => a.arquivo === c)?.doc ?? null) : null);
+    return docs;
+  },
+  irParaDiff: () => trocarModo("diff"),
 });
 
 const busca = criarBusca($("busca") as HTMLFormElement, {
@@ -1463,6 +1469,12 @@ void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {
   const { abrir, recusados, pastas } = triar(p.paths, await invoke<boolean[]>("pastas", { caminhos: p.paths }));
   const nome = (c: string) => c.split(/[\\/]/).pop() ?? c;
   for (const c of abrir) await abrirEmAba(c);
+  // Uma pasta só, com um arquivo à mostra: linha do tempo dela na vista Diff.
+  const linha = pastas.length === 1 && !abrir.length && resumo ? pastas.pop()! : null;
+  if (linha) {
+    trocarModo("diff");
+    diff.linhaDoTempo(linha);
+  }
   const avisos = [
     recusados.length ? t.abasArquivos.recusados(recusados.map(nome).join(", ")) : "",
     pastas.length ? t.abasArquivos.pastas(pastas.map(nome).join(", ")) : "",

@@ -610,3 +610,25 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 **Seguir (arquivo vivo):** recusado para os formatos convertidos (`Vivo` confere `formatos::detectar`; teste `recusa_convertido`), porque a cópia seria dos bytes crus. O botão Seguir ainda aparece; ao clicar, a interface pausa com o motivo.
 
 **Limites conhecidos:** YAML/TOML/binários compactados (`.yaml.gz`) não abrem (compactado só JSON/JSONL; dá para somar depois encadeando as duas conversões). A mensagem de progresso do app ainda diz "descompactando" durante a conversão. Posição no erro do YAML é em caracteres, nos binários em bytes.
+
+## Linha do tempo de uma pasta (Fase 3, 24/11/2026)
+
+**O que é.** Uma pasta com versões datadas do mesmo arquivo (`export-2024-01-01.jsonl`, `export-2024-01-02.jsonl`…): o núcleo (`nucleo::linha_do_tempo`) lista as versões em ordem, infere a estrutura de cada uma e compara com a anterior que abriu, usando o mesmo diff de estrutura (quebra × compatível) da visão Diff. Na CLI: `jasao linha-do-tempo <pasta> [--json]`. No app: visão Diff, tipo "Linha do tempo", botão Pasta… (diálogo no Rust) ou soltar uma pasta na janela com um arquivo aberto; marcar duas versões e "Comparar os dois marcados" abre as duas em abas e mostra o diff de estrutura delas (a mais velha como antes). Histórico git fica fora (decisão 4 do plano).
+
+**Ordem.** Data no nome quando *todos* os nomes têm uma: `AAAA-MM-DD`, `AAAA_MM_DD`, `AAAA.MM.DD` ou `AAAAMMDD` (anos 1970–2100, dia validado pelo mês), com hora opcional `[T_- ]HH[:MM[:SS]]`, lida como UTC; dígito colado antes ou depois não conta (`120240101` não é data). Se algum nome não tem data, a pasta inteira vai pelo `mtime` (misturar as duas origens daria uma ordem que ninguém consegue conferir). Empate: pelo nome. A interface diz qual origem valeu.
+
+**A pasta é entrada não confiável.**
+- Só o nível da pasta (sem descer em subpastas), só arquivo comum com extensão que o app abre (a mesma lista de `abas.ts`), sem ocultos.
+- Link simbólico só entra se o alvo canônico mora dentro da pasta e é arquivo comum; link para fora conta como ignorado (teste no núcleo, na CLI e no IPC).
+- No app, a pasta precisa estar concedida (diálogo ou arraste). Pasta concedida não concede o que está dentro dela: o comando `linha_do_tempo` concede só as versões que listou, depois de passar nos tetos, para a interface abrir os dois pontos escolhidos. Teste de IPC: pasta não concedida é negada; acima do teto nenhum arquivo fica concedido; `notas.txt` e o link para fora continuam negados.
+
+**Tetos (`LIMITES`, cada um com teste no ponto de chamada real).**
+- 100 mil entradas lidas da pasta, de qualquer tipo: passar é erro, não lista parcial.
+- 500 versões: passar é erro antes de abrir qualquer arquivo (teste na CLI com 500 e 501, e no IPC com 501).
+- Prazo de 10 minutos para o percurso: estourou, o resultado sai parcial com aviso (`parada: "prazo"`). O prazo e o cancelamento (Esc, trocar de vista) valem entre versões e no meio de uma inferência (a cada ~1% dela); a abertura em si (descompactar, converter) só é interrompida pelo cancelamento, não pelo prazo.
+- 200 mudanças guardadas por versão; o resto só conta ("… e mais N").
+- Memória: só dois `Resumo` vivos (o anterior e o atual), não um por versão. O arquivo é aberto por `mmap`, como no resto do app.
+
+**Versão que não abre** (sem permissão, formato quebrado) vira um item "não abriu: …" e a seguinte compara com a última que abriu (o item diz "contra X" quando não é a vizinha).
+
+**Limites conhecidos.** Compactados e formatos convertidos passam pelo cache em disco, como ao abrir um a um: 500 `.gz` grandes ocupam o disco do cache. Soltar uma pasta sem arquivo aberto ainda só avisa (a visão Diff precisa de uma aba com documento). Entre listar e abrir há a mesma janela de troca de arquivo (TOCTOU) já registrada para os arquivos concedidos.

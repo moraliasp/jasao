@@ -28,8 +28,12 @@
 //!   diff --valores <antes> <depois> [--json] [--falha-em qualquer]
 //!                                         valores adicionados, removidos e alterados, registro N
 //!                                         contra registro N; mesmos códigos de saída
+//!   linha-do-tempo <pasta> [--json]       versões da pasta em ordem de data (no nome ou, se algum
+//!                                         nome não tem, mtime) e o diff de estrutura de cada uma
+//!                                         contra a anterior; até 500 arquivos, 10 min, 200
+//!                                         mudanças por versão; link para fora da pasta não entra
 //!
-//! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir` e `diff` trocam controles (C0
+//! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir`, `diff` e `linha-do-tempo` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
 //! hostil não manda sequência ESC/CSI/OSC ao terminal nem inverte o texto. O mesmo vale para os
 //! erros do jq no stderr, se ele for terminal. Redirecionada (arquivo, pipe), a saída é fiel byte
@@ -59,7 +63,8 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    diff <antes> <depois> [--json] [--falha-em quebra|qualquer]\n  \
                    diff --valores <antes> <depois> [--json] [--falha-em qualquer]\n\
                    \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
-                   \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
+                   \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)\n  \
+                   linha-do-tempo <pasta> [--json]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -97,6 +102,10 @@ fn main() -> ExitCode {
             }
         },
         ["inferir", arquivo] => inferir(arquivo, false, &mut tela()),
+        ["linha-do-tempo", pasta] => linha_do_tempo(pasta, false, &mut tela()),
+        ["linha-do-tempo", pasta, "--json"] | ["linha-do-tempo", "--json", pasta] => {
+            linha_do_tempo(pasta, true, &mut tela())
+        }
         ["inferir", arquivo, "--json"] | ["inferir", "--json", arquivo] => {
             inferir(arquivo, true, &mut tela())
         }
@@ -798,8 +807,121 @@ const DIFF_SEM_COMPARAR: u8 = 3;
 
 /// Código de saída: 0, 1 (`--falha-em` pegou) ou `DIFF_SEM_COMPARAR` (registro inválido com
 /// `--falha-em`: linhas ignoradas podem esconder uma quebra).
+/// Uma mudança do diff de estrutura no `--json`.
+fn mudanca_json(m: &nucleo::diff::Mudanca) -> String {
+    use nucleo::diff::Detalhe;
+    let detalhe = match &m.detalhe {
+        Detalhe::Nenhum => String::new(),
+        Detalhe::Tipos(x, y) => {
+            let l = |ts: &[nucleo::estrutura::Tipo]| {
+                ts.iter()
+                    .map(|t| format!("\"{}\"", t.nome()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            format!(r#","tipos":{{"antes":[{}],"depois":[{}]}}"#, l(x), l(y))
+        }
+        Detalhe::Variante(v) => format!(r#","variante":{}"#, texto_json(v)),
+    };
+    format!(
+        r#"{{"caminho":{},"regra":"{}","classe":"{}","antes":{{"n":{},"de":{}}},"depois":{{"n":{},"de":{}}}{detalhe}}}"#,
+        texto_json(&m.caminho),
+        m.regra.nome(),
+        m.regra.classe().nome(),
+        m.antes.n,
+        m.antes.de,
+        m.depois.n,
+        m.depois.de,
+    )
+}
+
+/// Linha do tempo da pasta: cada versão em ordem e o diff de estrutura contra a anterior.
+fn linha_do_tempo(pasta: &str, json: bool, out: &mut Terminal<impl Write>) -> Resultado {
+    use nucleo::linha_do_tempo::{LIMITES, Origem, Parada, data_texto, listar, percorrer};
+    let lista =
+        listar(std::path::Path::new(pasta), &LIMITES).map_err(|e| format!("{pasta}: {e}"))?;
+    let r = percorrer(
+        lista,
+        &LIMITES,
+        |c| abrir(&c.to_string_lossy()).map_err(|e| io::Error::other(e.to_string())),
+        &AtomicBool::new(false),
+        |_, _| {},
+    );
+    let origem = match r.origem {
+        Origem::Nome => "nome",
+        Origem::Mtime => "mtime",
+    };
+    let parada = match r.parada {
+        None => "null",
+        Some(Parada::Prazo) => r#""prazo""#,
+        Some(Parada::Cancelado) => r#""cancelado""#,
+    };
+    if json {
+        let itens: Vec<String> = r
+            .passos
+            .iter()
+            .map(|s| {
+                let ms: Vec<String> = s.mudancas.iter().map(mudanca_json).collect();
+                format!(
+                    r#"{{"nome":{},"data":"{}","registros":{},"invalidas":{},"erro":{},"contra":{},"quebras":{},"compativeis":{},"mais":{},"mudancas":[{}]}}"#,
+                    texto_json(&s.versao.nome),
+                    data_texto(s.versao.ms),
+                    s.registros,
+                    s.invalidas,
+                    s.erro.as_deref().map_or("null".into(), texto_json),
+                    s.contra.map_or("null".into(), |c| c.to_string()),
+                    s.quebras,
+                    s.compativeis,
+                    s.mais,
+                    ms.join(",")
+                )
+            })
+            .collect();
+        writeln!(
+            out,
+            r#"{{"origem":"{origem}","ignorados":{},"parada":{parada},"versoes":[{}]}}"#,
+            r.ignorados,
+            itens.join(",")
+        )?;
+    } else {
+        for s in &r.passos {
+            let data = data_texto(s.versao.ms);
+            write!(out, "{data}  {}  ", s.versao.nome)?;
+            match (&s.erro, s.contra) {
+                (Some(e), _) => writeln!(out, "não abriu: {e}")?,
+                (None, None) => writeln!(out, "{} registros", s.registros)?,
+                (None, Some(c)) => writeln!(
+                    out,
+                    "{} quebras · {} compatíveis contra {}",
+                    s.quebras, s.compativeis, r.passos[c].versao.nome
+                )?,
+            }
+            for m in &s.mudancas {
+                writeln!(out, "  {m}")?;
+            }
+            if s.mais > 0 {
+                writeln!(out, "  … e mais {}", s.mais)?;
+            }
+        }
+    }
+    out.flush()?;
+    eprintln!(
+        "{} versões · ordem por {origem}{} · {} entradas ignoradas",
+        r.passos.len(),
+        if origem == "mtime" { " (UTC)" } else { "" },
+        r.ignorados
+    );
+    if r.parada == Some(Parada::Prazo) {
+        eprintln!(
+            "aviso: parou no prazo de {} s; faltam versões",
+            LIMITES.prazo.as_secs()
+        );
+    }
+    Ok(())
+}
+
 fn diff(op: OpcoesDiff, out: &mut Terminal<impl Write>) -> Result<u8, Box<dyn std::error::Error>> {
-    use nucleo::diff::{Classe, Detalhe, diff};
+    use nucleo::diff::{Classe, diff};
     use nucleo::estrutura;
     let nada = AtomicBool::new(false);
     let (a, b) = (abrir(op.antes)?, abrir(op.depois)?);
@@ -821,34 +943,7 @@ fn diff(op: OpcoesDiff, out: &mut Terminal<impl Write>) -> Result<u8, Box<dyn st
         ia.resumo.invalidas.n, ib.resumo.invalidas.n
     );
     if op.json {
-        let itens: Vec<String> = mudancas
-            .iter()
-            .map(|m| {
-                let detalhe = match &m.detalhe {
-                    Detalhe::Nenhum => String::new(),
-                    Detalhe::Tipos(x, y) => {
-                        let l = |ts: &[nucleo::estrutura::Tipo]| {
-                            ts.iter()
-                                .map(|t| format!("\"{}\"", t.nome()))
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        };
-                        format!(r#","tipos":{{"antes":[{}],"depois":[{}]}}"#, l(x), l(y))
-                    }
-                    Detalhe::Variante(v) => format!(r#","variante":{}"#, texto_json(v)),
-                };
-                format!(
-                    r#"{{"caminho":{},"regra":"{}","classe":"{}","antes":{{"n":{},"de":{}}},"depois":{{"n":{},"de":{}}}{detalhe}}}"#,
-                    texto_json(&m.caminho),
-                    m.regra.nome(),
-                    m.regra.classe().nome(),
-                    m.antes.n,
-                    m.antes.de,
-                    m.depois.n,
-                    m.depois.de,
-                )
-            })
-            .collect();
+        let itens: Vec<String> = mudancas.iter().map(mudanca_json).collect();
         writeln!(
             out,
             r#"{{"quebras":{quebras},"compativeis":{},"invalidas":{{"antes":{},"depois":{}}},"mudancas":[{}]}}"#,
