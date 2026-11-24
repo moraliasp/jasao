@@ -29,6 +29,8 @@ export interface Opcoes {
   /** Nome do arquivo da aba, base da sugestão ao salvar. */
   nome: () => string;
   avisar: (msg: string) => void;
+  /** Erro de comando no idioma da interface (o mesmo tradutor dos códigos `jasao:*` da abertura). */
+  erro: (e: unknown) => string;
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
@@ -126,7 +128,7 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
     void chamar("cancelar_validacao").catch(() => {}); // doc fechado: nada a cancelar
   }
 
-  const falhou = (e: unknown) => o.avisar(`${t.erro}: ${e}`);
+  const falhou = (e: unknown) => o.avisar(o.erro(e));
   for (const s of [saida, unico, numero]) s.addEventListener("change", () => void mostrar().catch(falhou));
   botoes[0].addEventListener("click", () => {
     copiarTexto(codigo).then(() => o.avisar(x.copiado), falhou);

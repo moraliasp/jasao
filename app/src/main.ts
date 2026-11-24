@@ -109,6 +109,7 @@ const exportar = criarExportar(exportarEl, {
   icone: (id) => icone(id),
   nome: () => nomesDasAbas()[ativa] ?? "",
   avisar: (msg) => void (status.textContent = msg),
+  erro: (e) => erroAoAbrir(e),
 });
 
 const busca = criarBusca($("busca") as HTMLFormElement, {
