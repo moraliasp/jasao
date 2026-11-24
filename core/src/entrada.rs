@@ -1,11 +1,13 @@
-//! Entrada que não é arquivo local (stdin; depois, URL): grava o fluxo num temporário e o resto
-//! do núcleo abre esse caminho como qualquer arquivo (ver docs/decisoes.md, "stdin por
-//! temporário"). O temporário fica na pasta do cache (só do dono), com permissão 0600, e sai:
+//! Entrada que não é arquivo local (stdin, URL): grava o fluxo num temporário e o resto do
+//! núcleo abre esse caminho como qualquer arquivo (ver docs/decisoes.md, "stdin por
+//! temporário"). `criar` é a peça genérica (stdin usa `gravar`, que chama `criar("entrada")`;
+//! download usa `criar("download")`): arquivo `<prefixo>.<pid>.<nanos>.parcial` na pasta do
+//! cache (só do dono), com permissão 0600, que sai:
 //! - no `Drop` de `Temporario` (fim normal e erro);
-//! - em `apagar_vivos`, que o tratador de SIGINT/SIGTERM de quem chama roda antes de sair;
+//! - em SIGINT/SIGTERM, se quem chama ligou `apagar_no_sinal` (o CLI liga);
 //! - como órfão (processo morto sem chance de limpar, ex.: SIGKILL): o dono segura uma trava
-//!   exclusiva no arquivo enquanto vive, e `limpar_orfaos` (chamado por todo `gravar` e na
-//!   abertura do app) apaga o que ninguém trava.
+//!   exclusiva no arquivo enquanto vive, e `limpar_orfaos` (chamado por todo `criar` e na
+//!   abertura do app) apaga o que ninguém trava, de qualquer prefixo de `PREFIXOS`.
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
@@ -22,6 +24,10 @@ const MARGEM: u64 = 64 * MIB;
 const PASSO: u64 = 64 * MIB;
 /// Órfão mais novo que isso fica: o dono pode ter criado o arquivo e ainda não ter travado.
 const CARENCIA: Duration = Duration::from_secs(60);
+
+/// Prefixos de `criar`. Só eles: o `.parcial` do descompactado não trava e não pode ser
+/// confundido com órfão.
+pub const PREFIXOS: &[&str] = &["entrada", "download"];
 
 /// Temporários vivos deste processo, para o tratador de sinal apagar.
 static VIVOS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
@@ -49,8 +55,20 @@ impl Drop for Temporario {
     }
 }
 
-/// Apaga os temporários vivos deste processo. Para o tratador de SIGINT/SIGTERM, que sai logo
-/// depois (o `Drop` não roda).
+/// Liga (uma vez por processo) o tratador de SIGINT/SIGTERM que apaga os temporários vivos e
+/// sai com 130: em sinal, o `Drop` não roda. Para binário de linha de comando; o app não liga
+/// (a janela trata o próprio fim, e órfão de crash sai em `limpar_orfaos`).
+pub fn apagar_no_sinal() {
+    static LIGADO: std::sync::Once = std::sync::Once::new();
+    LIGADO.call_once(|| {
+        let _ = ctrlc::set_handler(|| {
+            apagar_vivos();
+            std::process::exit(130);
+        });
+    });
+}
+
+/// Apaga os temporários vivos deste processo (o tratador de `apagar_no_sinal` usa).
 pub fn apagar_vivos() {
     if let Ok(v) = VIVOS.lock() {
         for c in v.iter() {
@@ -59,15 +77,17 @@ pub fn apagar_vivos() {
     }
 }
 
-/// Se `caminho` tem nome de temporário de entrada (não entra nos recentes do app).
+/// Se `caminho` tem nome de temporário de `criar` (`<prefixo>.*.parcial`, prefixo de `PREFIXOS`).
 pub fn temporario(caminho: &Path) -> bool {
     caminho
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("entrada.") && n.ends_with(".parcial"))
+        .and_then(|n| n.strip_suffix(".parcial"))
+        .and_then(|n| n.split_once('.'))
+        .is_some_and(|(p, _)| PREFIXOS.contains(&p))
 }
 
-/// Apaga da pasta do cache os temporários de entrada órfãos: os que nenhum processo trava (o
+/// Apaga da pasta do cache os temporários órfãos (de qualquer prefixo de `PREFIXOS`): os que nenhum processo trava (o
 /// dono morreu) e que têm mais de `CARENCIA`. Devolve quantos apagou.
 pub fn limpar_orfaos(op: &Opcoes) -> io::Result<usize> {
     let dir = pasta_cache(op)?;
@@ -91,16 +111,20 @@ pub fn limpar_orfaos(op: &Opcoes) -> io::Result<usize> {
     Ok(n)
 }
 
-/// Grava `leitor` inteiro num temporário da pasta do cache de `op`. Teto: `op.max_saida` (o
-/// mesmo do descompactado, 10 GiB no padrão). `origem` nomeia a entrada nas mensagens ("stdin").
-/// Antes, limpa os órfãos; durante, para se o disco ficar com menos de `MARGEM` livre.
-/// Vazio é erro: não há o que abrir.
-pub fn gravar(mut leitor: impl Read, origem: &str, op: &Opcoes) -> io::Result<Temporario> {
+/// Cria, travado e registrado para o sinal, um temporário vazio `<prefixo>.<pid>.<nanos>.parcial`
+/// na pasta do cache de `op` e devolve o arquivo aberto para escrita. `prefixo` precisa estar em
+/// `PREFIXOS` (senão `limpar_orfaos` não o acharia). Antes, limpa os órfãos.
+pub fn criar(prefixo: &str, op: &Opcoes) -> io::Result<(Temporario, File)> {
+    if !PREFIXOS.contains(&prefixo) {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("prefixo de temporário desconhecido: {prefixo}"),
+        ));
+    }
     let dir = pasta_cache(op)?;
     let _ = limpar_orfaos(op);
-    espaco(&dir, origem)?;
     let nome = format!(
-        "entrada.{}.{}.parcial",
+        "{prefixo}.{}.{}.parcial",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -123,6 +147,17 @@ pub fn gravar(mut leitor: impl Read, origem: &str, op: &Opcoes) -> io::Result<Te
     };
     arquivo.lock()?;
     privado(tmp.caminho(), 0o600)?;
+    Ok((tmp, arquivo))
+}
+
+/// Grava `leitor` inteiro num temporário `entrada` (ver `criar`). Teto: `op.max_saida` (o
+/// mesmo do descompactado, 10 GiB no padrão). `origem` nomeia a entrada nas mensagens ("stdin").
+/// Antes e durante, para se o disco ficar com menos de `MARGEM` livre.
+/// Vazio é erro: não há o que abrir.
+pub fn gravar(mut leitor: impl Read, origem: &str, op: &Opcoes) -> io::Result<Temporario> {
+    let dir = pasta_cache(op)?;
+    espaco(&dir, origem)?;
+    let (tmp, arquivo) = criar("entrada", op)?;
     let mut saida = BufWriter::with_capacity(MIB as usize, arquivo);
     let mut limitado = (&mut leitor).take(op.max_saida + 1);
     let mut n = 0;
@@ -242,12 +277,21 @@ mod testes {
         // Novo demais: o dono pode não ter travado ainda.
         let novo = d.path().join("entrada.3.4.parcial");
         fs::write(&novo, "x").unwrap();
-        // Outro arquivo do cache não é temporário de entrada.
+        // Órfão de download também sai; `.parcial` do descompactado (sem prefixo) fica.
+        let download = d.path().join("download.7.8.parcial");
+        fs::write(&download, "x").unwrap();
+        envelhecer(&download);
+        let descompactado = d.path().join("abc123.parcial");
+        fs::write(&descompactado, "x").unwrap();
+        envelhecer(&descompactado);
+        assert!(criar("outro", &op(d.path())).is_err());
+        // Outro arquivo do cache não é temporário.
         let outro = d.path().join("abc.dados");
         fs::write(&outro, "x").unwrap();
         envelhecer(&outro);
-        assert_eq!(limpar_orfaos(&op(d.path())).unwrap(), 1);
-        assert!(!orfao.exists());
+        assert_eq!(limpar_orfaos(&op(d.path())).unwrap(), 2);
+        assert!(!orfao.exists() && !download.exists());
         assert!(novo.exists() && vivo.caminho().exists() && outro.exists());
+        assert!(descompactado.exists());
     }
 }

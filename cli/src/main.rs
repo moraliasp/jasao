@@ -306,10 +306,7 @@ fn ler_stdin(args: &[&str]) -> io::Result<Option<nucleo::entrada::Temporario>> {
             "`-` lê stdin, mas stdin é o terminal; mande os dados por pipe (ex.: cat x.jsonl | jasao laudo -)",
         ));
     }
-    let _ = ctrlc::set_handler(|| {
-        nucleo::entrada::apagar_vivos();
-        std::process::exit(130);
-    });
+    nucleo::entrada::apagar_no_sinal();
     let padrao = Opcoes::default();
     let teto = std::env::var(VAR_TETO_TESTE)
         .ok()

@@ -724,7 +724,6 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 name = "cli"
 version = "0.0.1"
 dependencies = [
- "ctrlc",
  "nucleo",
  "serde_json",
  "tempfile",
@@ -2885,6 +2884,7 @@ version = "0.0.1"
 dependencies = [
  "bson",
  "criterion",
+ "ctrlc",
  "flate2",
  "fs4",
  "jaq-core",
