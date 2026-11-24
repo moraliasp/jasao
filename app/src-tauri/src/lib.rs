@@ -1570,15 +1570,12 @@ fn linha_do_tempo<R: Runtime>(
                 let _ = app.emit("linha_do_tempo", a);
             }
         };
-        let abrir = |c: &Path| {
-            let op = Opcoes {
-                cancelar: Some(&cancelar),
-                ..Opcoes::default()
-            };
-            ArquivoLinhas::abrir_copia_com(c, &op)
+        let op = Opcoes {
+            cancelar: Some(&cancelar),
+            ..Opcoes::default()
         };
         let mut aviso = None::<Instant>;
-        let l = percorrer(lista, &LIMITES, abrir, &cancelar, |feitas, total| {
+        let l = percorrer(lista, &LIMITES, &op, &cancelar, |feitas, total| {
             if feitas < total && aviso.is_some_and(|t| t.elapsed() < INTERVALO) {
                 return;
             }

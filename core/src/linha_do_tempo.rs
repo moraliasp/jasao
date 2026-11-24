@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::ArquivoLinhas;
 use crate::diff::{Classe, Mudanca, diff};
 use crate::estrutura::{self, Resumo};
+use crate::{ArquivoLinhas, Opcoes};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limites {
@@ -338,12 +338,30 @@ pub struct LinhaDoTempo {
     pub parada: Option<Parada>,
 }
 
-/// Percorre as versões em ordem: abre (com `abrir`, que decide cache e progresso), infere e
-/// compara com a anterior; versão que muda entre abrir e inferir vira passo com erro. Quem chama
-/// abre com `ArquivoLinhas::abrir_copia_com` (nunca o `mmap` do original: SIGBUS se truncar).
+/// Percorre as versões em ordem: abre (sempre por cópia, com o cache, o progresso e o
+/// cancelamento de `op`), infere e
+/// compara com a anterior; versão que muda entre abrir e inferir vira passo com erro. Abre com
+/// `ArquivoLinhas::abrir_copia_com`, nunca o `mmap` do original (SIGBUS se outro processo truncar).
 /// `progresso(feitas, total)` antes de cada versão. O prazo e `cancelar`
 /// valem também no meio de uma inferência (a cada ~1% dela); a abertura em si não é interrompida.
 pub fn percorrer(
+    lista: Lista,
+    lim: &Limites,
+    op: &Opcoes,
+    cancelar: &AtomicBool,
+    progresso: impl FnMut(usize, usize),
+) -> LinhaDoTempo {
+    percorrer_com(
+        lista,
+        lim,
+        |c| ArquivoLinhas::abrir_copia_com(c, op),
+        cancelar,
+        progresso,
+    )
+}
+
+/// `percorrer` com a abertura trocável (os testes simulam o arquivo mudando no meio).
+fn percorrer_com(
     lista: Lista,
     lim: &Limites,
     mut abrir: impl FnMut(&Path) -> io::Result<ArquivoLinhas>,
@@ -440,7 +458,7 @@ fn carimbo(c: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use crate::Opcoes;
+    use std::io::Write;
 
     fn escrever(p: &Path, nome: &str, conteudo: &str) {
         fs::write(p.join(nome), conteudo).unwrap();
@@ -547,6 +565,97 @@ mod testes {
         );
     }
 
+    fn op_em(p: &Path) -> Opcoes<'static> {
+        Opcoes {
+            dir_cache: Some(p.join("cache")),
+            ..Opcoes::default()
+        }
+    }
+
+    #[test]
+    fn msgpack_truncado_na_conversao_vira_erro_sem_derrubar() {
+        // Pela `percorrer` pública: a abertura que ela escolhe é a que está em teste.
+        let p = tempfile::tempdir().unwrap();
+        let alvo = p.path().join("2024-01-02.msgpack");
+        // 2^20 mapas `{"a":1}` (4 bytes cada): a conversão avisa progresso a cada MiB lido.
+        fs::write(&alvo, [0x81, 0xA1, b'a', 0x01].repeat(1 << 20)).unwrap();
+        escrever(p.path(), "2024-01-01.jsonl", "{\"a\":1}\n");
+        let truncou = std::cell::Cell::new(false);
+        let truncar = |_: u64, _: u64| {
+            if !truncou.replace(true) {
+                fs::File::create(&alvo).unwrap();
+            }
+        };
+        let op = Opcoes {
+            progresso: Some(&truncar),
+            ..op_em(p.path())
+        };
+        let l = listar(p.path(), &LIMITES).unwrap();
+        let r = percorrer(l, &LIMITES, &op, &AtomicBool::new(false), |_, _| {});
+        assert!(truncou.get(), "a conversão não chegou a avisar progresso");
+        assert_eq!(r.passos.len(), 2);
+        assert!(r.passos[0].erro.is_none());
+        assert_eq!(
+            r.passos[1].erro.as_deref(),
+            Some("o arquivo mudou durante a leitura")
+        );
+    }
+
+    #[test]
+    fn reescrito_com_o_mesmo_tamanho_vira_erro() {
+        let p = tempfile::tempdir().unwrap();
+        escrever(p.path(), "2024-01-01.jsonl", "{\"a\":1}\n");
+        escrever(p.path(), "2024-01-02.jsonl", "{\"a\":2}\n");
+        let op = op_em(p.path());
+        let lista = listar(p.path(), &LIMITES).unwrap();
+        let abrir = |c: &Path| {
+            let a = ArquivoLinhas::abrir_copia_com(c, &op)?;
+            if c.ends_with("2024-01-02.jsonl") {
+                let f = fs::File::options().write(true).open(c)?;
+                (&f).write_all(b"{\"b\":3}\n")?;
+                f.set_modified(UNIX_EPOCH + Duration::from_secs(1_000_000))?;
+            }
+            Ok(a)
+        };
+        let r = percorrer_com(lista, &LIMITES, abrir, &AtomicBool::new(false), |_, _| {});
+        assert_eq!(
+            fs::metadata(p.path().join("2024-01-02.jsonl"))
+                .unwrap()
+                .len(),
+            8
+        );
+        assert_eq!(
+            r.passos[1].erro.as_deref(),
+            Some("o arquivo mudou durante a leitura")
+        );
+    }
+
+    #[test]
+    fn teto_da_copia() {
+        let p = tempfile::tempdir().unwrap();
+        escrever(p.path(), "2024-01-01.jsonl", "{\"a\":1}\n");
+        escrever(p.path(), "2024-01-02.jsonl", "{\"a\":22}\n");
+        let op = |n| Opcoes {
+            max_saida: n,
+            ..op_em(p.path())
+        };
+        let erros = |n| {
+            let l = listar(p.path(), &LIMITES).unwrap();
+            percorrer(l, &LIMITES, &op(n), &AtomicBool::new(false), |_, _| {})
+                .passos
+                .into_iter()
+                .map(|s| s.erro)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(erros(9), [None, None]);
+        let e = erros(8);
+        assert!(e[0].is_none());
+        assert!(
+            e[1].as_deref().unwrap().contains("maior que 8 bytes"),
+            "{e:?}"
+        );
+    }
+
     #[test]
     fn arquivo_truncado_no_percurso_vira_erro_sem_derrubar() {
         let p = tempfile::tempdir().unwrap();
@@ -554,10 +663,7 @@ mod testes {
         escrever(p.path(), "2024-01-01.jsonl", "{\"a\":1}\n");
         escrever(p.path(), "2024-01-02.jsonl", &linhas);
         escrever(p.path(), "2024-01-03.jsonl", "{\"a\":2}\n");
-        let op = Opcoes {
-            dir_cache: Some(p.path().join("cache")),
-            ..Opcoes::default()
-        };
+        let op = op_em(p.path());
         let lista = listar(p.path(), &LIMITES).unwrap();
         // Trunca o original logo depois de abrir, antes da inferência: com `mmap` do original
         // isto seria SIGBUS e o processo de teste morreria.
@@ -568,7 +674,7 @@ mod testes {
             }
             Ok(a)
         };
-        let r = percorrer(lista, &LIMITES, abrir, &AtomicBool::new(false), |_, _| {});
+        let r = percorrer_com(lista, &LIMITES, abrir, &AtomicBool::new(false), |_, _| {});
         assert_eq!(r.passos.len(), 3);
         assert!(r.passos[0].erro.is_none());
         assert_eq!(
@@ -700,7 +806,7 @@ mod testes {
         let l = listar(p.path(), &LIMITES).unwrap();
         fs::remove_file(p.path().join("2024-01-04.jsonl")).unwrap();
         let mut visto = Vec::new();
-        let r = percorrer(l, &LIMITES, ABRIR, &AtomicBool::new(false), |f, t| {
+        let r = percorrer_com(l, &LIMITES, ABRIR, &AtomicBool::new(false), |f, t| {
             visto.push((f, t))
         });
         assert_eq!(r.parada, None);
@@ -735,7 +841,7 @@ mod testes {
         let p = pasta_com(&["{\"a\":1}\n", "{\"a\":1}\n", "{\"a\":\"x\"}\n"]);
         let l = listar(p.path(), &LIMITES).unwrap();
         fs::remove_file(p.path().join("2024-01-02.jsonl")).unwrap();
-        let r = percorrer(l, &LIMITES, ABRIR, &AtomicBool::new(false), |_, _| {});
+        let r = percorrer_com(l, &LIMITES, ABRIR, &AtomicBool::new(false), |_, _| {});
         assert!(r.passos[1].erro.is_some());
         assert_eq!(r.passos[2].contra, Some(0));
         assert_eq!(r.passos[2].quebras, 1);
@@ -753,7 +859,7 @@ mod testes {
             ..LIMITES
         };
         let l = listar(p.path(), &lim).unwrap();
-        let r = percorrer(l, &lim, ABRIR, &AtomicBool::new(false), |_, _| {});
+        let r = percorrer_com(l, &lim, ABRIR, &AtomicBool::new(false), |_, _| {});
         let s = &r.passos[1];
         assert_eq!((s.mudancas.len(), s.mais, s.quebras), (20, 10, 30));
         // O padrão guarda 200.
@@ -767,7 +873,7 @@ mod testes {
             prazo: Duration::ZERO,
             ..LIMITES
         };
-        let r = percorrer(
+        let r = percorrer_com(
             listar(p.path(), &lim).unwrap(),
             &lim,
             ABRIR,
@@ -780,7 +886,7 @@ mod testes {
         escrever(p.path(), "2024-01-02.jsonl", &"{\"a\":2}\n".repeat(2 << 20));
         let cancelar = AtomicBool::new(false);
         let mut abertos = 0;
-        let r = percorrer(
+        let r = percorrer_com(
             listar(p.path(), &LIMITES).unwrap(),
             &LIMITES,
             |c| {
@@ -794,7 +900,7 @@ mod testes {
             |_, _| {},
         );
         assert_eq!((r.parada, r.passos.len()), (Some(Parada::Cancelado), 1));
-        let r = percorrer(
+        let r = percorrer_com(
             listar(p.path(), &LIMITES).unwrap(),
             &LIMITES,
             ABRIR,
