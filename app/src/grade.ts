@@ -30,6 +30,7 @@ interface Estado extends EstadoOrdem, EstadoFiltro {
   esquerda: number;
   filtros: number; // quantas vezes o filtro trocou: entra na chave do cache
   pos: number; // posição no filtro da navegação ⌘↓/⌘↑ na Árvore; -1 = ainda não andou
+  alvo: Alvo | null; // o filtro aplicado (para o "Salvar como")
 }
 
 interface Deps {
@@ -73,7 +74,7 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
     let e = docs.get(d);
     if (!e || e.de !== g) {
       e = { de: g, info: null, pedindo: false, fixas: [], ocultas: new Set(), ordem: null, pedida: null, fim: null, aviso: "", lin: 0, col: 0, topo: 0, esquerda: 0,
-        filtrando: null, fimF: null, filtros: 0, pos: -1 };
+        filtrando: null, fimF: null, filtros: 0, pos: -1, alvo: null };
       docs.set(d, e);
     }
     return e;
@@ -401,6 +402,7 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
     await chamar("limpar_filtro");
     if (estado() !== e) return;
     e.filtrando = null;
+    e.alvo = null;
     e.aviso = "";
     await recarregar(e);
   }
@@ -448,6 +450,7 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
       const g = await chamar<number | null>("filtrar", { alvo });
       if (g === null || estado() !== e) return null;
       e.aviso = "";
+      e.alvo = alvo;
       const f = filtroRespondeu(e, g, rotulo);
       const msg = f ? filtrou(e, f, rotulo) : null;
       barra();
@@ -464,6 +467,8 @@ export function criarGrade(el: HTMLElement, deps: Deps) {
       return msg;
     },
     limpar,
+    /** O filtro aplicado no documento ativo, se houver. */
+    alvo: (): Alvo | null => estado()?.alvo ?? null,
     /** ⌘↓/⌘↑ na Árvore: a próxima posição no filtro e quantos há; `null` sem filtro. */
     vizinho(passo: 1 | -1): { posicao: number; total: number } | null {
       const e = estado();

@@ -235,6 +235,13 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
       campo.focus();
       campo.select();
     },
+    /** Para o "Salvar como": o arquivo do usuário (o original, com resultado aberto) e o filtro
+     * jq (o que gerou o resultado aberto, ou o do campo). */
+    fonte(): { original: string | null; jq: string | null } {
+      if (!s) return { original: null, jq: null };
+      const jq = (s.original ? s.rodado : campo.value).trim();
+      return { original: s.original, jq: jq || null };
+    },
     /** Um arquivo abriu no documento `id`: se não foi o resultado, a consulta dele deixa de valer. */
     abriu(caminho: string, id: number): void {
       const e = estados.get(id);

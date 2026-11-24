@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use nucleo::consulta::{Consulta, LoteConsulta};
 use nucleo::resumo::{self, Conteudo};
+use nucleo::transformar::{self, Fonte, Mascara, Saida, Transformacao};
 
 use super::{AndamentoConsulta, INTERVALO, abrir_linhas, exemplos};
 
@@ -24,6 +25,9 @@ const VAR_DESTINO: &str = "JASAO_CONSULTA_DESTINO";
 /// Presente: a consulta roda sobre o arquivo anonimizado com este sal (hex), ver
 /// `nucleo::mascara::anonimizar`.
 const VAR_SAL: &str = "JASAO_CONSULTA_SAL";
+/// Presente: "salvar como" (`nucleo::transformar`), com o `Salvar` em JSON. Sem teto de
+/// saída nem de relógio: é o arquivo que o usuário pediu, e cancelar mata o filho.
+const VAR_SALVAR: &str = "JASAO_CONSULTA_SALVAR";
 /// Teto do resultado em disco: filtro que multiplica a entrada (`range(1e12)`) para aqui.
 pub(crate) const TETO_SAIDA: u64 = if cfg!(test) { 1 << 20 } else { 1 << 30 };
 /// Teto de heap do filho (`nucleo::memoria`): `[range(1e9)]|length` para aqui.
@@ -67,6 +71,30 @@ pub(crate) fn rodar(
     destino: &Path,
     sal: Option<u64>,
     cancelar: &AtomicBool,
+    avisar: impl FnMut(AndamentoConsulta),
+) -> AndamentoConsulta {
+    rodar_com(filtro, caminho, destino, sal, None, cancelar, avisar)
+}
+
+/// Pedido do "salvar como". O filho compõe o filtro (`transformar::compor`) com o `documento`
+/// do arquivo que ele mesmo abre: o pai pode ter aberto outro (o resultado de uma consulta).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Salvar {
+    pub fonte: Fonte,
+    pub transformacao: Transformacao,
+    pub saida: Saida,
+    pub mascara: Mascara,
+}
+
+/// `rodar` que, com `salvar`, grava em `destino` o pedido (o `filtro` é ignorado), com a máscara
+/// pedida (`Mascara::Anonimizar` usa `sal`), sem teto de saída nem de relógio.
+pub(crate) fn rodar_com(
+    filtro: &str,
+    caminho: &str,
+    destino: &Path,
+    sal: Option<u64>,
+    salvar: Option<&Salvar>,
+    cancelar: &AtomicBool,
     mut avisar: impl FnMut(AndamentoConsulta),
 ) -> AndamentoConsulta {
     let falhou = |falha: String| AndamentoConsulta {
@@ -81,6 +109,10 @@ pub(crate) fn rodar(
         let c = match sal {
             Some(s) => c.env(VAR_SAL, format!("{s:x}")),
             None => c.env_remove(VAR_SAL),
+        };
+        let c = match salvar {
+            Some(s) => c.env(VAR_SALVAR, serde_json::to_string(&s).unwrap_or_default()),
+            None => c.env_remove(VAR_SALVAR),
         };
         c.stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -97,7 +129,7 @@ pub(crate) fn rodar(
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || ler_linhas(stderr, &tx));
     let (mut fim, mut ultima, mut aberto, mut sem_memoria) = (None, String::new(), true, false);
-    let prazo = Instant::now() + TEMPO_MAX;
+    let prazo = salvar.is_none().then(|| Instant::now() + TEMPO_MAX);
     // O cancelar vale até o filho sair, mesmo depois de ele fechar o stderr.
     let saida = loop {
         if cancelar.load(Relaxed) {
@@ -109,7 +141,7 @@ pub(crate) fn rodar(
                 ..Default::default()
             };
         }
-        if Instant::now() >= prazo {
+        if prazo.is_some_and(|p| Instant::now() >= p) {
             let _ = filho.kill();
             let _ = filho.wait();
             return falhou(format!(
@@ -175,12 +207,20 @@ pub fn filho() -> Option<i32> {
     let sal = std::env::var(VAR_SAL)
         .ok()
         .and_then(|s| u64::from_str_radix(&s, 16).ok());
+    // Variável presente mas ilegível não pode cair no modo consulta (nem gravar sem máscara).
+    let salvar = match std::env::var(VAR_SALVAR) {
+        Ok(s) => Some(serde_json::from_str::<Salvar>(&s).ok()?),
+        Err(_) => None,
+    };
     nucleo::memoria::limitar(TETO_MEMORIA);
     std::thread::spawn(|| {
         let _ = io::copy(&mut io::stdin(), &mut io::sink());
         std::process::exit(4);
     });
-    let fim = consultar(&caminho, &filtro, &destino, sal, &mut enviar);
+    let fim = match salvar {
+        Some(s) => salvar_como(&caminho, &destino, s, sal, &mut enviar),
+        None => consultar(&caminho, &filtro, &destino, sal, &mut enviar),
+    };
     enviar(fim);
     Some(0)
 }
@@ -189,6 +229,75 @@ fn enviar(a: AndamentoConsulta) {
     let mut e = io::stderr().lock();
     let _ = serde_json::to_writer(&mut e, &a);
     let _ = writeln!(e);
+}
+
+/// Filho do "salvar como": `nucleo::transformar::escrever` sobre a entrada com a `mascara`.
+fn salvar_como(
+    caminho: &str,
+    destino: &Path,
+    pedido: Salvar,
+    sal: Option<u64>,
+    avisar: &mut dyn FnMut(AndamentoConsulta),
+) -> AndamentoConsulta {
+    let falhou = |falha: String| AndamentoConsulta {
+        fim: true,
+        falha: Some(falha),
+        ..Default::default()
+    };
+    let arquivo = match abrir_linhas(caminho) {
+        Ok(a) => a,
+        Err(e) => return falhou(e),
+    };
+    let documento = matches!(
+        resumo::conteudo(&arquivo),
+        Conteudo::JsonUnico | Conteudo::JsonVariasLinhas
+    );
+    let filtro = transformar::compor(&pedido.fonte, &pedido.transformacao, documento);
+    // Anonimizar sem sal não acontece (o pai sempre manda); se faltar, mascara.
+    let mascara = match (pedido.mascara, sal) {
+        (Mascara::Anonimizar, None) => Mascara::Mascarar,
+        (m, _) => m,
+    };
+    let entrada = transformar::entrada(&arquivo, mascara, sal.unwrap_or_default());
+    let out = match std::fs::OpenOptions::new().write(true).open(destino) {
+        Ok(s) => s,
+        Err(e) => return falhou(format!("{}: {e}", destino.display())),
+    };
+    let mut ultimo = Instant::now();
+    let r = transformar::escrever(
+        &entrada,
+        documento,
+        &filtro,
+        pedido.saida,
+        &AtomicBool::new(false),
+        out,
+        |linhas, total, resultados| {
+            if ultimo.elapsed() >= INTERVALO {
+                ultimo = Instant::now();
+                avisar(AndamentoConsulta {
+                    resultados,
+                    linhas,
+                    total,
+                    ..Default::default()
+                });
+            }
+        },
+    );
+    match r {
+        Ok(resumo) => AndamentoConsulta {
+            resultados: resumo.resultados,
+            linhas: resumo.linhas,
+            total: resumo.total_linhas,
+            erros: resumo.erros,
+            primeiro_erro: resumo
+                .primeiros_erros
+                .first()
+                .map(|e| (e.linha, e.motivo.clone())),
+            fim: true,
+            ..Default::default()
+        },
+        Err(e) => falhou(e.to_string()),
+    }
 }
 
 fn consultar(
