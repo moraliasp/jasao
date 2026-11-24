@@ -14,6 +14,7 @@ import { EXEMPLOS, nomeExemplo } from "./exemplos";
 import { detalhe as detalheE, type Estrutura, type ItemE, itens as itensEstrutura, type Perfil } from "./estrutura";
 import { erroDoRust, type Motivo, t, tamanho } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
+import { type Acao, type Laudo, laudoHtml } from "./laudo";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
@@ -1177,6 +1178,9 @@ const inicioBtn = $<HTMLButtonElement>("inicio");
 const painelModos = $("painel-modos");
 const preferencia = $<HTMLSelectElement>("painel-pref");
 let resumo: Resumo | null = null;
+/** Laudo do documento e geração em `laudoDe` (`null`: inferência em curso). */
+let laudo: Laudo | null = null;
+let laudoDe = "";
 /** O "sugerido" escolheu o modo antes de a montagem dizer se a Tabela serve. */
 let palpite = false;
 
@@ -1211,8 +1215,41 @@ function desenharAndamento(): void {
     (resumo.invalidas ? indicador(t.painel.invalidas, fmt(resumo.invalidas), "aviso") : "");
 }
 
+/** Laudo do painel: pede quando a inferência acaba e redesenha (os passos dependem da Tabela e das abas). */
+function desenharLaudo(): void {
+  if (!resumo) return;
+  const de = `${docAtivo()}:${resumo.geracao}`;
+  if (de !== laudoDe) {
+    laudoDe = de;
+    laudo = null;
+  }
+  if (!laudo && resumo.inferiu)
+    void chamar<Laudo | null>("laudo")
+      .then((l) => {
+        if (!l || de !== laudoDe || laudo) return; // trocou de aba ou reabriu
+        laudo = l;
+        desenharLaudo();
+      })
+      .catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+  const outraAba = lista.filter((a) => a.doc !== null).length > 1;
+  $("painel-laudo").innerHTML = laudoHtml(laudo, { tabela: grade.disponivel(), outraAba }, t, fmt);
+}
+
+/** Passo do laudo: abre o modo (e o ponto) que o botão indica. */
+async function seguirLaudo(b: HTMLElement): Promise<void> {
+  const acao = b.dataset.acao as Acao;
+  if (acao === "variante") await focarRegistro(Number(b.dataset.linha));
+  else if (acao === "estrutura") {
+    trocarModo("estrutura");
+    await carregarEstrutura();
+    const i = estr?.findIndex((it) => it.indice === Number(b.dataset.indice)) ?? -1;
+    if (i >= 0) moverE(i);
+  } else trocarModo(acao);
+}
+
 function desenharPainel(): void {
   desenharAndamento();
+  desenharLaudo();
   grade.inferiu(); // documento já inferido: a Tabela diz se serve (e o painel redesenha)
   const sug = sugerido();
   painelModos.innerHTML = disponiveis
@@ -1408,6 +1445,10 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   ativar(i);
 });
+$("painel-laudo").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-acao]");
+  if (b) seguirLaudo(b).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+});
 painelModos.addEventListener("click", (e) => {
   const m = (e.target as HTMLElement).closest<HTMLElement>("[data-modo]")?.dataset.modo;
   if (m) trocarModo(m as Modo);
@@ -1428,6 +1469,7 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   if (p.inferiu && modo === "diff" && !noPainel) diff.inferiu(); // o outro arquivo do par também conta
   if (!ativo) return;
   desenharAndamento();
+  if (p.inferiu && noPainel) desenharLaudo();
   if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
   if (p.inferiu && modo === "exportar" && !noPainel && !exportar.temCodigo()) void exportar.mostrar();
   if (p.tabelou) grade.inferiu(); // colunas (ou o motivo) chegam; painel e Tabela redesenham

@@ -521,6 +521,28 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 
 **Medido (24/11/2026, JSONL de 1 GB de `examples/gerar`, M5 Pro, load ~90):** perfil de um caminho entre 0,30 s e 1,0 s. O mais lento foi `.id`, com 6,46 milhões de valores distintos: a estimativa deu 6.469.431, erro de 0,2%. A inferência com os avisos levou 2,01 s no `medir.sh`, contra a meta de 5 s. A 1ª tela levou 0,21 s, contra a meta de 300 ms, e não mudou porque os avisos não estão nesse caminho.
 
+## Laudo ao abrir (24/11/2026)
+
+**De onde sai:** `nucleo::laudo::Laudo::de` lê só o que a inferência já calculou (`Resumo::caminhos`, `discriminadores`, inválidas e vazias). Custo proporcional ao número de caminhos, sem reler o arquivo. No app ele é montado na mesma thread de 2º plano, logo depois de `estrutura::inferir`, e chega no mesmo aviso que a Estrutura (`inferiu`). A 1ª tela não muda: o laudo não está no caminho dela. O comando `laudo(id)` devolve `null` até lá. Reabrir o documento zera o laudo antes de a nova inferência começar.
+
+**O que entra, com teto fixo** (a memória não cresce com o arquivo):
+- **O que é:** tipo de conteúdo, tamanho e registros.
+- **Forma:** as 3 variantes com mais registros do 1º discriminador, com a 1ª linha de cada uma e quantas ficaram de fora. Depois, até 5 campos do topo que faltam em algum registro, na ordem do arquivo. "Do topo" é `relacao == campo` com um segmento só, porque a profundidade engana com chave como `.["x y"]`.
+- **Atenção:** linhas inválidas com a 1ª, linhas vazias e até 8 avisos do #43, em ordem de prioridade (segredo, opaco, número como texto, data fora do ISO, valor único) e, no empate, na ordem do arquivo. O resto vira "e mais N". Segredo só leva o caminho, e o teste confere que o valor não aparece no Markdown, no `Debug` nem no JSON.
+- Texto vindo do arquivo (caminho, valor de variante) é cortado em 120 caracteres com `…`.
+
+**Passos clicáveis no painel:** cada variante abre o 1º registro dela na Árvore. Cada opcional e cada aviso abre a Estrutura naquele caminho, onde o perfil mostra os registros com e sem ele. Os outros passos só aparecem quando valem: "Abrir na Tabela" quando a Tabela serve, "Exportar schema" quando há registros e "Comparar com outro arquivo aberto" quando há outra aba com arquivo. Esse último abre o Diff do #42 e não traz lógica de diff nova. O HTML passa caminho e valor por `visivel`.
+
+**CLI:** `jasao laudo arquivo [--json] [--teto SEG]` imprime o laudo em Markdown (ou JSON), pelo mesmo `Terminal` que neutraliza controles e bidi. **Teto de tempo:** padrão de 30 s. Ao estourar, a inferência é cancelada e o laudo sai parcial ("X de Y linhas lidas (o teto de tempo parou a leitura)"), com os números só das linhas lidas. O app não usa teto: a inferência já é cancelável, e fechar ou reabrir a aba a cancela. O nome do arquivo nos próximos passos sai entre aspas simples de shell quando não é só ASCII simples.
+
+**Segredo nunca vira discriminador:** `Resumo::discriminadores` pula o campo com o mesmo critério do aviso `Segredo` (valor com cara de chave ou nome como `token`/`senha`). Senão os valores sairiam como variantes no laudo, na legenda da régua, na Estrutura, no Zod do exportar e no diff. A correção fica na função compartilhada, não em cada saída. Testes com 2 valores distintos no core (estrutura e laudo), na CLI (Markdown e `--json`), no IPC (resumo, laudo e estrutura) e no painel.
+
+**Sem registro lido, sem afirmação:** com 0 registros (arquivo vazio, ou o teto parou antes do 1º), o Markdown diz "sem base" em vez de "um formato só", "nenhum campo falta" ou "nenhum aviso". O painel já esconde esses itens com `registros == 0`.
+
+**Códigos de saída do `laudo`:** 0 quando o laudo sai, mesmo parcial, com linhas inválidas ou binário (o texto diz). É relatório, não gate: para gate há `validar` e `diff --falha-em`. 1 quando o arquivo não abre, 2 em uso errado. Teste pelo binário em `cli/tests/laudo.rs`.
+
+**Limite conhecido (fatia futura):** o teto de tempo só é olhado entre registros, dentro de `estrutura::inferir`. Um registro gigante não é cortado: uma linha de 286 MB com `--teto 0.2` levou 1,64 s. Para cortar, o parser da inferência precisa checar o `parar` dentro do registro. Fica para uma fatia de `estrutura`, junto com o mesmo efeito no cancelamento do app.
+
 ## Tipos TypeScript e validar contra schema de fora (Fase 4, 24/11/2026)
 
 **Tipos TS:** `exportar::tipos` imprime a mesma `Forma` do Zod e do Schema como `export type Registro = …`. União discriminada vira união de objetos com o discriminador literal (`| { tipo: "evento"; … }`); campo opcional, `campo?:`; nullable, `| null`; mapa, `Record<string, T>`; lista, `Array<T>`; objeto sem campo visto, `Record<string, unknown>`. Chaves e literais passam pelo mesmo `exportar::aspas`; identificador ASCII sai sem aspas e `__proto__` sai como `["__proto__"]`. **"Tratar como número" não se aplica aos tipos:** o tipo descreve o JSON como está, e tipo não converte; texto numérico continua `string` (a interface desliga a opção). A autovalidação usa `schema_da_entrada_zod`, que aceita exatamente o que o tipo descreve. Prova: dourados `app/tests/dourados/*.d.ts` e `app/tests/tipos.test.ts`, que roda o `tsc` do projeto em modo estrito: todo registro do próprio arquivo precisa caber no tipo, e casos com `@ts-expect-error` (discriminador errado, campo obrigatório faltando, tipo errado, valor travado, texto numérico) precisam ser recusados. Trocar `obs?` por `obs`, o literal do discriminador por `string`, `valor: string` por `number` ou tirar o `| null` reprova o teste.

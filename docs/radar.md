@@ -47,7 +47,7 @@ Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 
 
 ## Candidatos a "muito especial", de graça
 
-- **Laudo do arquivo ao abrir.** Antes de qualquer árvore, uma linha como "832 registros, 3 formatos por `tipo`, 4 avisos". Nenhum dos 5 abre por aí. Começou com o painel de entrada (#12), e o modo Estrutura (#21) já calcula as variantes; falta trazê-las e os avisos para a linha de abertura.
+- **Laudo do arquivo ao abrir.** Antes de qualquer árvore, o painel diz o que o arquivo é, os formatos por discriminador, os campos opcionais e os avisos, com passos clicáveis; `jasao laudo` exporta em Markdown. Nenhum dos 5 abre por aí. Entregue na fatia `jasao/diferencial/laudo` (ver "Laudo ao abrir" em `decisoes.md`).
 - **Régua do arquivo inteiro (#16).** Minimapa com cor por variante e linhas inválidas; nenhum dos 5 mostra o arquivo assim.
 - **`jasao diff --falha-em quebra` no CI.** Já existe na CLI (#39), com códigos de saída para o pipeline. O oasdiff faz isso para OpenAPI; ninguém faz para dados reais.
 - **Privacidade como recurso.** Tudo roda local, nada sobe, e o que parece segredo é sinalizado. O JSON Hero é web; o Jasão ganha quando o dado é sensível.

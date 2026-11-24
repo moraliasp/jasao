@@ -13,6 +13,7 @@ pub mod exportar;
 pub mod filtro;
 pub mod formatos;
 pub mod gerador;
+pub mod laudo;
 pub mod linha_do_tempo;
 pub mod linhas;
 pub mod memoria;
