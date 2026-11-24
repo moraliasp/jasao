@@ -3299,6 +3299,99 @@ mod testes {
         );
         let erro = chamar("abrir", json!({ "caminho": d })).unwrap_err();
         assert!(erro.as_str().unwrap().contains("pasta"), "{erro}");
+
+        {
+            use tauri::Listener;
+            let (tx, rx) = std::sync::mpsc::channel::<Value>();
+            app.listen_any("filtragem", move |e| {
+                let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+            });
+            // Dois discriminadores, contagens desiguais: {d, v} trocado acha outras linhas.
+            let mut dois = tempfile::NamedTempFile::new().unwrap();
+            std::io::Write::write_all(
+                &mut dois,
+                b"{\"tipo\":\"a\",\"k\":\"p\",\"ta\":1,\"kp\":1}\n\
+                  {\"tipo\":\"b\",\"k\":\"q\",\"tb\":1,\"kq\":1}\n\
+                  {\"tipo\":\"a\",\"k\":\"q\",\"ta\":1,\"kq\":1}\n\
+                  {\"tipo\":\"a\",\"k\":\"p\",\"ta\":1,\"kp\":1}\n\
+                  {\"tipo\":\"b\",\"k\":\"p\",\"tb\":1,\"kp\":1}\n",
+            )
+            .unwrap();
+            conceder(dois.path());
+            let id =
+                chamar("abrir", json!({ "caminho": dois.path().to_str().unwrap() })).unwrap()["id"]
+                    .as_u64()
+                    .unwrap() as u32;
+            let ds = (0..200)
+                .map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    em(id, "estrutura", json!({}))
+                })
+                .find_map(|e| e.ok().filter(|e| e["registros"] == 5))
+                .expect("inferência não terminou")["discriminadores"]
+                .clone();
+            let resumo = |d: &Value| {
+                (
+                    d["campo"].clone(),
+                    d["variantes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v["valor"].clone())
+                        .collect::<Vec<_>>(),
+                )
+            };
+            assert_eq!(
+                ds.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(resumo)
+                    .collect::<Vec<_>>(),
+                [
+                    (json!(".tipo"), vec![json!("a"), json!("b")]),
+                    (json!(".k"), vec![json!("p"), json!("q")])
+                ]
+            );
+            let filtrar_em = |alvo: Value| {
+                let g = em(id, "filtrar", json!({ "alvo": alvo })).unwrap();
+                std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
+                    .find(|v| v["fim"] == true && v["geracao"] == g)
+                    .expect("filtro não terminou")
+            };
+            let linhas = || {
+                em(
+                    id,
+                    "tabela_linhas",
+                    json!({"inicio": 0, "quantidade": 9, "colunas": [0]}),
+                )
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["registro"].as_u64().unwrap())
+                .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                filtrar_em(json!({"discriminador": 1, "variante": 1}))["achados"],
+                2
+            );
+            assert_eq!(linhas(), [1, 2], ".k = q");
+            assert_eq!(
+                filtrar_em(json!({"discriminador": 0, "variante": 1}))["achados"],
+                2
+            );
+            assert_eq!(linhas(), [1, 4], ".tipo = b");
+            assert_eq!(
+                filtrar_em(json!({"discriminador": 1, "variante": 0}))["achados"],
+                3
+            );
+            assert_eq!(linhas(), [0, 3, 4], ".k = p");
+            assert_eq!(
+                em(id, "tabela", json!({})).unwrap()["filtro"],
+                json!({"achados": 3, "caminho": ".k", "tem": null, "valor": "p"})
+            );
+            assert_eq!(em(id, "fechar", json!({})), Ok(Value::Null));
+        }
     }
 
     /// Abrir põe nos recentes; recente apagado sai da lista com `recente_ausente`.

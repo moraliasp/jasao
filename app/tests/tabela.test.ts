@@ -128,6 +128,17 @@ test("filtro: rótulo por caso, e o que vem do arquivo vai escapado no chip", ()
   e.filtrando = { geracao: 1, rotulo: "<b>", lidos: 5, total: 10 };
   const p = chipFiltro(e, info, t, fmt);
   assert.ok(p.includes('value="50"') && !p.includes("<b>"), p);
+  // Aspas não fecham o `title`; invisível bidi aparece como código, não vira o texto ao contrário.
+  const aspas = chipFiltro(
+    { filtrando: null, fimF: null },
+    { registros: 10, filtro: { achados: 1, caminho: ".t\u202Eipo", tem: null, valor: 'x" onmouseover="alert(1)' } } as TabelaUi,
+    t,
+    fmt,
+  );
+  assert.ok(!aspas.includes('" onmouseover'), aspas);
+  assert.ok(aspas.includes("&quot; onmouseover"), aspas);
+  assert.ok(!aspas.includes("\u202E"), aspas);
+  assert.ok(aspas.includes("⟦202E⟧"), aspas);
 });
 
 test("filtro: fim antes da resposta conclui na resposta; geração velha é ignorada", () => {

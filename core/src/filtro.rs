@@ -271,6 +271,94 @@ mod testes {
     }
 
     #[test]
+    fn igual_e_valor_inteiro_nao_prefixo() {
+        let d = b"{\"t\":\"x\"}\n{\"t\":\"xy\"}\n{\"t\":\"x\"}\n{\"t\":\"\"}\n";
+        assert_eq!(
+            rodar(d, |c| Criterio::Igual(&c.segs, b"x"), ".t", 4096),
+            [0, 2]
+        );
+        assert_eq!(
+            rodar(d, |c| Criterio::Igual(&c.segs, b"xy"), ".t", 4096),
+            [1]
+        );
+        assert_eq!(rodar(d, |c| Criterio::Igual(&c.segs, b""), ".t", 4096), [3]);
+    }
+
+    /// Uma thread só: os blocos vão em ordem, e o que corre depois do sinal fica contado.
+    fn em_ordem<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(f)
+    }
+
+    /// Só as 5 primeiras linhas têm `.x`: sem parar no sinal, os blocos seguintes (sem achado)
+    /// chegariam ao fim e avisariam progresso.
+    fn poucos_no_comeco() -> String {
+        (0..1000)
+            .map(|i| {
+                if i < 5 {
+                    format!("{{\"x\":{i}}}\n")
+                } else {
+                    format!("{{\"y\":{i}}}\n")
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn teto_para_os_blocos_seguintes() {
+        let d = poucos_no_comeco();
+        let i = inferir_em_blocos(d.as_bytes(), 7, &nao(), |_| {});
+        let cam = caminho(&i, ".x");
+        let blocos = AtomicU64::new(0);
+        let r = em_ordem(|| {
+            filtrar_ate(
+                &i,
+                d.as_bytes(),
+                Criterio::Tem(&cam.segs),
+                1,
+                3,
+                &nao(),
+                &|_| {
+                    blocos.fetch_add(1, Relaxed);
+                },
+            )
+        });
+        assert_eq!(r, Err(FalhaFiltro::Grande));
+        // Os 3 primeiros blocos acabam; o 4º estoura; nenhum dos ~996 seguintes é lido.
+        assert_eq!(blocos.load(Relaxed), 3);
+    }
+
+    #[test]
+    fn cancelar_para_os_blocos_seguintes() {
+        let d = poucos_no_comeco();
+        let i = inferir_em_blocos(d.as_bytes(), 7, &nao(), |_| {});
+        let cam = caminho(&i, ".x");
+        let cancelar = nao();
+        let blocos = AtomicU64::new(0);
+        let r = em_ordem(|| {
+            filtrar_ate(
+                &i,
+                d.as_bytes(),
+                Criterio::Tem(&cam.segs),
+                1,
+                usize::MAX,
+                &cancelar,
+                &|_| {
+                    // Cancela no fim do 2º bloco.
+                    if blocos.fetch_add(1, Relaxed) == 1 {
+                        cancelar.store(true, Relaxed);
+                    }
+                },
+            )
+        });
+        assert_eq!(r, Err(FalhaFiltro::Cancelada));
+        assert_eq!(blocos.load(Relaxed), 2);
+    }
+
+    #[test]
     fn teto_recusa_e_para_cedo() {
         let mut d = String::new();
         for i in 0..1000 {
