@@ -409,3 +409,30 @@ As regras continuam separadas (alargado × estreitado × trocado, virou obrigat�
 - Custo: duas inferências completas (a comparação é linear no número de caminhos).
 
 **Testado:** dourados por regra da taxonomia (a linha exata de cada uma, em `core/src/diff.rs`), aninhado/elemento/mapa e a regra do decimal; guardas de `valores()` (valor único mas ausente em algum registro; texto único com `null` ao lado) e da regra de presença (não vale em `[]`), cada uma com um caso que cai se ela sair; proptest de que A contra A não tem mudanças e de que acrescentar registros a A só gera regras de alargar; CLI com chave hostil no terminal, `--json` e os três modos de `--falha-em`; teste de integração pelo binário (`cli/tests/diff.rs`) com os códigos 0, 1, 2 e 3; alvo de fuzz `diff` (A contra A vazio, `n ≤ de` e B→A espelho de A→B). O fuzz curto passou de 25 para 23 s por alvo para o alvo novo caber no tempo do job (14 × 23 s ≈ 13 × 25 s).
+
+## Medidas de desempenho, 24/11/2026
+
+Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB do gerador (`gerar … 1024 1`: 1.073.741.850 bytes, 6.456.439 linhas), com o arquivo já no cache de páginas.
+
+**Máquina:** MacBook com Apple M5 Pro, 18 núcleos, 48 GB, macOS 27.2.1. É mais forte que a de referência do plano (8 núcleos), então estes números não valem para ela. **Versão:** `aeb17f3` (main) + esta fatia (bench, script e docs; nenhuma mudança em `core/src` nem `cli/src`), Rust 1.99.1. **Comando:** `scripts/medir.sh` (mediana de 5 rodadas; memória é o maior *peak memory footprint* do `/usr/bin/time -l`, que não conta as páginas limpas do `mmap`). **Carga:** load average de 25 (1 min) antes de medir, com outras sessões ativas na mesma máquina.
+
+| Medida | Meta | Medido | Pico alocado | RSS máximo (com `mmap`) |
+|---|---|---|---|---|
+| Primeira tela (`janela arquivo 0 50`) | < 300 ms | 0,26 s | 51 MB | 1076 MB |
+| Índice de linhas (`linhas`) | < 2 s | 0,23 s | 51 MB | 1076 MB |
+| Estrutura completa (`inferir`) | < 5 s | 2,11 s | 62 MB | 1087 MB |
+| Busca até o fim, literal ausente | < 3 s | 0,28 s | 52 MB | 1077 MB |
+| Busca até o fim, regex ausente | < 3 s | 0,27 s | 53 MB | 1078 MB |
+| Exportar Schema + validar o arquivo | sem meta | 3,52 s | 65 MB | 1092 MB |
+
+**Memória além do `mmap`:** a meta de < 300 MB passou com folga em todas as linhas (no máximo 65 MB). O script confere cada linha e sai com erro se alguma meta não passar.
+
+**Primeira tela no limite:** em 23/11, sobre `cf7cc7f` e com load average entre 187 e 211, deu 0,28 s numa rodada e 0,34 s em outra, e esta última não passou. O motivo é estrutural: `ArquivoLinhas::abrir_com` constrói o índice de linhas inteiro antes da primeira janela, e o app abre pelo mesmo caminho. Assim, a primeira tela custa o índice de 1 GB (0,23 a 0,29 s) mais a janela, e a folga até 300 ms some com carga na máquina. A correção seria mostrar a primeira janela antes do índice completo (índice parcial ou progressivo); não foi feita nesta fatia. A medida é do processo CLI, sem a renderização do webview: no app, o número real é maior.
+
+**Não medidos aqui:** estrutura parcial em < 500 ms, primeiro resultado da busca em < 200 ms (o bench `busca` mede, mas não entrou na tabela), rolagem e expandir em 60 fps (bench `arvore`, em 64 MB) e o teto de 10 GB.
+
+**Benchmarks:** `cargo bench -p nucleo` cobre índice (`indice`), estrutura (`estrutura`), busca até o primeiro achado e até o fim (`busca`), árvore (`arvore`) e, desde esta fatia, exportar Schema/Zod e validar (`exportar`). O tamanho vem de `NUCLEO_BENCH_MB`. Os arquivos ficam em memória ou em `target/medir/`, fora do git.
+
+**Regressão de 10% no CI: não ligada.** O CI roda no mesmo runner, nesta mesma máquina compartilhada, e a carga muda os tempos bem além de 10%. Primeira tela: 0,34 s contra 0,28 s com a mesma carga. Estrutura: 3,41 s com load ~190 contra 2,11 s com load ~25. Um limite de 10% reprovaria por ruído. Além disso, os benches de 1 GB levam minutos e não cabem no tempo do runner único.
+
+**Dadroit:** não está instalado nesta máquina, então a comparação de abertura do mesmo arquivo fica pendente.
