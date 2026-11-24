@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "arvore"
 harness = false
+
+[[bench]]
+name = "exportar"
+harness = false
