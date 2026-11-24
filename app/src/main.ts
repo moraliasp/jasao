@@ -96,10 +96,10 @@ const grade = criarGrade(tabelaEl, {
     void revelar(linha, byte).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
   },
   mudou: () => {
-    // "Sugerido" abriu a Tabela antes de saber se o arquivo serve: não serviu, vai ao próximo.
+    // "Sugerido" abriu um modo antes de saber se a Tabela serve: a resposta chegou, vai ao sugerido de fato.
     if (palpite && grade.disponivel() !== null) {
       palpite = false;
-      if (modo === "tabela" && !noPainel && grade.disponivel() === false) trocarModo(sugerido());
+      if (!noPainel && sugerido() !== modo) trocarModo(sugerido());
     }
     if (modo === "tabela") rodape();
     if (!noPainel) return;
@@ -847,11 +847,15 @@ async function preparar(a: Aba, visao?: Modo): Promise<void> {
     desenharPainel();
     const destino = visao ?? destinoAoAbrir();
     if (destino === "painel") mostrarPainel();
-    await recarregar();
+    await recarregar(); // incrementa `versao`: daqui em diante, trocar de aba é o que cancela
     if (destino === "texto") await selecionar(0);
-    if (v !== versao) return;
+    if (abaAtiva() !== a) return;
     if (destino !== "painel") trocarModo(destino);
-    palpite = destino === "tabela" && !visao && lerPreferencia() === "sugerido" && grade.disponivel() === null;
+    // "Sugerido" escolheu antes de saber se a Tabela serve; se já se sabe, confere agora, senão `mudou` confere.
+    if (destino !== "painel" && !visao && lerPreferencia() === "sugerido") {
+      if (grade.disponivel() === null) palpite = true;
+      else if (sugerido() !== destino) trocarModo(sugerido());
+    }
     grade.inferiu(); // já montada: confere o palpite agora
     busca.reabrir();
   } catch (erro) {
@@ -978,7 +982,7 @@ const inicioBtn = $<HTMLButtonElement>("inicio");
 const painelModos = $("painel-modos");
 const preferencia = $<HTMLSelectElement>("painel-pref");
 let resumo: Resumo | null = null;
-/** A Tabela foi aberta pelo "sugerido" antes de a montagem dizer se o arquivo serve. */
+/** O "sugerido" escolheu o modo antes de a montagem dizer se a Tabela serve. */
 let palpite = false;
 
 function lerPreferencia(): string {
