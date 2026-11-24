@@ -18,7 +18,9 @@ import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPar
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { criarExportar } from "./exportar";
-import { criarGrade, type Ordenacao } from "./grade";
+import { criarDiff } from "./vistaDiff";
+import { type Alvo, criarGrade, type Filtragem, type Ordenacao } from "./grade";
+import { rotuloFiltro } from "./tabela";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
 import {
   decodificar,
@@ -66,7 +68,7 @@ const textoEl = $("texto");
 const textoAlto = $("texto-alto");
 const textoLinhas = $("texto-linhas");
 const verFormatado = $<HTMLButtonElement>("ver-formatado");
-const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura"), tabela: $("aba-tabela"), exportar: $("aba-exportar") };
+const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura"), tabela: $("aba-tabela"), exportar: $("aba-exportar"), diff: $("aba-diff") };
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = escAtributo;
@@ -132,13 +134,24 @@ const regua = criarRegua($("regua"), $("legenda"), {
 });
 
 const exportarEl = $("exportar");
-const visaoAtual = () => ({ texto: textoEl, estrutura: estruturaEl, tabela: tabelaEl, exportar: exportarEl, arvore })[modo];
-/** Visão sem linha de registro (Estrutura, Tabela, Exportar): achado e "ir para registro" vão para a Árvore. */
-const semRegistros = () => modo === "estrutura" || modo === "tabela" || modo === "exportar";
+const diffEl = $("diff");
+const visaoAtual = () => ({ texto: textoEl, estrutura: estruturaEl, tabela: tabelaEl, exportar: exportarEl, diff: diffEl, arvore })[modo];
+/** Visão sem linha de registro (Estrutura, Tabela, Exportar, Diff): achado e "ir para registro" vão para a Árvore. */
+const semRegistros = () => modo === "estrutura" || modo === "tabela" || modo === "exportar" || modo === "diff";
 const exportar = criarExportar(exportarEl, {
   fmt: (n) => fmt(n),
   icone: (id) => icone(id),
   nome: () => nomesDasAbas()[ativa] ?? "",
+  avisar: (msg) => void (status.textContent = msg),
+  erro: (e) => erroAoAbrir(e),
+});
+const diff = criarDiff(diffEl, {
+  fmt: (n) => fmt(n),
+  icone: (id) => icone(id),
+  abas: () => {
+    const n = nomesDasAbas();
+    return lista.flatMap((a, i) => (a.doc === null ? [] : [{ doc: a.doc, nome: n[i] }]));
+  },
   avisar: (msg) => void (status.textContent = msg),
   erro: (e) => erroAoAbrir(e),
 });
@@ -254,8 +267,8 @@ let migalhasDe = ""; // doc:versão:linha das migalhas mostradas (vêm do Rust s
 
 /** Migalhas e botões do rodapé da seleção, iguais nas duas visões. */
 function rodape(): void {
-  if (modo === "exportar") {
-    copiar.disabled = verFormatado.disabled = true; // o Exportar tem o próprio Copiar
+  if (modo === "exportar" || modo === "diff") {
+    copiar.disabled = verFormatado.disabled = true; // o Exportar tem o próprio Copiar; o Diff não tem seleção
     migalhas.innerHTML = migalhasDe = "";
     return;
   }
@@ -490,6 +503,31 @@ async function abrirOcorrencia(): Promise<void> {
   await focarRegistro(linha);
 }
 
+/** Filtra os registros pelo `alvo` e mostra na Tabela (ou na Árvore, se não houver Tabela, para
+ * ⌘↓/⌘↑ andar entre eles). Corre em 2º plano: o fim chega pelo evento `filtragem`. */
+async function filtrarRegistros(alvo: Alvo, rotulo: string): Promise<void> {
+  trocarModo(grade.disponivel() ? "tabela" : "arvore");
+  if (modo !== "tabela") status.textContent = t.tabela.filtro.filtrando(rotulo, "0");
+  const msg = await grade.filtrar(alvo, rotulo);
+  if (msg) status.textContent = msg;
+}
+
+function filtrarItem(): Promise<void> | undefined {
+  const it = estr?.[selE];
+  if (!it || !registrosE) return;
+  return filtrarRegistros(it.alvo, rotuloFiltro({ caminho: it.caminho, tem: it.valor === null ? true : null, valor: it.valor }, t));
+}
+
+/** ⌘↓/⌘↑ na Árvore: o registro filtrado seguinte (ou anterior). */
+async function andarNoFiltro(passo: 1 | -1): Promise<void> {
+  const v = grade.vizinho(passo);
+  if (!v) return void (status.textContent = t.tabela.filtro.semFiltro);
+  const f = await chamar<{ posicao: number; total: number; linha: number; byte: number } | null>("filtrado", { posicao: v.posicao });
+  if (!f) return;
+  await revelar(f.linha, f.byte);
+  status.textContent = t.tabela.filtro.navegar(fmt(f.posicao + 1), fmt(f.total));
+}
+
 function teclaEstrutura(e: KeyboardEvent): void {
   const pagina = Math.max(1, Math.floor(estruturaEl.clientHeight / ALTURA) - 2);
   const acoes: Record<string, () => unknown> = {
@@ -500,9 +538,10 @@ function teclaEstrutura(e: KeyboardEvent): void {
     Home: () => moverE(0),
     End: () => moverE(Infinity),
     Enter: () => abrirOcorrencia(),
+    f: () => filtrarItem(),
   };
   const acao = acoes[e.key];
-  if (!acao) return;
+  if (!acao || (e.key === "f" && (e.metaKey || e.ctrlKey || e.altKey))) return; // ⌘F é a busca
   e.preventDefault();
   Promise.resolve(acao()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
 }
@@ -515,6 +554,7 @@ function focar(el: HTMLElement | null | undefined): void {
 /** `rolagem`: [árvore, texto] guardados na aba; sem ela, a seleção vem para a vista. */
 function trocarModo(m: Modo, rolagem?: [number, number]): void {
   if (m !== "exportar") exportar.parar();
+  if (m !== "diff") diff.parar();
   modo = m;
   palpite = false;
   noPainel = false;
@@ -531,6 +571,7 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
   perfilDe = "";
   $("tabela-vista").hidden = m !== "tabela";
   exportarEl.hidden = m !== "exportar";
+  diffEl.hidden = m !== "diff";
   if (m === "tabela") {
     grade.mostrar();
     rodape();
@@ -539,6 +580,10 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
     rodape();
     void exportar.mostrar();
     focar(exportarEl);
+  } else if (m === "diff") {
+    rodape();
+    diff.mostrar();
+    focar(diffEl);
   } else if (m === "estrutura") {
     void carregarEstrutura().catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
     focar(estruturaEl);
@@ -582,6 +627,10 @@ async function alternar(v: number): Promise<void> {
 }
 
 async function aoTeclado(e: KeyboardEvent): Promise<void> {
+  if ((e.metaKey || e.ctrlKey) && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    e.preventDefault();
+    return andarNoFiltro(e.key === "ArrowDown" ? 1 : -1).catch((erro) => void (status.textContent = `${t.erro}: ${erro}`));
+  }
   const l = linhaEm(sel);
   const pagina = Math.max(1, geometria().cabem - 2);
   const acoes: Record<string, () => unknown> = {
@@ -1038,6 +1087,7 @@ function fecharAba(i: number): void {
   const nova = aposFechar(lista.length, i, ativa);
   lista.splice(i, 1);
   if (!lista.length) lista.push(abaVazia());
+  diff.abasMudaram(); // o diff de valores com o doc fechado para
   if (eraAtiva || nova < 0) {
     ativa = -1;
     ativar(Math.max(0, nova));
@@ -1097,6 +1147,7 @@ const MODOS: { id: Modo; icone: string; disponivel: boolean; sempre: boolean }[]
   { id: "texto", icone: "file-text", disponivel: true, sempre: false },
   { id: "estrutura", icone: "list-tree", disponivel: true, sempre: false },
   { id: "exportar", icone: "braces", disponivel: true, sempre: false },
+  { id: "diff", icone: "list-tree", disponivel: true, sempre: false },
 ];
 const disponiveis = MODOS.filter((m) => m.disponivel);
 /** Modo que o arquivo aceita agora; só a Tabela depende do arquivo (`null`: inferência em curso). */
@@ -1165,6 +1216,7 @@ function desenharPainel(): void {
 function mostrarPainel(): void {
   if (!resumo) return;
   exportar.parar();
+  diff.parar();
   noPainel = true;
   painel.hidden = false;
   conteudo.hidden = true;
@@ -1220,6 +1272,13 @@ estruturaLinhas.addEventListener("dblclick", (e) => {
 perfilEl.addEventListener("click", (e) => {
   const l = (e.target as HTMLElement).closest<HTMLElement>("[data-l]");
   if (l) void focarRegistro(Number(l.dataset.l));
+  const f = (e.target as HTMLElement).closest<HTMLElement>("[data-filtrar]");
+  const it = estr?.[selE];
+  if (f && it?.indice != null) {
+    const tem = f.dataset.filtrar === "true";
+    void filtrarRegistros({ caminho: it.indice, tem }, rotuloFiltro({ caminho: it.caminho, tem, valor: null }, t))
+      .catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
+  }
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
@@ -1301,9 +1360,9 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return fecharAba(ativa);
   }
-  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura, ⌥⌘4 Tabela, ⌥⌘5 Exportar (`code`: com ⌥ o `key` vira outro caractere).
+  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura, ⌥⌘4 Tabela, ⌥⌘5 Exportar, ⌥⌘6 Diff (`code`: com ⌥ o `key` vira outro caractere).
   if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && resumo) {
-    const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura", Digit4: "tabela", Digit5: "exportar" } as const)[e.code as "Digit1" | "Digit2" | "Digit3" | "Digit4" | "Digit5"];
+    const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura", Digit4: "tabela", Digit5: "exportar", Digit6: "diff" } as const)[e.code as "Digit1" | "Digit2" | "Digit3" | "Digit4" | "Digit5" | "Digit6"];
     if (m) {
       e.preventDefault();
       trocarModo(m);
@@ -1353,6 +1412,7 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   // Aviso de arquivo anterior, ou mais velho que o `resumo` já recebido: ignora.
   if (!r || p.geracao !== r.geracao || (p.varridas < r.varridas && !p.fim)) return;
   Object.assign(r, p);
+  if (p.inferiu && modo === "diff" && !noPainel) diff.inferiu(); // o outro arquivo do par também conta
   if (!ativo) return;
   desenharAndamento();
   if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
@@ -1362,6 +1422,10 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   regua.andamento(p);
 });
 void listen<Ordenacao>("ordenacao", ({ payload }) => grade.ordenacao(payload));
+void listen<Filtragem>("filtragem", ({ payload }) => {
+  const msg = grade.filtragem(payload);
+  if (msg && payload.id === docAtivo()) status.textContent = msg;
+});
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
 async function focarRegistro(r: number): Promise<boolean> {
   if (semRegistros()) trocarModo("arvore"); // Estrutura, Tabela e Exportar: na Árvore
@@ -1393,6 +1457,8 @@ tabelaEl.setAttribute("aria-label", t.tabela.rotulo);
 $("tabela-ordem").querySelector("button")!.textContent = t.tabela.cancelar;
 abas.exportar.firstChild!.textContent = t.exportar.aba;
 exportarEl.setAttribute("aria-label", t.exportar.rotulo);
+abas.diff.firstChild!.textContent = t.diff.aba;
+diffEl.setAttribute("aria-label", t.diff.rotulo);
 estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);
 perfilEl.setAttribute("aria-label", t.estrutura.perfil);
 $("abas").setAttribute("aria-label", t.valores);

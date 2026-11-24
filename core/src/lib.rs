@@ -9,6 +9,7 @@ pub mod diff;
 pub mod erros;
 pub mod estrutura;
 pub mod exportar;
+pub mod filtro;
 pub mod formatos;
 pub mod gerador;
 pub mod linhas;
@@ -19,6 +20,7 @@ pub mod resumo;
 pub mod tabela;
 pub mod texto;
 pub mod validar;
+pub mod valores;
 pub mod vivo;
 
 pub use arvore::Arvore;

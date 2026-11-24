@@ -145,6 +145,20 @@ pub fn diff(antes: &Resumo, depois: &Resumo) -> Vec<Mudanca> {
     v
 }
 
+/// Caminhos dos dois lados sem nenhuma mudança, na ordem de `antes` (o grupo "igual" da tela).
+pub fn iguais(antes: &Resumo, depois: &Resumo, mudancas: &[Mudanca]) -> Vec<String> {
+    let mudou: std::collections::HashSet<&str> =
+        mudancas.iter().map(|m| m.caminho.as_str()).collect();
+    let nos_dois: std::collections::HashSet<String> =
+        depois.caminhos().into_iter().map(|c| c.caminho).collect();
+    antes
+        .caminhos()
+        .into_iter()
+        .map(|c| c.caminho)
+        .filter(|c| nos_dois.contains(c) && !mudou.contains(c.as_str()))
+        .collect()
+}
+
 const INTEIRO: u8 = 1 << Tipo::Inteiro as u8;
 const DECIMAL: u8 = 1 << Tipo::Decimal as u8;
 
@@ -356,6 +370,18 @@ mod testes {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    /// Igual = nos dois lados e sem mudança: o removido, o novo e o que mudou ficam de fora.
+    #[test]
+    fn iguais_fora_das_mudancas() {
+        let (a, b) = (
+            resumo("{\"a\":1,\"b\":\"x\",\"c\":[1]}\n"),
+            resumo("{\"a\":1,\"b\":2,\"c\":[1],\"d\":0}\n"),
+        );
+        let m = diff(&a, &b);
+        assert_eq!(iguais(&a, &b, &m), [".", ".a", ".c", ".c[]"]);
+        assert_eq!(iguais(&a, &a, &[]).len(), a.caminhos().len());
     }
 
     /// Dourados: uma regra da taxonomia por caso, com a linha exata que sai.

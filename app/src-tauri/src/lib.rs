@@ -16,6 +16,7 @@ pub use filho::filho as consulta_filho;
 
 use nucleo::arvore::{Formatado, Linha, MAX_FORMATADO};
 use nucleo::consulta::Consulta;
+use nucleo::filtro::{self, Criterio, FalhaFiltro as FalhaFiltragem};
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
 use nucleo::tabela::{self, Coluna, FalhaOrdem, Indisponivel, Ordem, Tabela};
@@ -42,6 +43,8 @@ struct Estado {
     proximo: AtomicU32,
     /// Descompactações em curso (ver `cancelar_abertura`).
     abrindo: Aberturas,
+    /// Diff de valores em curso (envolve dois documentos, então fica fora de `Doc`).
+    diff: Mutex<EstadoExportar>,
 }
 
 /// Flags de cancelamento por abertura. A chave é um id por abertura, não o caminho: o mesmo
@@ -88,6 +91,7 @@ struct Doc {
     consulta: Mutex<EstadoConsulta>,
     exportar: Mutex<EstadoExportar>,
     ordem: Mutex<EstadoOrdem>,
+    filtro: Mutex<EstadoFiltro>,
     /// Cancela o perfil em curso quando outro caminho é pedido.
     perfil: Mutex<Arc<AtomicBool>>,
     /// Modo seguir (arquivo vivo): a cópia que cresce; `None` antes do 1º `seguir`. Pausar
@@ -104,6 +108,8 @@ struct EstadoOrdem {
     geracao: u64,
     cancelar: Arc<AtomicBool>,
     pronta: Option<(Arc<Ordem>, bool)>,
+    /// `EstadoFiltro::versao` sobre a qual `pronta` foi feita: com outro filtro ela não vale.
+    filtro: u64,
 }
 
 impl EstadoOrdem {
@@ -120,13 +126,74 @@ impl EstadoOrdem {
     }
 
     /// Ordem pronta da ordenação `geracao`; se ela foi cancelada ou substituída, descarta.
-    fn publicar(&mut self, geracao: u64, ordem: Ordem, desc: bool) -> Option<FalhaOrdem> {
+    fn publicar(
+        &mut self,
+        geracao: u64,
+        ordem: Ordem,
+        desc: bool,
+        filtro: u64,
+    ) -> Option<FalhaOrdem> {
         if self.geracao != geracao {
             return Some(FalhaOrdem::Cancelada);
         }
         self.pronta = Some((Arc::new(ordem), desc));
+        self.filtro = filtro;
         None
     }
+}
+
+/// Filtro da Tabela (e da navegação ⌘↓/⌘↑ na Árvore): o pronto e o que roda em 2º plano.
+struct EstadoFiltro {
+    /// Sobe a cada pedido: progresso e resultado de um filtro anterior são descartados.
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+    pronto: Option<Arc<FiltroPronto>>,
+    /// Sobe a cada troca de `pronto`: a ordem feita sobre outro filtro não vale (`vista`).
+    versao: u64,
+    /// `filtro::MAX_FILTRADOS`; o teste de IPC baixa para provar o teto no call site.
+    teto: usize,
+}
+
+impl Default for EstadoFiltro {
+    fn default() -> Self {
+        EstadoFiltro {
+            geracao: 0,
+            cancelar: Arc::default(),
+            pronto: None,
+            versao: 0,
+            teto: filtro::MAX_FILTRADOS,
+        }
+    }
+}
+
+impl EstadoFiltro {
+    fn cancelar(&mut self) {
+        self.cancelar.store(true, Relaxed);
+        self.geracao += 1;
+    }
+
+    fn reiniciar(&mut self) {
+        self.cancelar();
+        self.pronto = None;
+        self.versao += 1;
+    }
+}
+
+struct FiltroPronto {
+    registros: Vec<u32>,
+    ui: FiltroUi,
+}
+
+/// O filtro pronto como a interface o mostra (ela formata e escapa).
+#[derive(Clone, Serialize)]
+struct FiltroUi {
+    achados: usize,
+    /// Caminho (`.x.y`) ou campo do discriminador.
+    caminho: String,
+    /// Filtro por caminho: com (`true`) ou sem.
+    tem: Option<bool>,
+    /// Filtro por variante: o valor, cru.
+    valor: Option<String>,
 }
 
 /// Evento com o id do documento de onde veio.
@@ -330,6 +397,9 @@ impl Doc {
         }
         if let Ok(mut o) = self.ordem.lock() {
             o.reiniciar();
+        }
+        if let Ok(mut f) = self.filtro.lock() {
+            f.reiniciar();
         }
         if let Ok(p) = self.perfil.lock() {
             p.store(true, Relaxed);
@@ -638,6 +708,7 @@ fn instalar<R: Runtime>(
                 consulta: Default::default(),
                 exportar: Default::default(),
                 ordem: Default::default(),
+                filtro: Default::default(),
                 perfil: Default::default(),
                 vivo: Default::default(),
                 marca: Default::default(),
@@ -680,6 +751,7 @@ fn instalar<R: Runtime>(
         v.tabela = None;
         v.geracao
     };
+    doc.filtro.lock().map_err(|e| e.to_string())?.reiniciar();
     doc.ordem.lock().map_err(|e| e.to_string())?.reiniciar();
     doc.busca.lock().map_err(|e| e.to_string())?.reiniciar();
     let doc = Arc::downgrade(&doc);
@@ -1291,6 +1363,154 @@ fn cancelar_validacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> 
     Ok(())
 }
 
+// ---- Diff entre dois documentos abertos (antes × depois). ----
+
+#[derive(Serialize)]
+struct MudancaUi {
+    caminho: String,
+    regra: &'static str,
+    classe: &'static str,
+    antes: [u64; 2],
+    depois: [u64; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tipos: Option<[Vec<&'static str>; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    variante: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DiffEstrutura {
+    mudancas: Vec<MudancaUi>,
+    /// Caminhos nos dois lados sem mudança.
+    iguais: Vec<String>,
+    /// Registros inválidos ignorados `[antes, depois]`.
+    invalidas: [u64; 2],
+}
+
+/// Diff de estrutura com a taxonomia do núcleo; `None` enquanto alguma inferência não acabou.
+#[tauri::command]
+fn diff_estrutura(
+    antes: u32,
+    depois: u32,
+    estado: State<'_, Estado>,
+) -> Result<Option<DiffEstrutura>, String> {
+    use nucleo::diff::{Detalhe, diff, iguais};
+    let (Some((a, _)), Some((b, _))) = (inferencia(&estado, antes)?, inferencia(&estado, depois)?)
+    else {
+        return Ok(None);
+    };
+    let ms = diff(&a.resumo, &b.resumo);
+    let nomes = |ts: &[nucleo::estrutura::Tipo]| ts.iter().map(|t| t.nome()).collect();
+    Ok(Some(DiffEstrutura {
+        iguais: iguais(&a.resumo, &b.resumo, &ms),
+        invalidas: [a.resumo.invalidas.n, b.resumo.invalidas.n],
+        mudancas: ms
+            .into_iter()
+            .map(|m| MudancaUi {
+                regra: m.regra.nome(),
+                classe: m.regra.classe().nome(),
+                antes: [m.antes.n, m.antes.de],
+                depois: [m.depois.n, m.depois.de],
+                tipos: match &m.detalhe {
+                    Detalhe::Tipos(x, y) => Some([nomes(x), nomes(y)]),
+                    _ => None,
+                },
+                variante: match m.detalhe {
+                    Detalhe::Variante(v) => Some(v),
+                    _ => None,
+                },
+                caminho: m.caminho,
+            })
+            .collect(),
+    }))
+}
+
+/// Evento `diff_valores`: progresso e, no fim, o resultado.
+#[derive(Clone, Serialize)]
+struct AndamentoDiff {
+    geracao: u64,
+    varridas: u64,
+    total: u64,
+    resultado: Option<nucleo::valores::DiffArquivos>,
+}
+
+/// Diff de valores numa thread própria, que emite `diff_valores` (no máximo a cada `INTERVALO`,
+/// e no fim); o anterior é cancelado. `registros` (base 0): compara só esses dois; sem ele, o
+/// registro N de um contra o N do outro, no arquivo inteiro. Devolve a geração, ou `None`
+/// enquanto alguma inferência não acabou (ela diz como ler os registros).
+#[tauri::command]
+fn diff_valores<R: Runtime>(
+    antes: u32,
+    depois: u32,
+    registros: Option<[u64; 2]>,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<u64>, String> {
+    let (Some((ia, fa)), Some((ib, fb))) =
+        (inferencia(&estado, antes)?, inferencia(&estado, depois)?)
+    else {
+        return Ok(None);
+    };
+    let (geracao, cancelar) = {
+        let mut e = estado.diff.lock().map_err(|e| e.to_string())?;
+        e.cancelar.store(true, Relaxed);
+        e.cancelar = Arc::new(AtomicBool::new(false));
+        e.geracao += 1;
+        (e.geracao, Arc::clone(&e.cancelar))
+    };
+    std::thread::spawn(move || {
+        let avisar = |a: AndamentoDiff| {
+            let vale = app
+                .state::<Estado>()
+                .diff
+                .lock()
+                .ok()
+                .map(|e| e.geracao == geracao);
+            if vale == Some(true) {
+                emitir(&app, "diff_valores", antes, a);
+            }
+        };
+        let (a, b) = (fa.bytes(), fb.bytes());
+        let r = match registros {
+            Some([na, nb]) => {
+                nucleo::valores::registros(a, ia.entrada, na, b, ib.entrada, nb, &cancelar)
+            }
+            None => {
+                let mut aviso = Instant::now();
+                nucleo::valores::arquivos(a, ia.entrada, b, ib.entrada, &cancelar, |p| {
+                    if aviso.elapsed() >= INTERVALO {
+                        aviso = Instant::now();
+                        avisar(AndamentoDiff {
+                            geracao,
+                            varridas: p.varridas,
+                            total: p.total,
+                            resultado: None,
+                        });
+                    }
+                })
+            }
+        };
+        if !r.cancelado {
+            avisar(AndamentoDiff {
+                geracao,
+                varridas: 1,
+                total: 1,
+                resultado: Some(r),
+            });
+        }
+    });
+    Ok(Some(geracao))
+}
+
+/// Para o diff de valores em curso (Esc, trocar de vista, fechar uma das abas).
+#[tauri::command]
+fn cancelar_diff_valores(estado: State<'_, Estado>) -> Result<(), String> {
+    let mut e = estado.diff.lock().map_err(|e| e.to_string())?;
+    e.cancelar.store(true, Relaxed);
+    e.geracao += 1;
+    Ok(())
+}
+
 /// Diálogo de salvar no backend (como `escolher`): a webview não escolhe caminho nem manda
 /// conteúdo; o código é gerado de novo aqui. `nome` é só a sugestão do diálogo.
 /// Devolve o caminho salvo, ou `None` se o usuário cancelou.
@@ -1339,6 +1559,7 @@ struct TabelaUi {
     /// Por que o arquivo não vira tabela (`colunas` vazio).
     indisponivel: Option<Indisponivel>,
     ordem: Option<OrdemUi>,
+    filtro: Option<FiltroUi>,
 }
 
 #[derive(Serialize)]
@@ -1358,16 +1579,12 @@ fn tabela(id: u32, estado: State<'_, Estado>) -> Result<Option<TabelaUi>, String
         .map_err(|e| e.to_string())?
         .tabela
         .clone();
-    let ordem = doc
-        .ordem
-        .lock()
-        .map_err(|e| e.to_string())?
-        .pronta
-        .as_ref()
-        .map(|(o, desc)| OrdemUi {
-            coluna: o.coluna,
-            desc: *desc,
-        });
+    let (filtro, _, ordem) = vista(&doc)?;
+    let ordem = ordem.map(|(o, desc)| OrdemUi {
+        coluna: o.coluna,
+        desc,
+    });
+    let filtro = filtro.map(|f| f.ui.clone());
     Ok(t.map(|t| match t {
         Ok(t) => TabelaUi {
             registros: t.registros(),
@@ -1376,6 +1593,7 @@ fn tabela(id: u32, estado: State<'_, Estado>) -> Result<Option<TabelaUi>, String
             omitidas: t.omitidas,
             indisponivel: None,
             ordem,
+            filtro,
         },
         Err(m) => TabelaUi {
             registros: 0,
@@ -1384,8 +1602,22 @@ fn tabela(id: u32, estado: State<'_, Estado>) -> Result<Option<TabelaUi>, String
             omitidas: 0,
             indisponivel: Some(m),
             ordem: None,
+            filtro: None,
         },
     }))
+}
+
+/// O filtro pronto (e sua versão) e a ordem pronta, esta só se foi feita sobre esse filtro.
+type Vista = (Option<Arc<FiltroPronto>>, u64, Option<(Arc<Ordem>, bool)>);
+
+fn vista(doc: &Doc) -> Result<Vista, String> {
+    let (filtro, versao) = {
+        let f = doc.filtro.lock().map_err(|e| e.to_string())?;
+        (f.pronto.clone(), f.versao)
+    };
+    let o = doc.ordem.lock().map_err(|e| e.to_string())?;
+    let ordem = o.pronta.clone().filter(|_| o.filtro == versao);
+    Ok((filtro, versao, ordem))
 }
 
 fn tabela_pronta(doc: &Doc) -> Result<Arc<Tabela>, String> {
@@ -1401,8 +1633,8 @@ fn tabela_pronta(doc: &Doc) -> Result<Arc<Tabela>, String> {
     }
 }
 
-/// Linhas `[inicio, inicio + quantidade)` da Tabela, na ordem pronta, só com as `colunas`
-/// pedidas (as visíveis).
+/// Linhas `[inicio, inicio + quantidade)` da Tabela, só as do filtro pronto, na ordem pronta,
+/// só com as `colunas` pedidas (as visíveis).
 #[tauri::command]
 fn tabela_linhas(
     id: u32,
@@ -1413,10 +1645,11 @@ fn tabela_linhas(
 ) -> Result<Vec<tabela::Linha>, String> {
     let doc = estado.doc(id)?;
     let t = tabela_pronta(&doc)?;
-    let ordem = doc.ordem.lock().map_err(|e| e.to_string())?.pronta.clone();
+    let (filtro, _, ordem) = vista(&doc)?;
     colunas.truncate(tabela::MAX_COLUNAS);
     Ok(t.janela(
         ordem.as_ref().map(|(o, desc)| (&**o, *desc)),
+        filtro.as_ref().map(|f| &f.registros[..]),
         inicio,
         quantidade.min(MAX_JANELA),
         &colunas,
@@ -1453,6 +1686,7 @@ fn ordenar<R: Runtime>(
 ) -> Result<Ordenado, String> {
     let doc = estado.doc(id)?;
     let t = tabela_pronta(&doc)?;
+    let (filtro, versao, _) = vista(&doc)?;
     let mut o = doc.ordem.lock().map_err(|e| e.to_string())?;
     o.cancelar();
     let geracao = o.geracao;
@@ -1465,6 +1699,7 @@ fn ordenar<R: Runtime>(
     };
     if let Some((p, _)) = &o.pronta
         && p.coluna == coluna
+        && o.filtro == versao
     {
         o.pronta = Some((Arc::clone(p), desc));
         return Ok(Ordenado {
@@ -1479,7 +1714,7 @@ fn ordenar<R: Runtime>(
     o.cancelar = Arc::clone(&cancelar);
     drop(o);
     let doc = Arc::downgrade(&doc);
-    let total = t.registros() as u64;
+    let total = filtro.as_ref().map_or(t.registros(), |f| f.registros.len()) as u64;
     std::thread::spawn(move || {
         let ultimo = Mutex::new(Instant::now());
         let aviso = |lidos| {
@@ -1502,11 +1737,12 @@ fn ordenar<R: Runtime>(
                 );
             }
         };
-        let falha = match t.ordenar(coluna, &cancelar, &aviso) {
+        let registros = filtro.as_ref().map(|f| &f.registros[..]);
+        let falha = match t.ordenar(coluna, registros, &cancelar, &aviso) {
             Ok(ordem) => {
                 let Some(doc) = doc.upgrade() else { return };
                 let Ok(mut o) = doc.ordem.lock() else { return };
-                o.publicar(geracao, ordem, desc)
+                o.publicar(geracao, ordem, desc, versao)
             }
             Err(f) => Some(f),
         };
@@ -1532,6 +1768,234 @@ fn cancelar_ordenacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> 
     let doc = estado.doc(id)?;
     doc.ordem.lock().map_err(|e| e.to_string())?.cancelar();
     Ok(())
+}
+
+/// O que filtrar: os registros com (ou sem) o caminho `caminho` (posição em
+/// `estrutura().caminhos`), ou os da `variante` do `discriminador` (posições em
+/// `estrutura().discriminadores`).
+#[derive(Clone, Copy, Deserialize)]
+#[serde(untagged)]
+enum Alvo {
+    Caminho {
+        caminho: usize,
+        tem: bool,
+    },
+    Variante {
+        discriminador: usize,
+        variante: usize,
+    },
+}
+
+/// Evento `filtragem`: progresso (só JSONL tem) e, com `fim`, os achados ou a falha.
+#[derive(Clone, Serialize)]
+struct Filtragem {
+    geracao: u64,
+    lidos: u64,
+    total: u64,
+    fim: bool,
+    achados: usize,
+    falha: Option<FalhaFiltragem>,
+}
+
+/// Filtra os registros pelo `alvo` numa varredura do arquivo inteiro em 2º plano, com o evento
+/// `filtragem`; o pedido anterior é cancelado. Até o fim, a Tabela segue com o filtro anterior.
+/// Ao publicar, a ordem pronta deixa de valer (era de outro conjunto): a interface pede de novo.
+/// `None` enquanto a inferência não acabou.
+#[tauri::command]
+fn filtrar<R: Runtime>(
+    id: u32,
+    alvo: Alvo,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<u64>, String> {
+    use nucleo::estrutura::Seg;
+    let Some((inf, arquivo)) = inferencia(&estado, id)? else {
+        return Ok(None);
+    };
+    let (segs, valor, ui) = match alvo {
+        Alvo::Caminho { caminho, tem } => {
+            let c = inf
+                .resumo
+                .caminhos()
+                .into_iter()
+                .nth(caminho)
+                .ok_or_else(|| format!("caminho {caminho} não existe"))?;
+            let ui = FiltroUi {
+                achados: 0,
+                caminho: c.caminho,
+                tem: Some(tem),
+                valor: None,
+            };
+            (c.segs, None, ui)
+        }
+        Alvo::Variante {
+            discriminador,
+            variante,
+        } => {
+            let d = inf
+                .resumo
+                .discriminadores()
+                .into_iter()
+                .nth(discriminador)
+                .ok_or_else(|| format!("discriminador {discriminador} não existe"))?;
+            let v = d
+                .variantes
+                .into_iter()
+                .nth(variante)
+                .ok_or_else(|| format!("variante {variante} não existe"))?;
+            let ui = FiltroUi {
+                achados: 0,
+                caminho: d.campo,
+                tem: None,
+                valor: Some(v.valor.clone()),
+            };
+            // Discriminador é campo do topo do registro.
+            (vec![Seg::Campo(d.cru)], Some(v.valor), ui)
+        }
+    };
+    let doc = estado.doc(id)?;
+    let cancelar = Arc::new(AtomicBool::new(false));
+    let (geracao, teto) = {
+        let mut f = doc.filtro.lock().map_err(|e| e.to_string())?;
+        f.cancelar();
+        f.cancelar = Arc::clone(&cancelar);
+        (f.geracao, f.teto)
+    };
+    let doc = Arc::downgrade(&doc);
+    let total = arquivo.linhas() as u64;
+    std::thread::spawn(move || {
+        let ultimo = Mutex::new(Instant::now());
+        let aviso = |lidos| {
+            if let Ok(mut u) = ultimo.lock()
+                && u.elapsed() >= INTERVALO
+            {
+                *u = Instant::now();
+                let p = Filtragem {
+                    geracao,
+                    lidos,
+                    total,
+                    fim: false,
+                    achados: 0,
+                    falha: None,
+                };
+                emitir(&app, "filtragem", id, p);
+            }
+        };
+        let criterio = match (&valor, ui.tem) {
+            (Some(v), _) => Criterio::Igual(&segs, v.as_bytes()),
+            (None, Some(false)) => Criterio::NaoTem(&segs),
+            (None, _) => Criterio::Tem(&segs),
+        };
+        let r = filtro::filtrar_ate(
+            &inf,
+            arquivo.bytes(),
+            criterio,
+            nucleo::busca::BLOCO_PADRAO,
+            teto,
+            &cancelar,
+            &aviso,
+        );
+        let (achados, falha) = match r {
+            Ok(f) => {
+                let Some(doc) = doc.upgrade() else { return };
+                let Ok(mut e) = doc.filtro.lock() else { return };
+                if e.geracao != geracao {
+                    (0, Some(FalhaFiltragem::Cancelada))
+                } else {
+                    let achados = f.registros.len();
+                    let ui = FiltroUi { achados, ..ui };
+                    e.pronto = Some(Arc::new(FiltroPronto {
+                        registros: f.registros,
+                        ui,
+                    }));
+                    e.versao += 1;
+                    drop(e);
+                    // A ordem era de outro conjunto (`vista` já a ignora): para a que roda.
+                    if let Ok(mut o) = doc.ordem.lock() {
+                        o.reiniciar();
+                    }
+                    (achados, None)
+                }
+            }
+            Err(f) => (0, Some(f)),
+        };
+        let fim = Filtragem {
+            geracao,
+            lidos: total,
+            total,
+            fim: true,
+            achados,
+            falha,
+        };
+        emitir(&app, "filtragem", id, fim);
+    });
+    Ok(Some(geracao))
+}
+
+/// Para o filtro em curso; o anterior continua valendo. O fim chega com `falha: cancelada`.
+#[tauri::command]
+fn cancelar_filtro(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
+    let doc = estado.doc(id)?;
+    doc.filtro.lock().map_err(|e| e.to_string())?.cancelar();
+    Ok(())
+}
+
+/// Tira o filtro (e o que estiver rodando); a ordem, que era sobre os filtrados, também sai.
+#[tauri::command]
+fn limpar_filtro(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
+    let doc = estado.doc(id)?;
+    doc.filtro.lock().map_err(|e| e.to_string())?.reiniciar();
+    doc.ordem.lock().map_err(|e| e.to_string())?.reiniciar();
+    Ok(())
+}
+
+/// Onde está o filtrado de número `posicao` (na ordem do arquivo), para ⌘↓/⌘↑ na Árvore.
+#[derive(Serialize)]
+struct Filtrado {
+    posicao: usize,
+    total: usize,
+    /// Linha e byte na linha, como `revelar` pede.
+    linha: usize,
+    byte: usize,
+}
+
+/// O `posicao`-ésimo registro do filtro pronto; `None` sem filtro ou fora dele. A Árvore filtra
+/// só a navegação: ela segue mostrando o arquivo todo.
+// shortcut: a interface guarda a posição da última ida; ⌘↓ não parte do cursor da Árvore.
+#[tauri::command]
+fn filtrado(
+    id: u32,
+    posicao: usize,
+    estado: State<'_, Estado>,
+) -> Result<Option<Filtrado>, String> {
+    let doc = estado.doc(id)?;
+    let (Some(f), _, _) = vista(&doc)? else {
+        return Ok(None);
+    };
+    let Some(&r) = f.registros.get(posicao) else {
+        return Ok(None);
+    };
+    let jsonl = doc
+        .varredura
+        .lock()
+        .map_err(|e| e.to_string())?
+        .inferencia
+        .as_ref()
+        .is_some_and(|(i, _)| i.entrada == nucleo::estrutura::Entrada::Jsonl);
+    // JSONL: o registro é a linha. JSON único: o elemento, que a Tabela sabe onde começa.
+    let onde = if jsonl {
+        Some((r as usize, 0))
+    } else {
+        tabela_pronta(&doc)?
+            .registro(r as usize)
+            .map(|(_, linha, byte)| (linha, byte))
+    };
+    Ok(onde.map(|(linha, byte)| Filtrado {
+        posicao,
+        total: f.registros.len(),
+        linha,
+        byte,
+    }))
 }
 
 fn marcas_atuais(estado: &Estado, id: u32) -> Result<Arc<[AtomicU8]>, String> {
@@ -1977,6 +2441,10 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             tabela_linhas,
             ordenar,
             cancelar_ordenacao,
+            filtrar,
+            cancelar_filtro,
+            limpar_filtro,
+            filtrado,
             buscar,
             achado,
             achados,
@@ -1991,7 +2459,10 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             cancelar_validacao,
             validar_outro,
             validar_com_schema,
-            salvar_exportado
+            salvar_exportado,
+            diff_estrutura,
+            diff_valores,
+            cancelar_diff_valores
         ])
 }
 
@@ -2204,14 +2675,14 @@ mod testes {
         let mut o = EstadoOrdem::default();
         o.cancelar(); // o pedido de ordenar
         let g = o.geracao;
-        let ordem = t.ordenar(0, &nao, &|_| {}).unwrap();
+        let ordem = t.ordenar(0, None, &nao, &|_| {}).unwrap();
         o.cancelar(); // o usuário cancela com a ordem pronta, antes de publicar
         assert_eq!(
-            o.publicar(g, ordem.clone(), false),
+            o.publicar(g, ordem.clone(), false, 0),
             Some(FalhaOrdem::Cancelada)
         );
         assert!(o.pronta.is_none());
-        assert_eq!(o.publicar(o.geracao, ordem, false), None);
+        assert_eq!(o.publicar(o.geracao, ordem, false, 0), None);
         assert!(o.pronta.is_some());
     }
 
@@ -2859,6 +3330,99 @@ mod testes {
         );
         assert!(em(2, "perfil", json!({"indice": 99})).is_err());
 
+        // Filtro: varre em 2º plano e avisa o fim por `filtragem`; a Tabela passa a só ter os
+        // filtrados, e a navegação da Árvore acha cada um.
+        {
+            use tauri::Listener;
+            let (tx, rx) = std::sync::mpsc::channel::<Value>();
+            app.listen_any("filtragem", move |e| {
+                let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+            });
+            let filtrar = |alvo: Value| {
+                let g = em(2, "filtrar", json!({ "alvo": alvo })).unwrap();
+                std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
+                    .find(|v| v["fim"] == true && v["geracao"] == g)
+                    .expect("filtro não terminou")
+            };
+            let registros = || {
+                em(
+                    2,
+                    "tabela_linhas",
+                    json!({"inicio": 0, "quantidade": 9, "colunas": [0]}),
+                )
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["registro"].as_u64().unwrap())
+                .collect::<Vec<_>>()
+            };
+            assert_eq!(registros(), [0, 1, 2, 3]);
+            let fim = filtrar(json!({"discriminador": 0, "variante": 0}));
+            assert_eq!(
+                (fim["achados"].clone(), fim["falha"].clone()),
+                (json!(2), Value::Null)
+            );
+            assert_eq!(registros(), [0, 2]);
+            assert_eq!(
+                em(2, "tabela", json!({})).unwrap()["filtro"],
+                json!({"achados": 2, "caminho": ".tipo", "tem": null, "valor": "x"})
+            );
+            assert_eq!(
+                em(2, "filtrado", json!({"posicao": 1})),
+                Ok(json!({"posicao": 1, "total": 2, "linha": 2, "byte": 0}))
+            );
+            assert_eq!(em(2, "filtrado", json!({"posicao": 2})), Ok(Value::Null));
+            // Ordenar com filtro ordena só os filtrados; filtro novo derruba essa ordem.
+            em(2, "ordenar", json!({"coluna": 0, "desc": true})).unwrap();
+            (0..200)
+                .map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    em(2, "tabela", json!({})).unwrap()["ordem"].clone()
+                })
+                .find(|o| !o.is_null())
+                .expect("ordenação não terminou");
+            assert_eq!(registros().len(), 2);
+            let fim = filtrar(json!({"caminho": 2, "tem": false}));
+            assert_eq!(fim["achados"], 1);
+            assert_eq!(em(2, "tabela", json!({})).unwrap()["ordem"], Value::Null);
+            assert_eq!(registros(), [1], "sem `.x`; a inválida não entra");
+            // Teto no call site: com o do documento baixado, recusa e não publica nada.
+            app.state::<Estado>()
+                .doc(2)
+                .unwrap()
+                .filtro
+                .lock()
+                .unwrap()
+                .teto = 1;
+            let fim = filtrar(json!({"caminho": 2, "tem": true}));
+            assert_eq!(
+                (fim["achados"].clone(), fim["falha"].clone()),
+                (json!(0), json!("grande"))
+            );
+            assert_eq!(registros(), [1], "o filtro anterior segue valendo");
+            app.state::<Estado>()
+                .doc(2)
+                .unwrap()
+                .filtro
+                .lock()
+                .unwrap()
+                .teto = filtro::MAX_FILTRADOS;
+            assert!(em(2, "filtrar", json!({"alvo": {"caminho": 99, "tem": true}})).is_err());
+            assert!(
+                em(
+                    2,
+                    "filtrar",
+                    json!({"alvo": {"discriminador": 0, "variante": 9}})
+                )
+                .is_err()
+            );
+            assert_eq!(em(2, "limpar_filtro", json!({})), Ok(Value::Null));
+            assert_eq!(registros(), [0, 1, 2, 3]);
+            assert_eq!(em(2, "tabela", json!({})).unwrap()["filtro"], Value::Null);
+            assert_eq!(em(2, "filtrado", json!({"posicao": 0})), Ok(Value::Null));
+        }
+
         // Copiar: caminho nos três formatos e valor (texto decodificado).
         assert_eq!(em(2, "alternar", json!({"v": 0})), Ok(json!(6)));
         assert_eq!(
@@ -3129,6 +3693,99 @@ mod testes {
         );
         let erro = chamar("abrir", json!({ "caminho": d })).unwrap_err();
         assert!(erro.as_str().unwrap().contains("pasta"), "{erro}");
+
+        {
+            use tauri::Listener;
+            let (tx, rx) = std::sync::mpsc::channel::<Value>();
+            app.listen_any("filtragem", move |e| {
+                let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+            });
+            // Dois discriminadores, contagens desiguais: {d, v} trocado acha outras linhas.
+            let mut dois = tempfile::NamedTempFile::new().unwrap();
+            std::io::Write::write_all(
+                &mut dois,
+                b"{\"tipo\":\"a\",\"k\":\"p\",\"ta\":1,\"kp\":1}\n\
+                  {\"tipo\":\"b\",\"k\":\"q\",\"tb\":1,\"kq\":1}\n\
+                  {\"tipo\":\"a\",\"k\":\"q\",\"ta\":1,\"kq\":1}\n\
+                  {\"tipo\":\"a\",\"k\":\"p\",\"ta\":1,\"kp\":1}\n\
+                  {\"tipo\":\"b\",\"k\":\"p\",\"tb\":1,\"kp\":1}\n",
+            )
+            .unwrap();
+            conceder(dois.path());
+            let id =
+                chamar("abrir", json!({ "caminho": dois.path().to_str().unwrap() })).unwrap()["id"]
+                    .as_u64()
+                    .unwrap() as u32;
+            let ds = (0..200)
+                .map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    em(id, "estrutura", json!({}))
+                })
+                .find_map(|e| e.ok().filter(|e| e["registros"] == 5))
+                .expect("inferência não terminou")["discriminadores"]
+                .clone();
+            let resumo = |d: &Value| {
+                (
+                    d["campo"].clone(),
+                    d["variantes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v["valor"].clone())
+                        .collect::<Vec<_>>(),
+                )
+            };
+            assert_eq!(
+                ds.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(resumo)
+                    .collect::<Vec<_>>(),
+                [
+                    (json!(".tipo"), vec![json!("a"), json!("b")]),
+                    (json!(".k"), vec![json!("p"), json!("q")])
+                ]
+            );
+            let filtrar_em = |alvo: Value| {
+                let g = em(id, "filtrar", json!({ "alvo": alvo })).unwrap();
+                std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
+                    .find(|v| v["fim"] == true && v["geracao"] == g)
+                    .expect("filtro não terminou")
+            };
+            let linhas = || {
+                em(
+                    id,
+                    "tabela_linhas",
+                    json!({"inicio": 0, "quantidade": 9, "colunas": [0]}),
+                )
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["registro"].as_u64().unwrap())
+                .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                filtrar_em(json!({"discriminador": 1, "variante": 1}))["achados"],
+                2
+            );
+            assert_eq!(linhas(), [1, 2], ".k = q");
+            assert_eq!(
+                filtrar_em(json!({"discriminador": 0, "variante": 1}))["achados"],
+                2
+            );
+            assert_eq!(linhas(), [1, 4], ".tipo = b");
+            assert_eq!(
+                filtrar_em(json!({"discriminador": 1, "variante": 0}))["achados"],
+                3
+            );
+            assert_eq!(linhas(), [0, 3, 4], ".k = p");
+            assert_eq!(
+                em(id, "tabela", json!({})).unwrap()["filtro"],
+                json!({"achados": 3, "caminho": ".k", "tem": null, "valor": "p"})
+            );
+            assert_eq!(em(id, "fechar", json!({})), Ok(Value::Null));
+        }
     }
 
     /// Abrir põe nos recentes; recente apagado sai da lista com `recente_ausente`.
