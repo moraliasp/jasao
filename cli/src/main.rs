@@ -16,6 +16,9 @@
 //!                                         se `--falha-em` pegar quebra (ou qualquer), 2 em uso
 //!                                         errado, 3 se não deu para comparar (arquivo não abre,
 //!                                         ou registro inválido com `--falha-em`)
+//!   diff --valores <antes> <depois> [--json] [--falha-em qualquer]
+//!                                         valores adicionados, removidos e alterados, registro N
+//!                                         contra registro N; mesmos códigos de saída
 //!
 //! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir` e `diff` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
@@ -41,7 +44,8 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]\n  \
                    exportar --zod|--schema [--literal] [--numero-texto manter|numero] <arquivo>\n  \
-                   diff <antes> <depois> [--json] [--falha-em quebra|qualquer]\n\
+                   diff <antes> <depois> [--json] [--falha-em quebra|qualquer]\n  \
+                   diff --valores <antes> <depois> [--json] [--falha-em qualquer]\n\
                    \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
                    \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
 
@@ -625,14 +629,17 @@ struct OpcoesDiff<'a> {
     depois: &'a str,
     json: bool,
     falha_em: FalhaEm,
+    valores: bool,
 }
 
 fn opcoes_diff<'a>(args: &[&'a str]) -> Option<OpcoesDiff<'a>> {
     let (mut arquivos, mut json, mut falha_em) = (Vec::new(), false, FalhaEm::Nunca);
+    let mut valores = false;
     let mut it = args.iter();
     while let Some(&a) = it.next() {
         match a {
             "--json" => json = true,
+            "--valores" => valores = true,
             "--falha-em" => {
                 falha_em = match *it.next()? {
                     "quebra" => FalhaEm::Quebra,
@@ -647,11 +654,16 @@ fn opcoes_diff<'a>(args: &[&'a str]) -> Option<OpcoesDiff<'a>> {
     let [antes, depois] = arquivos[..] else {
         return None;
     };
+    // Valor não tem quebra × compatível.
+    if valores && falha_em == FalhaEm::Quebra {
+        return None;
+    }
     Some(OpcoesDiff {
         antes,
         depois,
         json,
         falha_em,
+        valores,
     })
 }
 
@@ -670,6 +682,9 @@ fn diff(op: OpcoesDiff, out: &mut Terminal<impl Write>) -> Result<u8, Box<dyn st
     use nucleo::estrutura;
     let nada = AtomicBool::new(false);
     let (a, b) = (abrir(op.antes)?, abrir(op.depois)?);
+    if op.valores {
+        return diff_valores(&op, &a, &b, out);
+    }
     let (ia, ib) = (
         estrutura::inferir(a.bytes(), &nada, |_| {}),
         estrutura::inferir(b.bytes(), &nada, |_| {}),
@@ -753,6 +768,105 @@ fn diff(op: OpcoesDiff, out: &mut Terminal<impl Write>) -> Result<u8, Box<dyn st
         FalhaEm::Qualquer => !mudancas.is_empty(),
     };
     Ok(u8::from(falhou))
+}
+
+/// `diff --valores`: registro N contra registro N, em fluxo; guarda os primeiros
+/// `valores::MAX_REGISTROS` diferentes, conta todos.
+fn diff_valores(
+    op: &OpcoesDiff,
+    a: &ArquivoLinhas,
+    b: &ArquivoLinhas,
+    out: &mut Terminal<impl Write>,
+) -> Result<u8, Box<dyn std::error::Error>> {
+    use nucleo::estrutura::entrada_provavel;
+    use nucleo::valores::{self, MAX_REGISTROS};
+    let nada = AtomicBool::new(false);
+    let (da, db) = (a.bytes(), b.bytes());
+    let r = valores::arquivos(
+        da,
+        entrada_provavel(da),
+        db,
+        entrada_provavel(db),
+        &nada,
+        |_| {},
+    );
+    let opt = |v: &Option<String>| v.as_deref().map_or("null".into(), texto_json);
+    let linha = |l: Option<u64>| l.map_or("null".into(), |l| (l + 1).to_string());
+    if op.json {
+        let regs: Vec<String> = r
+            .guardados
+            .iter()
+            .map(|g| {
+                let difs: Vec<String> = g
+                    .diferencas
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            r#"{{"caminho":{},"acao":"{}","antes":{},"depois":{}}}"#,
+                            texto_json(&d.caminho),
+                            d.acao.nome(),
+                            opt(&d.antes),
+                            opt(&d.depois)
+                        )
+                    })
+                    .collect();
+                format!(
+                    r#"{{"registro":{},"linha_antes":{},"linha_depois":{},"total":{},"diferencas":[{}]}}"#,
+                    g.registro + 1,
+                    linha(g.linha_antes),
+                    linha(g.linha_depois),
+                    g.total,
+                    difs.join(",")
+                )
+            })
+            .collect();
+        writeln!(
+            out,
+            r#"{{"iguais":{},"diferentes":{},"so_antes":{},"so_depois":{},"invalidos":{},"diferencas":{},"registros":[{}]}}"#,
+            r.iguais,
+            r.diferentes,
+            r.so_antes,
+            r.so_depois,
+            r.invalidos,
+            r.diferencas,
+            regs.join(",")
+        )?;
+    } else {
+        for g in &r.guardados {
+            writeln!(
+                out,
+                "registro {} (linha {} → {})",
+                g.registro + 1,
+                linha(g.linha_antes),
+                linha(g.linha_depois)
+            )?;
+            for d in &g.diferencas {
+                writeln!(out, "  {d}")?;
+            }
+            if g.total > g.diferencas.len() as u64 {
+                writeln!(out, "  … e mais {}", g.total - g.diferencas.len() as u64)?;
+            }
+        }
+        let guardados = r.diferentes + r.so_antes + r.so_depois;
+        if guardados > MAX_REGISTROS as u64 {
+            writeln!(
+                out,
+                "… e mais {} registros diferentes",
+                guardados - MAX_REGISTROS as u64
+            )?;
+        }
+    }
+    out.flush()?;
+    eprintln!(
+        "{} iguais · {} diferentes · {} só antes · {} só depois · {} inválidos",
+        r.iguais, r.diferentes, r.so_antes, r.so_depois, r.invalidos
+    );
+    if r.invalidos > 0 && op.falha_em != FalhaEm::Nunca {
+        eprintln!("erro: registros inválidos não comparados; `--falha-em` não confia no resultado");
+        return Ok(DIFF_SEM_COMPARAR);
+    }
+    let algum = r.diferentes + r.so_antes + r.so_depois > 0;
+    Ok(u8::from(op.falha_em == FalhaEm::Qualquer && algum))
 }
 
 fn opcoes_erros<'a>(args: &[&'a str]) -> Option<(&'a str, bool, usize)> {
@@ -968,6 +1082,11 @@ mod testes {
         fn ok<'a>(a: &[&'a str]) -> Option<(&'a str, &'a str, bool, FalhaEm)> {
             opcoes_diff(a).map(|o| (o.antes, o.depois, o.json, o.falha_em))
         }
+        assert!(opcoes_diff(&["a", "b"]).is_some_and(|o| !o.valores));
+        assert!(
+            opcoes_diff(&["--valores", "a", "b", "--falha-em", "qualquer"])
+                .is_some_and(|o| o.valores)
+        );
         assert_eq!(ok(&["a", "b"]), Some(("a", "b", false, FalhaEm::Nunca)));
         assert_eq!(
             ok(&["--falha-em", "quebra", "a", "--json", "b"]),
@@ -983,6 +1102,7 @@ mod testes {
             &["a", "b", "--falha-em"],
             &["a", "b", "--falha-em", "sempre"],
             &["a", "b", "--x"],
+            &["--valores", "a", "b", "--falha-em", "quebra"],
         ] {
             assert!(opcoes_diff(ruim).is_none(), "{ruim:?}");
         }
@@ -1003,6 +1123,7 @@ mod testes {
                 depois,
                 json,
                 falha_em,
+                valores: false,
             };
             let c = diff(op, &mut t).unwrap();
             (String::from_utf8(t.out).unwrap(), c == 1)
@@ -1025,6 +1146,48 @@ mod testes {
         assert!(!rodar(pb, pc, false, FalhaEm::Quebra).1);
         assert!(rodar(pb, pc, false, FalhaEm::Qualquer).1);
         assert!(!rodar(pa, pb, false, FalhaEm::Nunca).1);
+    }
+
+    #[test]
+    fn diff_valores_neutraliza_e_falha_em() {
+        let a = Temporario::novo("dv-a", "{\"a\":1}\n{\"s\":\"x\u{9b}\"}\n");
+        let b = Temporario::novo("dv-b", "{\"a\":1}\n{\"s\":\"y\"}\n{\"n\":2}\n");
+        let (pa, pb) = (a.0.to_str().unwrap(), b.0.to_str().unwrap());
+        let rodar = |antes, depois, json, falha_em| {
+            let mut t = Terminal {
+                out: Vec::new(),
+                neutralizar: true,
+            };
+            let op = OpcoesDiff {
+                antes,
+                depois,
+                json,
+                falha_em,
+                valores: true,
+            };
+            let c = diff(op, &mut t).unwrap();
+            (String::from_utf8(t.out).unwrap(), c)
+        };
+        let (texto, c) = rodar(pa, pb, false, FalhaEm::Qualquer);
+        assert_eq!(c, 1);
+        assert_eq!(
+            texto,
+            "registro 2 (linha 2 → 2)\n  alterado    .s  \"x\\u{9b}\" → \"y\"\n\
+             registro 3 (linha null → 3)\n  adicionado  .  {\"n\":2}\n"
+        );
+        let (json, c) = rodar(pa, pb, true, FalhaEm::Nunca);
+        assert_eq!(c, 0);
+        assert!(json.starts_with(r#"{"iguais":1,"diferentes":1,"so_antes":0,"so_depois":1,"invalidos":0,"diferencas":1,"registros":[{"registro":2,"linha_antes":2,"linha_depois":2,"total":1,"diferencas":[{"caminho":".s","acao":"alterado""#), "{json}");
+        assert!(
+            json.contains(r#"{"registro":3,"linha_antes":null,"linha_depois":3"#),
+            "{json}"
+        );
+        assert_eq!(rodar(pa, pa, false, FalhaEm::Qualquer).1, 0);
+        let c = Temporario::novo("dv-c", "{\"a\":1}\n{\n");
+        assert_eq!(
+            rodar(pa, c.0.to_str().unwrap(), false, FalhaEm::Qualquer).1,
+            DIFF_SEM_COMPARAR
+        );
     }
 
     /// O erro do jq cita o valor do arquivo: no stderr de terminal, sai neutralizado.

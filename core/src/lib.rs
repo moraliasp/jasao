@@ -16,6 +16,7 @@ pub mod resumo;
 pub mod tabela;
 pub mod texto;
 pub mod validar;
+pub mod valores;
 
 pub use arvore::Arvore;
 pub use busca::{Achado, Busca, ErroBusca, Lote, Resumo};
