@@ -30,6 +30,9 @@ export async function copiar(v: number, formato: Formato): Promise<string> {
   return p;
 }
 
+/** Copia um texto que já está na interface (código gerado no Exportar), dentro do gesto. */
+export const copiarTexto = (s: string): Promise<void> => navigator.clipboard.writeText(s);
+
 /** Menu de contexto acessível: setas, Home/End, Enter, Esc ou Tab fecham e devolvem o foco. */
 export function criarMenu(el: HTMLElement, escolher: (f: Formato) => void) {
   const itens = [...el.querySelectorAll<HTMLButtonElement>("[role=menuitem]")];

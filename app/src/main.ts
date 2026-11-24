@@ -16,6 +16,7 @@ import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
+import { criarExportar } from "./exportar";
 import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar";
 import {
   decodificar,
@@ -60,7 +61,7 @@ const textoEl = $("texto");
 const textoAlto = $("texto-alto");
 const textoLinhas = $("texto-linhas");
 const verFormatado = $<HTMLButtonElement>("ver-formatado");
-const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura") };
+const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba-estrutura"), exportar: $("aba-exportar") };
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = escAtributo;
@@ -99,7 +100,18 @@ const regua = criarRegua($("regua"), $("legenda"), {
   fmt: (n) => fmt(n),
 });
 
-const visaoAtual = () => (modo === "texto" ? textoEl : modo === "estrutura" ? estruturaEl : arvore);
+const exportarEl = $("exportar");
+const visaoAtual = () => ({ texto: textoEl, estrutura: estruturaEl, exportar: exportarEl, arvore })[modo];
+/** Visão sem registros (Estrutura, Exportar): achado e "ir para registro" vão para a Árvore. */
+const semRegistros = () => modo === "estrutura" || modo === "exportar";
+const exportar = criarExportar(exportarEl, {
+  fmt: (n) => fmt(n),
+  icone: (id) => icone(id),
+  nome: () => nomesDasAbas()[ativa] ?? "",
+  avisar: (msg) => void (status.textContent = msg),
+  erro: (e) => erroAoAbrir(e),
+});
+
 const busca = criarBusca($("busca") as HTMLFormElement, {
   ir: irAoAchado,
   mudou: () => {
@@ -187,7 +199,7 @@ let quadro = 0;
 function desenhar(): void {
   quadro = 0;
   if (modo === "texto") return desenharTexto();
-  if (modo === "estrutura") return;
+  if (semRegistros()) return;
   alto.style.height = espaco(arvore, total, ALTURA);
   linhasEl.style.height = `${arvore.clientHeight}px`;
   const g = geometria();
@@ -211,6 +223,11 @@ let migalhasDe = ""; // doc:versão:linha das migalhas mostradas (vêm do Rust s
 
 /** Migalhas e botões do rodapé da seleção, iguais nas duas visões. */
 function rodape(): void {
+  if (modo === "exportar") {
+    copiar.disabled = verFormatado.disabled = true; // o Exportar tem o próprio Copiar
+    migalhas.innerHTML = migalhasDe = "";
+    return;
+  }
   if (modo === "estrutura") {
     const it = estr?.[selE];
     copiar.disabled = !it;
@@ -324,7 +341,7 @@ async function revelar(registro: number, byte: number): Promise<void> {
 
 /** Achado da busca: abre a árvore até o byte e seleciona, nas duas visões. */
 async function irAoAchado(registro: number, byte: number): Promise<void> {
-  if (modo === "estrutura") trocarModo("arvore"); // achado é de registro: mostra na Árvore
+  if (semRegistros()) trocarModo("arvore"); // achado é de registro: mostra na Árvore
   const r = await chamar<[number, number] | null>("revelar", { registro, byte });
   if (!r) return;
   total = r[1];
@@ -436,6 +453,7 @@ function focar(el: HTMLElement | null | undefined): void {
 
 /** `rolagem`: [árvore, texto] guardados na aba; sem ela, a seleção vem para a vista. */
 function trocarModo(m: Modo, rolagem?: [number, number]): void {
+  if (m !== "exportar") exportar.parar();
   modo = m;
   noPainel = false;
   painel.hidden = true;
@@ -447,7 +465,12 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
   arvore.hidden = m !== "arvore";
   textoEl.hidden = m !== "texto";
   estruturaEl.hidden = m !== "estrutura";
-  if (m === "estrutura") {
+  exportarEl.hidden = m !== "exportar";
+  if (m === "exportar") {
+    rodape();
+    void exportar.mostrar();
+    focar(exportarEl);
+  } else if (m === "estrutura") {
     void carregarEstrutura().catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
     focar(estruturaEl);
   } else if (m === "texto") {
@@ -647,7 +670,10 @@ function desenharAbas(): void {
 /** Mostra a aba `i`: guarda a que sai e traz o estado da que entra. `foco`: o foco fica na aba. */
 function ativar(i: number, foco = false): void {
   const antes = abaAtiva();
-  if (antes && i !== ativa) guardar(antes);
+  if (antes && i !== ativa) {
+    exportar.parar(); // validação é do doc que sai
+    guardar(antes);
+  }
   ativa = i;
   const a = lista[i];
   ({ total, registros, sel, modo, noPainel, resumo, atual, alvo, estr, selE, registrosE } = a);
@@ -894,6 +920,7 @@ const MODOS: { id: Modo | "tabela"; icone: string; disponivel: boolean; sempre: 
   { id: "arvore", icone: "binary-tree", disponivel: true, sempre: true },
   { id: "texto", icone: "file-text", disponivel: true, sempre: false },
   { id: "estrutura", icone: "list-tree", disponivel: true, sempre: false },
+  { id: "exportar", icone: "braces", disponivel: true, sempre: false },
 ];
 const disponiveis = MODOS.filter((m) => m.disponivel) as { id: Modo; icone: string; sempre: boolean }[];
 const sugerido = disponiveis[0].id;
@@ -956,6 +983,7 @@ function desenharPainel(): void {
 
 function mostrarPainel(): void {
   if (!resumo) return;
+  exportar.parar();
   noPainel = true;
   painel.hidden = false;
   conteudo.hidden = true;
@@ -1087,9 +1115,9 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return fecharAba(ativa);
   }
-  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura (`code`: com ⌥ o `key` vira outro caractere).
+  // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura, ⌥⌘4 Exportar (`code`: com ⌥ o `key` vira outro caractere).
   if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && resumo) {
-    const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura" } as const)[e.code as "Digit1" | "Digit2" | "Digit3"];
+    const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura", Digit4: "exportar" } as const)[e.code as "Digit1" | "Digit2" | "Digit3" | "Digit4"];
     if (m) {
       e.preventDefault();
       trocarModo(m);
@@ -1141,11 +1169,12 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   if (!ativo) return;
   desenharAndamento();
   if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
+  if (p.inferiu && modo === "exportar" && !noPainel && !exportar.temCodigo()) void exportar.mostrar();
   regua.andamento(p);
 });
 /** Seleciona o registro `r` na visão atual e põe o foco nela; `false` se não existir. */
 async function focarRegistro(r: number): Promise<boolean> {
-  if (modo === "estrutura") trocarModo("arvore"); // a Estrutura não tem registros
+  if (semRegistros()) trocarModo("arvore");
   const v = await chamar<number | null>("ir_para", { registro: r });
   if (v === null) return false;
   if (modo === "texto") {
@@ -1169,6 +1198,8 @@ $("abrir").textContent = t.abrir;
 abas.arvore.firstChild!.textContent = t.arvore;
 abas.texto.firstChild!.textContent = t.texto;
 abas.estrutura.firstChild!.textContent = t.estrutura.aba;
+abas.exportar.firstChild!.textContent = t.exportar.aba;
+exportarEl.setAttribute("aria-label", t.exportar.rotulo);
 estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);
 $("abas").setAttribute("aria-label", t.valores);
 listaEl.setAttribute("aria-label", t.abasArquivos.rotulo);
