@@ -26,7 +26,7 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 | Abas e arrastar vários arquivos | ✅ #20 | ? | ? | ❌ | — | ? |
 | Árvore de valores | ✅ #6 | ✅ | ✅ | ✅ | — | ✅ |
 | Texto cru sincronizado com a árvore | ✅ #9 | ? | ? | ◐ | — | — |
-| Tabela por coluna | ❌ | ? | ✅ | ❌ | — | ✅ |
+| Tabela por coluna | ✅ núcleo (#33) e interface: colunas por caminho, ordenação completa em 2º plano, fixar e ocultar | ? | ✅ | ❌ | — | ✅ |
 | Copiar caminho (jq, JSONPath, Pointer) | ✅ core e CLI (#7), interface (#19) | ✅ | ✅ | ✅ | — | — |
 | Linha inválida sem quebrar o resto | ✅ #7, #12 | ? | ? | ❌ | — | — |
 | Consulta jq | ✅ core e CLI (#10), interface (#19) | ◐ JSONPath | ✅ | ❌ | — | ✅ (consulta Mongo) |
@@ -41,10 +41,9 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 
 ## Gaps, em ordem
 
-1. **Tabela por coluna.** OK JSON e Compass já têm; é o único eixo de visualização básica em que o Jasão ainda está zerado.
-2. **Benchmark público de 1 GB contra o Dadroit.** É o único argumento que o pago tem e que o Jasão pode tirar de graça. Antes, fechar o #23 (tetos de memória da árvore).
-3. **Valores inteligentes** (data, JWT, base64). O JSON Hero dita o padrão.
-4. **Diff e export.** Com a estrutura na interface (#21), a base está pronta. O diff que marca quebra × compatível não tem concorrente: quem chegar primeiro fica com o eixo sozinho.
+1. **Benchmark público de 1 GB contra o Dadroit.** É o único argumento que o pago tem e que o Jasão pode tirar de graça. Antes, fechar o #23 (tetos de memória da árvore).
+2. **Valores inteligentes** (data, JWT, base64). O JSON Hero dita o padrão.
+3. **Diff e export.** Com a estrutura na interface (#21), a base está pronta. O diff que marca quebra × compatível não tem concorrente: quem chegar primeiro fica com o eixo sozinho.
 
 ## Candidatos a "muito especial", de graça
 
@@ -61,3 +60,4 @@ Placar vivo do Jasão contra o mercado. Atualizado em 22/11/2026, com `main` em 
 - 22/11/2026 (noite): abas de arquivo (estado por documento no Rust e no front, ⌘T/⌘W/⌘1…9/Ctrl+Tab) e arrastar vários arquivos para a janela em PR. Os exemplos embutidos viram duas abas.
 - 22/11/2026: em PR, recentes (os 10 últimos, na aba vazia e no menu Arquivo) e associação de `.json`/`.jsonl`/`.ndjson` como visualizador alternativo, com abertura pelo Finder e instância única. Fica fora do placar, que compara visualização e não integração com o sistema.
 - 22/11/2026 (fim do dia): mergeados #18 a #22 (exemplos, busca/caminho/jq na interface, abas, Estrutura, recentes). Presença e união discriminada passam a ✅ na interface; o Jasão fecha 20 de 26 pontos no radar 0–2, contra 13 do JSON Hero. Em PR: tetos de memória da árvore (#23). Gap 1 agora é a tabela por coluna.
+- 23/11/2026: modo Tabela em PR (núcleo #33, interface empilhada): colunas por caminho, janela virtual do Rust, ordenação completa em 2º plano com progresso e cancelar, fixar e ocultar. Tabela por coluna passa a ✅; o Jasão vai a 22 de 26 pontos quando mergear. Gap 1 volta a ser o benchmark contra o Dadroit.
