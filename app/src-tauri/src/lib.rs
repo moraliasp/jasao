@@ -46,6 +46,8 @@ struct Estado {
     proximo: AtomicU32,
     /// Descompactações em curso (ver `cancelar_abertura`).
     abrindo: Aberturas,
+    /// Diff de valores em curso (envolve dois documentos, então fica fora de `Doc`).
+    diff: Mutex<EstadoExportar>,
 }
 
 /// Flags de cancelamento por abertura. A chave é um id por abertura, não o caminho: o mesmo
@@ -1295,6 +1297,154 @@ fn cancelar_validacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> 
     Ok(())
 }
 
+// ---- Diff entre dois documentos abertos (antes × depois). ----
+
+#[derive(Serialize)]
+struct MudancaUi {
+    caminho: String,
+    regra: &'static str,
+    classe: &'static str,
+    antes: [u64; 2],
+    depois: [u64; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tipos: Option<[Vec<&'static str>; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    variante: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DiffEstrutura {
+    mudancas: Vec<MudancaUi>,
+    /// Caminhos nos dois lados sem mudança.
+    iguais: Vec<String>,
+    /// Registros inválidos ignorados `[antes, depois]`.
+    invalidas: [u64; 2],
+}
+
+/// Diff de estrutura com a taxonomia do núcleo; `None` enquanto alguma inferência não acabou.
+#[tauri::command]
+fn diff_estrutura(
+    antes: u32,
+    depois: u32,
+    estado: State<'_, Estado>,
+) -> Result<Option<DiffEstrutura>, String> {
+    use nucleo::diff::{Detalhe, diff, iguais};
+    let (Some((a, _)), Some((b, _))) = (inferencia(&estado, antes)?, inferencia(&estado, depois)?)
+    else {
+        return Ok(None);
+    };
+    let ms = diff(&a.resumo, &b.resumo);
+    let nomes = |ts: &[nucleo::estrutura::Tipo]| ts.iter().map(|t| t.nome()).collect();
+    Ok(Some(DiffEstrutura {
+        iguais: iguais(&a.resumo, &b.resumo, &ms),
+        invalidas: [a.resumo.invalidas.n, b.resumo.invalidas.n],
+        mudancas: ms
+            .into_iter()
+            .map(|m| MudancaUi {
+                regra: m.regra.nome(),
+                classe: m.regra.classe().nome(),
+                antes: [m.antes.n, m.antes.de],
+                depois: [m.depois.n, m.depois.de],
+                tipos: match &m.detalhe {
+                    Detalhe::Tipos(x, y) => Some([nomes(x), nomes(y)]),
+                    _ => None,
+                },
+                variante: match m.detalhe {
+                    Detalhe::Variante(v) => Some(v),
+                    _ => None,
+                },
+                caminho: m.caminho,
+            })
+            .collect(),
+    }))
+}
+
+/// Evento `diff_valores`: progresso e, no fim, o resultado.
+#[derive(Clone, Serialize)]
+struct AndamentoDiff {
+    geracao: u64,
+    varridas: u64,
+    total: u64,
+    resultado: Option<nucleo::valores::DiffArquivos>,
+}
+
+/// Diff de valores numa thread própria, que emite `diff_valores` (no máximo a cada `INTERVALO`,
+/// e no fim); o anterior é cancelado. `registros` (base 0): compara só esses dois; sem ele, o
+/// registro N de um contra o N do outro, no arquivo inteiro. Devolve a geração, ou `None`
+/// enquanto alguma inferência não acabou (ela diz como ler os registros).
+#[tauri::command]
+fn diff_valores<R: Runtime>(
+    antes: u32,
+    depois: u32,
+    registros: Option<[u64; 2]>,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<u64>, String> {
+    let (Some((ia, fa)), Some((ib, fb))) =
+        (inferencia(&estado, antes)?, inferencia(&estado, depois)?)
+    else {
+        return Ok(None);
+    };
+    let (geracao, cancelar) = {
+        let mut e = estado.diff.lock().map_err(|e| e.to_string())?;
+        e.cancelar.store(true, Relaxed);
+        e.cancelar = Arc::new(AtomicBool::new(false));
+        e.geracao += 1;
+        (e.geracao, Arc::clone(&e.cancelar))
+    };
+    std::thread::spawn(move || {
+        let avisar = |a: AndamentoDiff| {
+            let vale = app
+                .state::<Estado>()
+                .diff
+                .lock()
+                .ok()
+                .map(|e| e.geracao == geracao);
+            if vale == Some(true) {
+                emitir(&app, "diff_valores", antes, a);
+            }
+        };
+        let (a, b) = (fa.bytes(), fb.bytes());
+        let r = match registros {
+            Some([na, nb]) => {
+                nucleo::valores::registros(a, ia.entrada, na, b, ib.entrada, nb, &cancelar)
+            }
+            None => {
+                let mut aviso = Instant::now();
+                nucleo::valores::arquivos(a, ia.entrada, b, ib.entrada, &cancelar, |p| {
+                    if aviso.elapsed() >= INTERVALO {
+                        aviso = Instant::now();
+                        avisar(AndamentoDiff {
+                            geracao,
+                            varridas: p.varridas,
+                            total: p.total,
+                            resultado: None,
+                        });
+                    }
+                })
+            }
+        };
+        if !r.cancelado {
+            avisar(AndamentoDiff {
+                geracao,
+                varridas: 1,
+                total: 1,
+                resultado: Some(r),
+            });
+        }
+    });
+    Ok(Some(geracao))
+}
+
+/// Para o diff de valores em curso (Esc, trocar de vista, fechar uma das abas).
+#[tauri::command]
+fn cancelar_diff_valores(estado: State<'_, Estado>) -> Result<(), String> {
+    let mut e = estado.diff.lock().map_err(|e| e.to_string())?;
+    e.cancelar.store(true, Relaxed);
+    e.geracao += 1;
+    Ok(())
+}
+
 /// Diálogo de salvar no backend (como `escolher`): a webview não escolhe caminho nem manda
 /// conteúdo; o código é gerado de novo aqui. `nome` é só a sugestão do diálogo.
 /// Devolve o caminho salvo, ou `None` se o usuário cancelou.
@@ -2108,7 +2258,10 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             validar_outro,
             validar_com_schema,
             salvar_exportado,
-            salvar_consulta
+            salvar_consulta,
+            diff_estrutura,
+            diff_valores,
+            cancelar_diff_valores
         ])
 }
 

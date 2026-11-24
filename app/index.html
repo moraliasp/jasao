@@ -208,6 +208,17 @@
       .exp .falhas { margin: 0 0 8px; padding-left: 0; list-style: none; font: 12px/1.5 var(--mono); color: var(--bar-muted); }
       .exp .falhas:empty { display: none; }
       .exp .falhas span { unicode-bidi: isolate; }
+      .exp .tools fieldset { display: flex; gap: 12px; margin: 0; padding: 0; border: 0; }
+      .exp .tools fieldset[hidden] { display: none; }
+      .exp .tools legend { float: left; width: 100%; padding: 0; font-size: 12px; color: var(--bar-muted); }
+      .exp .tools input { height: 28px; width: 8ch; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); color: var(--bar-fg); font-size: 13px; }
+      .dif .dres { flex: 1; min-height: 0; overflow: auto; }
+      .dif .dgrupo h3 { margin: 12px 0 4px; font-size: 13px; }
+      .dif .dgrupo h3 span { color: var(--bar-muted); font-weight: normal; }
+      .dif .dgrupo.quebra h3 { color: var(--change); }
+      .dif .dgrupo ul { margin: 0; padding-left: 0; list-style: none; font: 12px/1.6 var(--mono); }
+      .dif .dgrupo b { font: 600 12px system-ui, sans-serif; }
+      .dif .dev, .dif .dtipos, .dif .dmais { color: var(--bar-muted); }
       .exp pre { flex: 1; min-height: 0; margin: 0; padding: 12px 14px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bar-bg); font: 12.5px/1.55 var(--mono); tab-size: 2; }
       .tl .corte { margin-left: 8px; color: var(--bar-muted); font-style: italic; }
       dialog { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); color: var(--bar-fg); }
@@ -347,6 +358,7 @@
         <button role="tab" aria-selected="false" aria-controls="estrutura" type="button" id="aba-estrutura" tabindex="-1" aria-keyshortcuts="Alt+Meta+3 Alt+Control+3">Estrutura<kbd>⌥⌘3</kbd></button>
         <button role="tab" aria-selected="false" aria-controls="tabela" type="button" id="aba-tabela" tabindex="-1" aria-keyshortcuts="Alt+Meta+4 Alt+Control+4">Tabela<kbd>⌥⌘4</kbd></button>
         <button role="tab" aria-selected="false" aria-controls="exportar" type="button" id="aba-exportar" tabindex="-1" aria-keyshortcuts="Alt+Meta+5 Alt+Control+5">Exportar<kbd>⌥⌘5</kbd></button>
+        <button role="tab" aria-selected="false" aria-controls="diff" type="button" id="aba-diff" tabindex="-1" aria-keyshortcuts="Alt+Meta+6 Alt+Control+6">Diff<kbd>⌥⌘6</kbd></button>
       </div>
       <section class="painel" id="painel" aria-labelledby="painel-nome" hidden>
         <div>
@@ -424,6 +436,7 @@
           </div>
         </div>
         <section class="tree exp" id="exportar" tabindex="-1" aria-label="Exportar a estrutura como Zod ou JSON Schema" hidden></section>
+        <section class="tree exp dif" id="diff" tabindex="-1" aria-label="Comparar dois arquivos abertos" hidden></section>
         <div class="regua" id="regua" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="1" hidden></div>
         </div>
         <section class="detalhe" id="detalhe" aria-label="Valor selecionado" aria-live="polite" hidden></section>
