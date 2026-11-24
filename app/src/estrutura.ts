@@ -1,6 +1,7 @@
 // Modo Estrutura: desenha o que `nucleo::estrutura` inferiu (comando `estrutura`). Lógica pura,
 // sem DOM, para rodar com `node --test`. Nada de inferência aqui: só formatação.
 import type { Textos } from "./i18n.ts";
+import type { Alvo } from "./tabela.ts";
 import { escAtributo, visivel } from "./texto.ts";
 
 export interface CaminhoE {
@@ -23,8 +24,11 @@ export interface Estrutura {
 }
 
 /** Uma linha da lista: caminho ou variante. `linha` = 1º registro (base 0) para ir à Árvore;
- * `indice` = posição em `caminhos` (para o comando `perfil`), `null` nas variantes. */
-export interface ItemE { html: string; rotulo: string; caminho: string; linha: number | null; indice: number | null }
+ * `indice` = posição em `caminhos` (para o comando `perfil`), `null` nas variantes.
+ * `alvo`/`valor`: o que F filtra (caminho: os que têm; variante: os do formato). */
+export interface ItemE {
+  html: string; rotulo: string; caminho: string; linha: number | null; indice: number | null; alvo: Alvo; valor: string | null;
+}
 
 /** O que o comando `perfil` devolve (ver `nucleo::perfil::Perfil`). */
 export interface Perfil {
@@ -84,19 +88,23 @@ export function itens(e: Estrutura, t: Textos, fmt: Fmt): ItemE[] {
       caminho: c.caminho,
       linha: primeira(c),
       indice,
+      alvo: { caminho: indice, tem: true },
+      valor: null,
       rotulo: `${c.caminho}: ${ti}; ${pr}${opcional ? `; ${t.estrutura.opcional}` : ""}${av.map((a) => `; ${t.estrutura.aviso}: ${a}`).join("")}`,
       html: `<span class="ec" style="padding-left:${8 + c.profundidade * 20}px" title="${esc(c.caminho)}">${visivel(nome)}</span>` +
         `<span class="et">${esc(ti)}${av.map((a) => ` <span class="ea">${esc(a)}</span>`).join("")}</span><span class="ep${opcional ? " op" : ""}">${esc(pr)}</span>`,
     };
   });
-  for (const d of e.discriminadores)
-    for (const v of d.variantes) {
+  for (const [discriminador, d] of e.discriminadores.entries())
+    for (const [variante, v] of d.variantes.entries()) {
       const opc = v.opcionais.map(([k, n]) => `${k} (${fmt(n)})`).join(", ");
       const det = `${t.estrutura.obrigatorias}: ${v.obrigatorias.join(", ") || "—"}${opc ? ` · ${t.estrutura.opcionais}: ${opc}` : ""}`;
       out.push({
         caminho: d.campo,
         linha: v.linha,
         indice: null,
+        alvo: { discriminador, variante },
+        valor: v.valor,
         rotulo: `${t.estrutura.formato(d.campo, v.valor)}: ${t.estrutura.registros(fmt(v.registros))}; ${det}`,
         html: `<span class="ec" style="padding-left:8px">${visivel(`${d.campo} = "${v.valor}"`)}</span>` +
           `<span class="et">${visivel(det)}</span><span class="ep">${esc(t.estrutura.registros(fmt(v.registros)))}</span>`,
@@ -115,11 +123,13 @@ export function faixa(f: { negativo: boolean; expoente: number | null }): string
   return `${f.negativo ? "−" : ""}1e${f.expoente}…1e${f.expoente + 1}`;
 }
 
-/** Linhas (base 0) como botões `data-l` (a Árvore abre o registro), 1ª linha = 1. */
-function linhas(rot: string, n: number, ls: number[], t: Textos, fmt: Fmt): string {
+/** Linhas (base 0) como botões `data-l` (a Árvore abre o registro), 1ª linha = 1, e o botão
+ * `data-filtrar` que filtra todos eles (`tem` = com ou sem o caminho). */
+function linhas(rot: string, n: number, ls: number[], tem: boolean, t: Textos, fmt: Fmt): string {
   if (!n) return "";
   const mais = n > ls.length ? ` <span class="pm">${esc(t.estrutura.primeiras(fmt(ls.length)))}</span>` : "";
-  return `<p class="rot">${esc(rot)}: ${esc(fmt(n))}${mais}</p><p class="pl">` +
+  const filtrar = `<button class="lk" type="button" data-filtrar="${tem}">${esc(t.estrutura.filtrar(fmt(n)))}</button>`;
+  return `<p class="rot">${esc(rot)}: ${esc(fmt(n))}${mais} · ${filtrar}</p><p class="pl">` +
     ls.map((l) => `<button class="lk" type="button" data-l="${l}">${esc(fmt(l + 1))}</button>`).join(" ") + "</p>";
 }
 
@@ -139,5 +149,5 @@ export function detalhe(caminho: string, p: Perfil, t: Textos, fmt: Fmt): string
   if (p.comuns.length)
     h += `<p class="rot">${esc(e.comuns)}${aprox(p.comuns_aprox)}</p><ol class="cm">` +
       p.comuns.map(([v, n]) => `<li><span>${curto(v)}</span><span>${esc(fmt(n))}</span></li>`).join("") + "</ol>";
-  return h + linhas(e.com, p.com, p.linhas_com, t, fmt) + linhas(e.sem, p.sem, p.linhas_sem, t, fmt);
+  return h + linhas(e.com, p.com, p.linhas_com, true, t, fmt) + linhas(e.sem, p.sem, p.linhas_sem, false, t, fmt);
 }

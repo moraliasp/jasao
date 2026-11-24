@@ -21,7 +21,21 @@ const e: Estrutura = {
     { caminho: '.["chave <b>"]', relacao: "campo", profundidade: 1, presenca: 1, de: 3, tipos: [["booleano", 1, 7]], avisos: [] },
   ],
   discriminadores: [
-    { campo: ".tipo", variantes: [{ valor: "x", registros: 2, linha: 0, obrigatorias: ["tipo", "x"], opcionais: [["z", 1]] }] },
+    {
+      campo: ".tipo",
+      variantes: [
+        { valor: "x", registros: 2, linha: 0, obrigatorias: ["tipo", "x"], opcionais: [["z", 1]] },
+        { valor: "y", registros: 1, linha: 4, obrigatorias: ["tipo"], opcionais: [] },
+      ],
+    },
+    // Segundo discriminador: com o primeiro, {discriminador, variante} trocados viram outro alvo.
+    {
+      campo: ".k",
+      variantes: [
+        { valor: "p", registros: 2, linha: 0, obrigatorias: ["k"], opcionais: [] },
+        { valor: "q", registros: 1, linha: 7, obrigatorias: ["k"], opcionais: [] },
+      ],
+    },
   ],
 };
 
@@ -46,8 +60,8 @@ test("presença: todos, N de M, itens e entradas de mapa", () => {
 
 test("itens: um por caminho e um por variante, com a 1ª linha para ir à Árvore", () => {
   const it = itens(e, t, fmt);
-  assert.equal(it.length, 7);
-  assert.deepEqual(it.map((i) => i.linha), [0, 0, 0, 4, 4, 7, 0]);
+  assert.equal(it.length, 10);
+  assert.deepEqual(it.map((i) => i.linha), [0, 0, 0, 4, 4, 7, 0, 4, 0, 7]);
   // `.x` tem dois tipos: mostra a contagem de cada e marca opcional.
   assert.match(it[2].html, /class="ep op"/);
   assert.ok(it[2].rotulo.includes(t.estrutura.opcional));
@@ -62,7 +76,17 @@ test("itens: um por caminho e um por variante, com a 1ª linha para ir à Árvor
   assert.ok(it[6].html.includes(`.tipo = "x"`));
   assert.ok(it[6].html.includes(`${t.estrutura.opcionais}: z (1)`));
   // Índice em `caminhos` para o comando `perfil`; variante não tem.
-  assert.deepEqual(it.map((i) => i.indice), [0, 1, 2, 3, 4, 5, null]);
+  assert.deepEqual(it.map((i) => i.indice), [0, 1, 2, 3, 4, 5, null, null, null, null]);
+  // F filtra: caminho → os que têm; variante → os do formato (índices do discriminador).
+  assert.deepEqual(it[2].alvo, { caminho: 2, tem: true });
+  assert.deepEqual(it[6].alvo, { discriminador: 0, variante: 0 });
+  assert.equal(it[6].valor, "x");
+  assert.deepEqual(it[7].alvo, { discriminador: 0, variante: 1 });
+  assert.deepEqual(it[8].alvo, { discriminador: 1, variante: 0 });
+  assert.deepEqual(it[9].alvo, { discriminador: 1, variante: 1 });
+  assert.ok(it[8].html.includes(`.k = "p"`));
+  assert.equal(it[9].valor, "q");
+  assert.equal(it[2].valor, null);
 });
 
 test("avisos viram etiqueta e entram no rótulo de leitor de tela", () => {
@@ -99,6 +123,8 @@ test("painel do perfil: extremos, faixas, comuns e linhas com e sem (1ª linha =
   assert.equal((h.match(new RegExp(t.estrutura.aproximado, "g")) ?? []).length, 1);
   assert.deepEqual([...h.matchAll(/data-l="(\d+)">(\d+)</g)].map((m) => [m[1], m[2]]), [["0", "1"], ["2", "3"], ["3", "4"]]);
   assert.ok(h.includes(t.estrutura.primeiras("2")), "8 com, só 2 linhas guardadas");
+  // Um botão de filtrar para os com e outro para os sem.
+  assert.deepEqual([...h.matchAll(/data-filtrar="(\w+)"/g)].map((m) => m[1]), ["true", "false"]);
   assert.ok(!h.includes(t.estrutura.oculto));
 });
 
@@ -114,6 +140,7 @@ test("painel de caminho oculto: só contagens", () => {
 test("sem registros sem o caminho, a lista some", () => {
   const h = detalhe(".v", { ...p, sem: 0, linhas_sem: [] }, t, fmt);
   assert.ok(!h.includes(t.estrutura.sem));
+  assert.ok(!h.includes('data-filtrar="false"'));
 });
 
 test("singular quando há 1 item ou 1 lista", () => {

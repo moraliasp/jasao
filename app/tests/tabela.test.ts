@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { t } from "../src/i18n.ts";
 import {
   type Celula, type EstadoOrdem, type LinhaT, celula, chegou, detalhe, invalida, largura, motivo, ordemVisivel, proximaOrdem,
-  respondeu, rotulos,
+  respondeu, rotulos, type EstadoFiltro, type TabelaUi, chipFiltro, filtroChegou, filtroRespondeu, linhasNaGrade, rotuloFiltro,
 } from "../src/tabela.ts";
 
 const fmt = (n: number) => String(n);
@@ -110,4 +110,46 @@ test("o CSS isola o texto das células e do cabeçalho", () => {
   const css = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   assert.match(css, /\.grade \.td \.v, \.grade \.td \.cru \{[^}]*unicode-bidi:\s*isolate/);
   assert.match(css, /\.grade \.th \.nm \{[^}]*unicode-bidi:\s*isolate/);
+});
+
+test("filtro: rótulo por caso, e o que vem do arquivo vai escapado no chip", () => {
+  const tf = t.tabela.filtro;
+  assert.equal(rotuloFiltro({ caminho: ".tipo", tem: null, valor: "x" }, t), tf.igual(".tipo", "x"));
+  assert.equal(rotuloFiltro({ caminho: ".a", tem: true, valor: null }, t), tf.com(".a"));
+  assert.equal(rotuloFiltro({ caminho: ".a", tem: false, valor: null }, t), tf.sem(".a"));
+  const info = { registros: 10, filtro: { achados: 3, caminho: ".tipo", tem: null, valor: '<img src=x onerror="alert(1)">' } } as TabelaUi;
+  const e: EstadoFiltro = { filtrando: null, fimF: null };
+  const html = chipFiltro(e, info, t, fmt);
+  assert.ok(!html.includes("<img"), html);
+  assert.ok(html.includes("data-limpar-filtro"));
+  assert.equal(linhasNaGrade(info), 3);
+  assert.equal(linhasNaGrade({ ...info, filtro: null }), 10);
+  assert.equal(chipFiltro(e, { ...info, filtro: null }, t, fmt), "");
+  e.filtrando = { geracao: 1, rotulo: "<b>", lidos: 5, total: 10 };
+  const p = chipFiltro(e, info, t, fmt);
+  assert.ok(p.includes('value="50"') && !p.includes("<b>"), p);
+  // Aspas não fecham o `title`; invisível bidi aparece como código, não vira o texto ao contrário.
+  const aspas = chipFiltro(
+    { filtrando: null, fimF: null },
+    { registros: 10, filtro: { achados: 1, caminho: ".t\u202Eipo", tem: null, valor: 'x" onmouseover="alert(1)' } } as TabelaUi,
+    t,
+    fmt,
+  );
+  assert.ok(!aspas.includes('" onmouseover'), aspas);
+  assert.ok(aspas.includes("&quot; onmouseover"), aspas);
+  assert.ok(!aspas.includes("\u202E"), aspas);
+  assert.ok(aspas.includes("⟦202E⟧"), aspas);
+});
+
+test("filtro: fim antes da resposta conclui na resposta; geração velha é ignorada", () => {
+  const e: EstadoFiltro = { filtrando: null, fimF: null };
+  const fim = { id: 1, geracao: 2, lidos: 9, total: 9, fim: true, achados: 4, falha: null };
+  assert.equal(filtroChegou(e, fim), null);
+  assert.deepEqual(filtroRespondeu(e, 2, "r"), fim);
+  assert.equal(e.filtrando, null);
+  assert.equal(filtroRespondeu(e, 3, "r"), null);
+  assert.equal(filtroChegou(e, { ...fim, geracao: 2 }), null); // velha
+  assert.equal(filtroChegou(e, { ...fim, geracao: 3, fim: false, lidos: 4 }), null);
+  assert.equal(e.filtrando?.lidos, 4);
+  assert.equal(filtroChegou(e, { ...fim, geracao: 3, falha: "grande" })?.falha, "grande");
 });
