@@ -25,6 +25,7 @@ use nucleo::laudo::Laudo;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
 use nucleo::tabela::{self, Coluna, FalhaOrdem, Indisponivel, Ordem, Tabela};
+use nucleo::transformar::{self, Fonte, Mascara, Saida, Transformacao};
 use nucleo::{Achado, ArquivoLinhas, Arvore, Busca, Opcoes};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
@@ -96,6 +97,8 @@ struct Doc {
     varredura: Mutex<Varredura>,
     busca: Mutex<EstadoBusca>,
     consulta: Mutex<EstadoConsulta>,
+    /// "Salvar como" em curso (ver `salvar_como`).
+    salvar: Mutex<EstadoSalvar>,
     exportar: Mutex<EstadoExportar>,
     ordem: Mutex<EstadoOrdem>,
     filtro: Mutex<EstadoFiltro>,
@@ -240,6 +243,22 @@ impl EstadoConsulta {
         if let Some(a) = self.arquivo.take() {
             let _ = std::fs::remove_file(a);
         }
+        (self.geracao, Arc::clone(&self.cancelar))
+    }
+}
+
+/// "Salvar como" em curso: um por documento; outro pedido cancela o anterior.
+#[derive(Default)]
+struct EstadoSalvar {
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+}
+
+impl EstadoSalvar {
+    fn reiniciar(&mut self) -> (u64, Arc<AtomicBool>) {
+        self.cancelar.store(true, Relaxed);
+        self.cancelar = Arc::new(AtomicBool::new(false));
+        self.geracao += 1;
         (self.geracao, Arc::clone(&self.cancelar))
     }
 }
@@ -719,6 +738,7 @@ fn instalar<R: Runtime>(
                 varredura: Default::default(),
                 busca: Default::default(),
                 consulta: Default::default(),
+                salvar: Default::default(),
                 exportar: Default::default(),
                 ordem: Default::default(),
                 filtro: Default::default(),
@@ -2001,21 +2021,12 @@ struct Filtragem {
     falha: Option<FalhaFiltragem>,
 }
 
-/// Filtra os registros pelo `alvo` numa varredura do arquivo inteiro em 2º plano, com o evento
-/// `filtragem`; o pedido anterior é cancelado. Até o fim, a Tabela segue com o filtro anterior.
-/// Ao publicar, a ordem pronta deixa de valer (era de outro conjunto): a interface pede de novo.
-/// `None` enquanto a inferência não acabou.
-#[tauri::command]
-fn filtrar<R: Runtime>(
-    id: u32,
+/// Caminho (segmentos), valor da variante (cru) e o que a interface mostra, do `alvo` do filtro.
+fn alvo_segs(
+    inf: &nucleo::estrutura::Inferencia,
     alvo: Alvo,
-    app: AppHandle<R>,
-    estado: State<'_, Estado>,
-) -> Result<Option<u64>, String> {
+) -> Result<(Vec<nucleo::estrutura::Seg>, Option<String>, FiltroUi), String> {
     use nucleo::estrutura::Seg;
-    let Some((inf, arquivo)) = inferencia(&estado, id)? else {
-        return Ok(None);
-    };
     let no_caminho = |caminho: usize| {
         inf.resumo
             .caminhos()
@@ -2041,7 +2052,7 @@ fn filtrar<R: Runtime>(
         comum: None,
         faixa: None,
     };
-    let (segs, valor, ui) = match alvo {
+    Ok(match alvo {
         Alvo::Caminho { caminho, tem } => {
             let c = no_caminho(caminho)?;
             let ui = FiltroUi {
@@ -2092,7 +2103,39 @@ fn filtrar<R: Runtime>(
             // Discriminador é campo do topo do registro.
             (vec![Seg::Campo(d.cru)], Some(v.valor), ui)
         }
+    })
+}
+
+/// O critério de `filtro` para os `segs` e `valor` de `alvo_segs`.
+fn criterio<'a>(
+    segs: &'a [nucleo::estrutura::Seg],
+    valor: Option<&'a str>,
+    ui: &'a FiltroUi,
+) -> Criterio<'a> {
+    match (valor, ui.tem, &ui.comum, ui.faixa) {
+        (Some(v), ..) => Criterio::Igual(segs, v.as_bytes()),
+        (_, _, Some(c), _) => Criterio::Comum(segs, c),
+        (_, _, _, Some((neg, e))) => Criterio::Faixa(segs, neg, e),
+        (None, Some(false), ..) => Criterio::NaoTem(segs),
+        (None, ..) => Criterio::Tem(segs),
+    }
+}
+
+/// Filtra os registros pelo `alvo` numa varredura do arquivo inteiro em 2º plano, com o evento
+/// `filtragem`; o pedido anterior é cancelado. Até o fim, a Tabela segue com o filtro anterior.
+/// Ao publicar, a ordem pronta deixa de valer (era de outro conjunto): a interface pede de novo.
+/// `None` enquanto a inferência não acabou.
+#[tauri::command]
+fn filtrar<R: Runtime>(
+    id: u32,
+    alvo: Alvo,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<u64>, String> {
+    let Some((inf, arquivo)) = inferencia(&estado, id)? else {
+        return Ok(None);
     };
+    let (segs, valor, ui) = alvo_segs(&inf, alvo)?;
     let doc = estado.doc(id)?;
     let cancelar = Arc::new(AtomicBool::new(false));
     let (geracao, teto) = {
@@ -2121,13 +2164,7 @@ fn filtrar<R: Runtime>(
                 emitir(&app, "filtragem", id, p);
             }
         };
-        let criterio = match (&valor, ui.tem, &ui.comum, ui.faixa) {
-            (Some(v), ..) => Criterio::Igual(&segs, v.as_bytes()),
-            (_, _, Some(c), _) => Criterio::Comum(&segs, c),
-            (_, _, _, Some((neg, e))) => Criterio::Faixa(&segs, neg, e),
-            (None, Some(false), ..) => Criterio::NaoTem(&segs),
-            (None, ..) => Criterio::Tem(&segs),
-        };
+        let criterio = criterio(&segs, valor.as_deref(), &ui);
         let r = filtro::filtrar_ate(
             &inf,
             arquivo.bytes(),
@@ -2581,37 +2618,170 @@ async fn salvar_consulta<R: Runtime>(
     let Some(p) = destino.and_then(|f| f.into_path().ok()) else {
         return Ok(None);
     };
-    // Protegidos: o que o usuário abriu nesta execução, os resultados de consulta (todos
-    // concedidos) e os recentes (abrir por eles não concede).
-    let mut protegidos = janela.state::<abertura::Concedidos>().todos();
-    protegidos.extend(
-        com_recentes(janela.app_handle(), recentes::ler)
-            .unwrap_or_default()
-            .into_iter()
-            .map(PathBuf::from),
-    );
+    let mut protegidos = protegidos(janela.app_handle());
     protegidos.push(origem.clone());
     gravar_resultado(&origem, &p, csv, &protegidos)?;
     Ok(Some(p.to_string_lossy().into_owned()))
 }
 
-/// Se `destino` é um dos `protegidos`: mesmo caminho real (link resolvido) ou, no Unix, o mesmo
-/// arquivo (`dev`, `ino`; pega link físico). Destino que não existe não é nenhum deles.
-fn destino_protegido(destino: &Path, protegidos: &[PathBuf]) -> bool {
-    let Ok(real) = std::fs::canonicalize(destino) else {
-        return false;
+/// O que o salvar nunca sobrescreve: o que o usuário abriu nesta execução, os resultados de
+/// consulta (todos concedidos) e os recentes (abrir por eles não concede).
+fn protegidos<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
+    let mut p = app.state::<abertura::Concedidos>().todos();
+    p.extend(
+        com_recentes(app, recentes::ler)
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    p
+}
+
+/// De onde vem o que o "salvar como" grava.
+#[derive(Deserialize)]
+#[serde(tag = "tipo", rename_all = "snake_case")]
+enum FonteSalvar {
+    /// O arquivo inteiro.
+    Tudo,
+    /// O resultado do filtro jq (#47), rodado de novo sobre o original.
+    Jq { filtro: String },
+    /// Os registros do filtro da Estrutura/Tabela (#49).
+    Filtro { alvo: Alvo },
+}
+
+#[derive(Deserialize)]
+struct PedidoSalvar {
+    fonte: FonteSalvar,
+    #[serde(default)]
+    transformacao: Transformacao,
+    #[serde(default)]
+    saida: Saida,
+    /// Padrão: segredos mascarados. Sem máscara só se a interface mandar.
+    #[serde(default)]
+    mascara: Mascara,
+}
+
+/// Nos testes, o diálogo de salvar não abre: o destino vem daqui.
+#[cfg(test)]
+static DESTINO_TESTE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Pergunta onde salvar, no diálogo do sistema (o caminho nunca vem da interface).
+fn escolher_destino<R: Runtime>(
+    janela: &tauri::WebviewWindow<R>,
+    nome: &str,
+    saida: Saida,
+) -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        let _ = (janela, nome, saida);
+        DESTINO_TESTE.lock().ok()?.clone()
+    }
+    #[cfg(not(test))]
+    {
+        use tauri_plugin_dialog::DialogExt;
+        let ext = saida.extensao();
+        let nome = Path::new(nome)
+            .file_stem()
+            .map(|n| format!("{}.{ext}", n.to_string_lossy()))
+            .unwrap_or_default();
+        janela
+            .dialog()
+            .file()
+            .set_parent(janela)
+            .set_file_name(nome)
+            .add_filter(ext.to_uppercase(), &[ext])
+            .blocking_save_file()
+            .and_then(|f| f.into_path().ok())
+    }
+}
+
+/// "Salvar como": grava num arquivo NOVO o que o `pedido` descreve (fonte, transformação,
+/// formato, máscara), tudo compilado numa expressão jq (`nucleo::transformar::compor`) e rodado
+/// no processo filho em fluxo, com o evento `salvando` (progresso; no fim, `arquivo` = o salvo).
+/// Nunca sobrescreve o original nem outro arquivo aberto (`protegidos`); grava num temporário
+/// na pasta do destino e só troca por `rename` no fim: cancelar ou falhar não deixa nada lá.
+/// Devolve a geração, ou `None` se o usuário fechou o diálogo.
+#[tauri::command]
+async fn salvar_como<R: Runtime>(
+    id: u32,
+    caminho: String,
+    pedido: PedidoSalvar,
+    nome: String,
+    janela: tauri::WebviewWindow<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<u64>, String> {
+    let app = janela.app_handle().clone();
+    let caminho = autorizado(&app, &caminho)?;
+    filho::arquivo_comum(&caminho)?;
+    let doc = estado.doc(id)?;
+    pedido.transformacao.conferir()?;
+    let fonte = match pedido.fonte {
+        FonteSalvar::Tudo => Fonte::Tudo,
+        FonteSalvar::Jq { filtro } => {
+            // O erro do filtro do usuário, sem a transformação em volta.
+            Consulta::nova(&filtro).map_err(|e| e.to_string())?;
+            Fonte::Jq(filtro)
+        }
+        FonteSalvar::Filtro { alvo } => {
+            let (inf, _) =
+                inferencia(&estado, id)?.ok_or("a estrutura ainda está sendo inferida")?;
+            let (segs, valor, ui) = alvo_segs(&inf, alvo)?;
+            Fonte::filtro(&criterio(&segs, valor.as_deref(), &ui))?
+        }
     };
-    #[cfg(unix)]
-    let id = |p: &Path| {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
+    // O filho compõe com o `documento` do arquivo que abre; aqui só confere que compila.
+    Consulta::nova(&transformar::compor(&fonte, &pedido.transformacao, false))
+        .map_err(|e| e.to_string())?;
+    let Some(destino) = escolher_destino(&janela, &nome, pedido.saida) else {
+        return Ok(None);
     };
-    #[cfg(not(unix))]
-    let id = |_: &Path| None::<(u64, u64)>;
-    let alvo = id(&real);
-    protegidos.iter().any(|p| {
-        std::fs::canonicalize(p).is_ok_and(|c| c == real) || (alvo.is_some() && id(p) == alvo)
-    })
+    let mut protegidos = protegidos(&app);
+    protegidos.push(PathBuf::from(&caminho));
+    let tmp = transformar::temporario(&destino, &protegidos).map_err(|e| e.to_string())?;
+    let (geracao, cancelar) = doc.salvar.lock().map_err(|e| e.to_string())?.reiniciar();
+    let pedido = filho::Salvar {
+        fonte,
+        transformacao: pedido.transformacao,
+        saida: pedido.saida,
+        mascara: pedido.mascara,
+    };
+    std::thread::spawn(move || {
+        let avisar = |a: AndamentoConsulta| emitir(&app, "salvando", id, a);
+        let sal = (pedido.mascara == Mascara::Anonimizar).then(sal_da_sessao);
+        let mut fim = filho::rodar_com(
+            "",
+            &caminho,
+            tmp.path(),
+            sal,
+            Some(&pedido),
+            &cancelar,
+            |a| avisar(AndamentoConsulta { geracao, ..a }),
+        );
+        // Cancelado ou falhou: o temporário some no `drop`, o destino fica como estava.
+        if fim.falha.is_none() && !fim.cancelado {
+            let cru = pedido.mascara == Mascara::SemMascara;
+            match transformar::persistir(tmp, &destino, &protegidos, cru) {
+                Ok(()) => fim.arquivo = Some(destino.to_string_lossy().into_owned()),
+                Err(e) => fim.falha = Some(e.to_string()),
+            }
+        }
+        fim.geracao = geracao;
+        avisar(fim);
+    });
+    Ok(Some(geracao))
+}
+
+/// Cancela o "salvar como" em curso: o filho morre e o temporário some.
+#[tauri::command]
+fn cancelar_salvar(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
+    estado
+        .doc(id)?
+        .salvar
+        .lock()
+        .map_err(|e| e.to_string())?
+        .cancelar
+        .store(true, Relaxed);
+    Ok(())
 }
 
 /// Copia o JSONL do resultado ou o converte em CSV (`nucleo::csv`, duas passadas no arquivo:
@@ -2626,20 +2796,7 @@ fn gravar_resultado(
 ) -> Result<(), String> {
     use std::io::{BufRead, BufReader, BufWriter, Write};
     let erro = |e: std::io::Error| format!("{}: {e}", destino.display());
-    if destino_protegido(destino, protegidos) {
-        return Err(format!(
-            "{}: é um arquivo aberto no jasão; salve com outro nome",
-            destino.display()
-        ));
-    }
-    let pasta = match destino.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".jasao-salvar-")
-        .tempfile_in(pasta)
-        .map_err(erro)?;
+    let mut tmp = transformar::temporario(destino, protegidos).map_err(|e| e.to_string())?;
     if csv {
         let linhas = |f: &mut dyn FnMut(&[u8]) -> Result<(), String>| -> Result<(), String> {
             let arquivo = std::fs::File::open(origem).map_err(|e| e.to_string())?;
@@ -2662,16 +2819,8 @@ fn gravar_resultado(
         let mut f = std::fs::File::open(origem).map_err(erro)?;
         std::io::copy(&mut f, tmp.as_file_mut()).map_err(erro)?;
     }
-    // O temporário nasce 0600; o salvo fica com as permissões de um arquivo novo comum.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = tmp
-            .as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o644));
-    }
-    tmp.persist(destino).map_err(|e| erro(e.error))?;
-    Ok(())
+    // O resultado da consulta já sai mascarado ou anonimizado.
+    transformar::persistir(tmp, destino, protegidos, false).map_err(|e| e.to_string())
 }
 
 /// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
@@ -2792,6 +2941,8 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
         .manage(abertura::Concedidos::default())
         .invoke_handler(tauri::generate_handler![
             escolher,
+            salvar_como,
+            cancelar_salvar,
             abertura::arquivos_iniciais,
             abertura::arquivos_pedidos,
             recentes,
@@ -3493,6 +3644,229 @@ mod testes {
             "o sal é da sessão: mesmo valor, mesmo código"
         );
         assert_eq!(em("fechar_consulta", json!({})), Ok(Value::Null));
+    }
+
+    /// "Salvar como" pelo IPC: recusa o original, máscara por padrão (anonimizar e sem máscara
+    /// só pedidos), cada fonte e transformação, e cancelar sem resto na pasta.
+    #[test]
+    fn salvar_como_pelo_ipc() {
+        use tauri::Listener;
+        let _so_um = CONSULTAS.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let original = d.path().join("dados.jsonl");
+        let conteudo = concat!(
+            r#"{"tipo":"a","id":1,"senha":"S3NT1N3LA-1","nome":"ana"}"#,
+            "\n",
+            r#"{"tipo":"b","id":2,"senha":"S3NT1N3LA-2","nome":"bia","b":1}"#,
+            "\n",
+            r#"{"tipo":"a","id":3,"senha":"S3NT1N3LA-3","nome":"cid"}"#,
+            "\n",
+        );
+        std::fs::write(&original, conteudo).unwrap();
+        let app = comandos(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let chamar = |cmd: &str, args: Value| -> Result<Value, Value> {
+            let pedido = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            };
+            get_ipc_response(&janela, pedido).map(|b| b.deserialize::<Value>().unwrap())
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        app.listen("salvando", move |e| {
+            let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+        });
+        let fim = || loop {
+            let a = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("salvar não terminou");
+            if a["fim"] == true {
+                break a;
+            }
+        };
+        app.state::<abertura::Concedidos>().conceder(&original);
+        let caminho = original.to_str().unwrap();
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": caminho })),
+            Ok(json!({"id": 1, "total": 3}))
+        );
+        let salvar = |destino: &std::path::Path, pedido: Value| {
+            *DESTINO_TESTE.lock().unwrap() = Some(destino.to_owned());
+            chamar(
+                "salvar_como",
+                json!({"id": 1, "caminho": caminho, "pedido": pedido, "nome": "dados"}),
+            )
+        };
+        // Espera a inferência (a fonte "filtro" precisa dela).
+        let alvo = json!({"tipo": "filtro", "alvo": {"discriminador": 0, "variante": 0}});
+        let mut ultimo = None;
+        (0..300)
+            .find(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                *DESTINO_TESTE.lock().unwrap() = None; // diálogo fechado: não grava
+                let r = chamar(
+                    "salvar_como",
+                    json!({"id": 1, "caminho": caminho, "pedido": {"fonte": alvo}, "nome": "x"}),
+                );
+                let ok = r == Ok(Value::Null);
+                ultimo = Some(r);
+                ok
+            })
+            .unwrap_or_else(|| panic!("inferência não terminou: {ultimo:?}"));
+        let gravar = |nome: &str, pedido: Value| {
+            let destino = d.path().join(nome);
+            salvar(&destino, pedido).unwrap();
+            let a = fim();
+            assert_eq!(a["falha"], Value::Null, "{a}");
+            assert_eq!(a["arquivo"], json!(destino.to_str().unwrap()));
+            std::fs::read_to_string(&destino).unwrap()
+        };
+
+        // O original (e link para ele) é recusado antes de gravar qualquer coisa.
+        let e = salvar(&original, json!({"fonte": {"tipo": "tudo"}})).unwrap_err();
+        assert!(e.as_str().unwrap().contains("aberto no jasão"), "{e}");
+        #[cfg(unix)]
+        {
+            let link = d.path().join("link.jsonl");
+            std::os::unix::fs::symlink(&original, &link).unwrap();
+            assert!(salvar(&link, json!({"fonte": {"tipo": "tudo"}})).is_err());
+        }
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), conteudo);
+
+        // Máscara por padrão; anonimizar e sem máscara só quando pedidos.
+        let mascarado = gravar("m.jsonl", json!({"fonte": {"tipo": "tudo"}}));
+        assert!(!mascarado.contains("S3NT1N3LA"), "{mascarado}");
+        assert_eq!(mascarado.lines().count(), 3);
+        assert!(mascarado.contains("\"nome\":\"ana\""), "{mascarado}");
+        let anon = gravar(
+            "a.jsonl",
+            json!({"fonte": {"tipo": "tudo"}, "mascara": "anonimizar"}),
+        );
+        assert!(
+            !anon.contains("S3NT1N3LA") && anon.contains("anon:"),
+            "{anon}"
+        );
+        let cru = gravar(
+            "c.jsonl",
+            json!({"fonte": {"tipo": "tudo"}, "mascara": "sem_mascara"}),
+        );
+        assert_eq!(cru, conteudo);
+        // Sem máscara fica só do dono; mascarado, 0644.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let modo = |n: &str| {
+                std::fs::metadata(d.path().join(n))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777
+            };
+            assert_eq!((modo("c.jsonl"), modo("m.jsonl")), (0o600, 0o644));
+        }
+
+        // Erro do jq num registro: grava o resto e devolve a contagem e o primeiro.
+        *DESTINO_TESTE.lock().unwrap() = Some(d.path().join("e.jsonl"));
+        let filtro = "if .id == 2 then error(\"ruim\") else .id end";
+        salvar(
+            &d.path().join("e.jsonl"),
+            json!({"fonte": {"tipo": "jq", "filtro": filtro}}),
+        )
+        .unwrap();
+        let a = fim();
+        assert_eq!((&a["falha"], &a["erros"]), (&Value::Null, &json!(1)), "{a}");
+        assert_eq!(a["primeiro_erro"][0], json!(1), "{a}");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("e.jsonl")).unwrap(),
+            "1\n3\n"
+        );
+        // Renomear ambíguo: recusado antes do diálogo.
+        let e = salvar(
+            &d.path().join("r.jsonl"),
+            json!({"fonte": {"tipo": "tudo"},
+                   "transformacao": {"renomear": [["id", "x"], ["nome", "x"]]}}),
+        )
+        .unwrap_err();
+        assert!(e.as_str().unwrap().contains("dois campos viram"), "{e}");
+        assert!(!d.path().join("r.jsonl").exists());
+
+        // Fonte jq + transformações, em JSON formatado.
+        let t = gravar(
+            "t.json",
+            json!({
+                "fonte": {"tipo": "jq", "filtro": "select(.id > 1)"},
+                "transformacao": {"tirar": ["senha"], "renomear": [["nome", "quem"]]},
+                "saida": "json",
+            }),
+        );
+        let v: Value = serde_json::from_str(&t).unwrap();
+        assert_eq!(
+            v,
+            json!([{"tipo":"b","id":2,"quem":"bia","b":1}, {"tipo":"a","id":3,"quem":"cid"}])
+        );
+        assert!(t.contains("\n  {"), "{t}");
+        let manter = gravar(
+            "k.jsonl",
+            json!({"fonte": {"tipo": "tudo"}, "transformacao": {"manter": ["id"]}}),
+        );
+        assert_eq!(manter, "{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n");
+        // Fonte filtro (#49): só a variante pedida, todos os registros dela.
+        let f = gravar(
+            "f.jsonl",
+            json!({"fonte": alvo, "transformacao": {"manter": ["tipo"]}, "saida": "json_compacto"}),
+        );
+        let f: Value = serde_json::from_str(&f).unwrap();
+        let tipo = &f[0]["tipo"];
+        let n = conteudo.matches(&format!("\"tipo\":{tipo}")).count();
+        assert_eq!(f.as_array().map(|l| l.len()), Some(n), "{f}");
+        assert!(f.as_array().unwrap().iter().all(|r| &r["tipo"] == tipo));
+        // Original JSON único com outro arquivo (JSONL) na aba, como o resultado de uma consulta:
+        // a transformação vale por registro do original, não pelo formato do que está aberto.
+        let unico = d.path().join("unico.json");
+        std::fs::write(&unico, r#"[{"id":1,"senha":"x"},{"id":2,"senha":"y"}]"#).unwrap();
+        app.state::<abertura::Concedidos>().conceder(&unico);
+        *DESTINO_TESTE.lock().unwrap() = Some(d.path().join("u.jsonl"));
+        chamar(
+            "salvar_como",
+            json!({"id": 1, "caminho": unico.to_str().unwrap(), "nome": "unico",
+                   "pedido": {"fonte": {"tipo": "tudo"}, "transformacao": {"tirar": ["senha"]}}}),
+        )
+        .unwrap();
+        assert_eq!(fim()["falha"], Value::Null);
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("u.jsonl")).unwrap(),
+            "[{\"id\":1},{\"id\":2}]\n"
+        );
+
+        // Cancelar: nada no destino nem temporário na pasta.
+        let destino = d.path().join("cancelado.jsonl");
+        let lento = "[limit(1e7; repeat(1))] | length";
+        salvar(&destino, json!({"fonte": {"tipo": "jq", "filtro": lento}})).unwrap();
+        chamar("cancelar_salvar", json!({"id": 1})).unwrap();
+        let a = fim();
+        assert_eq!(
+            (&a["cancelado"], &a["arquivo"]),
+            (&json!(true), &Value::Null),
+            "{a}"
+        );
+        assert!(!destino.exists());
+        let resto: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".jasao-salvar-"))
+            .collect();
+        assert_eq!(resto, Vec::<String>::new());
+        *DESTINO_TESTE.lock().unwrap() = None;
     }
 
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.

@@ -23,6 +23,7 @@ pub mod regua;
 pub mod resumo;
 pub mod tabela;
 pub mod texto;
+pub mod transformar;
 pub mod validar;
 pub mod valores;
 pub mod vivo;

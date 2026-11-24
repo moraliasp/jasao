@@ -19,6 +19,7 @@ import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPar
 import { criarConsulta } from "./consulta";
 import { criarRecentes } from "./recentes";
 import { criarExportar } from "./exportar";
+import { criarSalvarComo } from "./salvarComo";
 import { criarDiff } from "./vistaDiff";
 import { type Alvo, criarGrade, type Filtragem, type Ordenacao } from "./grade";
 import { rotuloFiltro } from "./tabela";
@@ -727,6 +728,23 @@ const consulta = criarConsulta($("consulta"), {
   voltar: () => visaoAtual().focus(),
   fmt,
 });
+
+const salvarComo = criarSalvarComo($<HTMLDialogElement>("salvar-como"), { fmt, avisar: (m) => (status.textContent = m) });
+/** Abre o "Salvar como…" da aba ativa; com resultado de consulta aberto, a fonte é o original. */
+function abrirSalvarComo(): void {
+  const a = abaAtiva();
+  if (!a?.doc || !a.caminho) return;
+  const { original, jq } = consulta.fonte();
+  salvarComo.abrir({
+    id: a.doc,
+    caminho: original ?? a.caminho,
+    nome: (original ?? a.arquivo ?? a.caminho).split(/[\\/]/).pop()!,
+    jq,
+    filtro: original ? null : grade.alvo(),
+  });
+}
+$("salvar-como-abrir").textContent = t.salvarComo.abrir;
+$("salvar-como-abrir").addEventListener("click", abrirSalvarComo);
 
 // ---- Abas de arquivo ----
 

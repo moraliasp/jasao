@@ -529,7 +529,7 @@ pub struct Formatado {
 }
 
 /// Reindenta `raw` (JSON já validado) numa passada só, sem montar nós, e para em `max` bytes.
-fn formatar(raw: &str, max: usize) -> Formatado {
+pub(crate) fn formatar(raw: &str, max: usize) -> Formatado {
     let b = raw.as_bytes();
     let mut saida = String::with_capacity(raw.len().min(max) * 2);
     let quebra = |saida: &mut String, nivel: usize| {
