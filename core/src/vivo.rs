@@ -330,6 +330,24 @@ mod testes {
         assert_eq!(cresceu(v.atualizar().unwrap()).linhas(), 5);
     }
 
+    /// Seguir também mascara: o que entra depois de abrir sai mascarado na janela e em `bytes()`.
+    #[test]
+    fn crescimento_sai_mascarado() {
+        let pasta = tempfile::tempdir().unwrap();
+        let log = pasta.path().join("log.jsonl");
+        fs::write(&log, "{\"senha\":\"S3NT1N3LA0\"}\n").unwrap();
+        let (mut v, a) = Vivo::abrir(&log, &op(pasta.path())).unwrap();
+        assert_eq!(linhas(&a), ["{\"senha\":\"**********\"}"]);
+        acrescentar(&log, b"{\"token\":\"S3NT1N3LA1\"}\n");
+        let b = cresceu(v.atualizar().unwrap());
+        assert_eq!(
+            linhas(&b),
+            ["{\"senha\":\"**********\"}", "{\"token\":\"**********\"}"]
+        );
+        assert!(!b.bytes().windows(9).any(|w| w == b"S3NT1N3LA"));
+        assert_eq!(b.linha_crua(1), b"{\"token\":\"S3NT1N3LA1\"}");
+    }
+
     /// A última linha sem `\n` espera: não aparece pela metade e entra inteira quando termina.
     #[test]
     fn linha_parcial() {

@@ -457,12 +457,19 @@ impl Arvore {
     }
 
     /// Como `valor`, sem a máscara de segredos: só o valor da linha `v`, que o usuário pediu para
-    /// ver ("Mostrar valor"). Nada mais sai cru.
+    /// ver ("Mostrar valor"). Nada mais sai cru: só folha (texto, número, `true`, `false`,
+    /// `null`); contêiner ou linha inválida revelaria todos os segredos de dentro, e dá `None`.
     pub fn valor_cru(&self, v: usize) -> Option<String> {
-        self.valor_de(v, self.arquivo.linha_crua(self.localizar(v)?.0))
+        let bytes = self.arquivo.linha_crua(self.localizar(v)?.0);
+        let t = self.trecho(v, bytes)?.trim_ascii();
+        let folha = (t.first() == Some(&b'"') && sonic_rs::from_slice::<String>(t).is_ok())
+            || matches!(t, b"true" | b"false" | b"null")
+            || crate::estrutura::eh_numero(t);
+        folha.then(|| self.valor_de(v, bytes)).flatten()
     }
 
-    fn valor_de(&self, v: usize, bytes: &[u8]) -> Option<String> {
+    /// O pedaço de `bytes` (a linha do registro de `v`) que é o valor da linha visível `v`.
+    fn trecho<'b>(&self, v: usize, bytes: &'b [u8]) -> Option<&'b [u8]> {
         let (r, p) = self.localizar(v)?;
         let faixa = match p {
             Some(p) => {
@@ -471,7 +478,11 @@ impl Arvore {
             }
             None => 0..bytes.len(),
         };
-        let cru = String::from_utf8_lossy(bytes.get(faixa).unwrap_or_default());
+        Some(bytes.get(faixa).unwrap_or_default())
+    }
+
+    fn valor_de(&self, v: usize, bytes: &[u8]) -> Option<String> {
+        let cru = String::from_utf8_lossy(self.trecho(v, bytes)?);
         if cru.starts_with('"')
             && let Ok(texto) = sonic_rs::from_str::<String>(&cru)
         {

@@ -278,18 +278,19 @@ fn opaco(v: &[u8]) -> bool {
         && !v.iter().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Credencial pelo formato do valor: JWT, chave privada PEM, chave da AWS, tokens do GitHub, do
-/// Slack, chaves `sk-` (OpenAI, Anthropic, Stripe) e cabeçalho `Bearer …`/`Basic …`.
+/// Credencial pelo formato do valor: JWT, chave privada PEM, chave da AWS (`AKIA`/`ASIA`), tokens
+/// do GitHub, GitLab, npm, Slack, chave do Google (`AIza`), chaves `sk-`/`sk_live_`/`sk_test_`
+/// (OpenAI, Anthropic, Stripe) e cabeçalho `Bearer …`/`Basic …` (qualquer caixa).
 pub(crate) fn parece_segredo(v: &[u8]) -> bool {
     let pontos = || memchr_iter(b'.', v).count() == 2;
     (v.starts_with(b"eyJ") && v.len() >= 20 && pontos())
         || (v.len() >= 20
-            && [&b"Bearer "[..], b"Basic "]
-                .iter()
-                .any(|p| v.starts_with(p) && memchr(b' ', &v[p.len()..]).is_none()))
+            && [&b"bearer "[..], b"basic "].iter().any(|p| {
+                v[..p.len()].eq_ignore_ascii_case(p) && memchr(b' ', &v[p.len()..]).is_none()
+            }))
         || (v.starts_with(b"-----BEGIN") && memchr::memmem::find(v, b"PRIVATE KEY").is_some())
         || (v.len() == 20
-            && v.starts_with(b"AKIA")
+            && (v.starts_with(b"AKIA") || v.starts_with(b"ASIA"))
             && v[4..]
                 .iter()
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
@@ -306,6 +307,11 @@ pub(crate) fn parece_segredo(v: &[u8]) -> bool {
                 b"sk-",
                 b"sk_live_",
                 b"rk_live_",
+                b"sk_test_",
+                b"rk_test_",
+                b"glpat-",
+                b"npm_",
+                b"AIza",
             ]
             .iter()
             .any(|p| v.starts_with(p)))
@@ -746,32 +752,38 @@ fn avisos(no: &No, segs: &[Seg]) -> Vec<Aviso> {
     a
 }
 
-/// Nome de chave de credencial: a última palavra é `senha`, `password`, `secret`, `token`, `pin`…
-/// (e plurais, menos `tokens`, que em `max_tokens` é contagem) ou as duas últimas são `api key`,
+/// Nome de chave de credencial: alguma palavra é `senha`, `password`, `secret`, `token`, `pin`…
+/// (e plurais, menos `tokens`, que em `max_tokens` é contagem) ou duas seguidas são `api key`,
 /// `private key`, `chave privada`, `card number`, `otp code`. Documentos e dados de cartão
-/// também: `cpf`, `cnpj`, `rg`, `cvv`, `cvc`, `otp`, `cartao`. Palavras separadas por `_`, `-`, `.`, espaço ou caixa
-/// (`accessToken`). Só a última: `token_type` e `password_hash` não são.
+/// também: `cpf`, `cnpj`, `rg`, `cvv`, `cvc`, `otp`, `cartao`. Palavras separadas por `_`, `-`,
+/// `.`, espaço ou caixa (`accessToken`, `cpfCliente`), sem acento (`número_cartão`) e com os
+/// escapes do JSON resolvidos (`\u0073enha`). Qualquer palavra (`token_value`, `senhaAtual`), menos
+/// quando a última diz que é metadado do segredo e não ele: `token_type`, `password_hash`,
+/// `cpf_valido`, `rg_emissor`, `cartao_tipo`.
 pub fn chave_de_segredo(k: &[u8]) -> bool {
+    let k = sem_escapes(k);
     let mut palavras: Vec<String> = Vec::new();
     let mut atual = String::new();
     let mut ant_minuscula = false;
-    for &c in k {
-        if matches!(c, b'_' | b'-' | b'.' | b' ') {
+    for c in String::from_utf8_lossy(&k).chars() {
+        if matches!(c, '_' | '-' | '.' | ' ') {
             palavras.extend((!atual.is_empty()).then(|| std::mem::take(&mut atual)));
             ant_minuscula = false;
             continue;
         }
-        if c.is_ascii_uppercase() && ant_minuscula {
+        if ('\u{300}'..='\u{36f}').contains(&c) {
+            continue; // acento combinante (forma decomposta)
+        }
+        if c.is_uppercase() && ant_minuscula {
             palavras.push(std::mem::take(&mut atual));
         }
-        ant_minuscula = c.is_ascii_lowercase() || c.is_ascii_digit();
-        atual.push(c.to_ascii_lowercase() as char);
+        ant_minuscula = c.is_lowercase() || c.is_ascii_digit();
+        atual.extend(c.to_lowercase().map(sem_acento));
     }
     palavras.extend((!atual.is_empty()).then_some(atual));
-    let ult = |i: usize| palavras.len().checked_sub(i).map(|j| palavras[j].as_str());
-    matches!(
-        ult(1),
-        Some(
+    let segredo = |p: &str| {
+        matches!(
+            p,
             "senha"
                 | "senhas"
                 | "password"
@@ -805,17 +817,110 @@ pub fn chave_de_segredo(k: &[u8]) -> bool {
                 | "cartao"
                 | "cartoes"
         )
-    ) || matches!(
-        (ult(2), ult(1)),
-        (
-            Some("api" | "private" | "secret" | "access"),
-            Some("key" | "keys")
-        ) | (
-            Some("chave" | "chaves"),
-            Some("privada" | "privadas" | "api")
-        ) | (Some("card" | "cartao"), Some("number" | "numero" | "num"))
-            | (Some("otp"), Some("code" | "codigo"))
-    )
+    };
+    let par = |a: &str, b: &str| {
+        matches!(
+            (a, b),
+            ("api" | "private" | "secret" | "access", "key" | "keys")
+                | ("chave" | "chaves", "privada" | "privadas" | "api")
+                | ("card" | "cartao", "number" | "numero" | "num")
+                | ("otp", "code" | "codigo")
+        )
+    };
+    let metadado = matches!(
+        palavras.last().map(String::as_str),
+        Some(
+            "type"
+                | "tipo"
+                | "hash"
+                | "hashed"
+                | "digest"
+                | "valid"
+                | "valido"
+                | "valida"
+                | "emissor"
+                | "issuer"
+                | "expira"
+                | "expires"
+                | "expiry"
+                | "expiration"
+                | "length"
+                | "len"
+                | "count"
+        )
+    );
+    !metadado
+        && (palavras.iter().any(|p| segredo(p)) || palavras.windows(2).any(|w| par(&w[0], &w[1])))
+}
+
+/// Letra minúscula sem acento (`ã` → `a`, `ç` → `c`).
+fn sem_acento(c: char) -> char {
+    match c {
+        'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+        'é' | 'è' | 'ê' | 'ë' => 'e',
+        'í' | 'ì' | 'î' | 'ï' => 'i',
+        'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+        'ú' | 'ù' | 'û' | 'ü' => 'u',
+        'ç' => 'c',
+        c => c,
+    }
+}
+
+/// Texto cru (entre as aspas, como está no arquivo) com os escapes do JSON resolvidos; sem `\\`,
+/// o próprio. Tolerante: escape inválido fica como está, `\\u` sem par vira U+FFFD.
+pub(crate) fn sem_escapes(v: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if memchr(b'\\', v).is_none() {
+        return v.into();
+    }
+    let hex = |i: usize| {
+        v.get(i..i + 4)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u32::from_str_radix(h, 16).ok())
+    };
+    let mut s = Vec::with_capacity(v.len());
+    let mut i = 0;
+    while i < v.len() {
+        if v[i] != b'\\' || i + 1 == v.len() {
+            s.push(v[i]);
+            i += 1;
+            continue;
+        }
+        let simples = match v[i + 1] {
+            b'"' => Some(b'"'),
+            b'\\' => Some(b'\\'),
+            b'/' => Some(b'/'),
+            b'b' => Some(8),
+            b'f' => Some(12),
+            b'n' => Some(b'\n'),
+            b'r' => Some(b'\r'),
+            b't' => Some(b'\t'),
+            _ => None,
+        };
+        if let Some(c) = simples {
+            s.push(c);
+            i += 2;
+            continue;
+        }
+        let Some(u) = (v[i + 1] == b'u').then(|| hex(i + 2)).flatten() else {
+            s.push(v[i]);
+            i += 1;
+            continue;
+        };
+        i += 6;
+        let par = (0xd800..0xdc00).contains(&u)
+            && v.get(i..i + 2) == Some(b"\\u")
+            && hex(i + 2).is_some_and(|b| (0xdc00..0xe000).contains(&b));
+        let c = if par {
+            let b = hex(i + 2).unwrap_or(0);
+            i += 6;
+            char::from_u32(0x10000 + ((u - 0xd800) << 10) + (b - 0xdc00))
+        } else {
+            char::from_u32(u)
+        };
+        let mut buf = [0u8; 4];
+        s.extend_from_slice(c.unwrap_or('\u{fffd}').encode_utf8(&mut buf).as_bytes());
+    }
+    s.into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2027,6 +2132,17 @@ mod testes {
             "cartao",
             "card_number",
             "cartao_numero",
+            "cpf_cliente",
+            "cpfCliente",
+            "password_confirmation",
+            "senhaAtual",
+            "token_value",
+            "cartão",
+            "número_cartão",
+            "CARTÃO",
+            "carta\u{303}o",
+            "\\u0073enha",
+            "se\\u006Eha_nova",
         ] {
             assert!(chave_de_segredo(sim.as_bytes()), "{sim}");
         }
@@ -2036,6 +2152,8 @@ mod testes {
             "max_tokens",
             "secretaria",
             "senha_hash",
+            "password_hash",
+            "token_expires",
             "key",
             "chave",
             "",

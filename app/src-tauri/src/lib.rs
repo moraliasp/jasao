@@ -2407,8 +2407,12 @@ mod testes {
         for (v, l) in linhas.iter().enumerate() {
             em("valor", json!({ "v": v })).unwrap();
             em("formatado", json!({ "registro": l["registro"] })).ok();
-            if l["mascarado"] == true {
-                revelados.push(chamar("valor_cru", json!({"id": 1, "v": v})).unwrap());
+            let cru = chamar("valor_cru", json!({"id": 1, "v": v})).unwrap();
+            if l["expansivel"] == true || !l["erro"].is_null() {
+                // Contêiner e linha inválida não revelam nada: só folha, campo a campo.
+                assert_eq!(cru, Value::Null, "{l}");
+            } else if l["mascarado"] == true {
+                revelados.push(cru);
             } else {
                 assert_eq!(
                     chamar("valor_cru", json!({"id": 1, "v": v})),
@@ -2417,14 +2421,8 @@ mod testes {
             }
         }
         // O que a máscara escondeu é exatamente o que vazaria: prova que o crivo não é vazio.
-        // Contêiner com trecho mascarado também é marcado (e revela inteiro); aqui, as folhas.
-        assert_eq!(revelados.len(), 14);
-        let folhas: Vec<&Value> = revelados
-            .iter()
-            .filter(|r| !r.as_str().unwrap().starts_with('{'))
-            .collect();
         assert_eq!(
-            folhas,
+            revelados.iter().collect::<Vec<_>>(),
             [
                 json!("S3NT1N3LA-1"),
                 json!("4821"),

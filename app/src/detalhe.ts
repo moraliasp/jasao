@@ -43,12 +43,13 @@ export function criarDetalhe(el: HTMLElement, avisar: (m: string) => void, aoRed
     if (b?.dataset.link) void abrir(b.dataset.link).catch((err) => avisar(t.inteligente.erroLink(String(err))));
   });
 
-  /** Segredo mascarado: aviso e botão; o valor original só vem no clique, campo a campo. */
-  function mascarado(v: number): void {
+  /** Segredo mascarado: aviso e, na folha, botão; o valor original só vem no clique, campo a
+   * campo (contêiner não revela: o backend também recusa). */
+  function mascarado(v: number, folha: boolean): void {
     oculto = v;
     el.hidden = false;
     el.innerHTML = `<div class="rot">${visivel(t.mascara.rotulo)}</div><p>${visivel(t.mascara.explica)}</p>` +
-      `<button class="btn" type="button" data-revelar>${visivel(t.mascara.mostrar)}</button>`;
+      (folha ? `<button class="btn" type="button" data-revelar>${visivel(t.mascara.mostrar)}</button>` : "");
   }
   /** Busca o valor cru e mostra como texto (nunca HTML); nada guarda: outra seleção mascara de novo. */
   async function revelar(chave: string, v: number): Promise<void> {
@@ -74,7 +75,7 @@ export function criarDetalhe(el: HTMLElement, avisar: (m: string) => void, aoRed
       if (chave === de) return;
       de = chave;
       oculto = -1;
-      if (l?.mascarado) return mascarado(v);
+      if (l?.mascarado) return mascarado(v, l.tipo !== "objeto" && l.tipo !== "lista" && !l.erro);
       const d = l ? daPrevia(l) : null;
       if (typeof d !== "string") return desenhar(d);
       desenhar(null);

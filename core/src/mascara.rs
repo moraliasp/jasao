@@ -16,7 +16,8 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::ops::Range;
 
-use crate::estrutura::{chave_de_segredo, parece_segredo};
+use crate::arvore::MAX_PROFUNDIDADE;
+use crate::estrutura::{chave_de_segredo, parece_segredo, sem_escapes};
 use crate::linhas::IndiceLinhas;
 
 /// O que um trecho mascarado era.
@@ -32,14 +33,16 @@ pub enum Tipo {
 
 /// Valor de texto (cru, entre as aspas) que se mascara pelo formato: credencial (`parece_segredo`)
 /// ou documento brasileiro / cartão com dígito verificador certo.
+/// Escapes do JSON (`\u0034111…`) são resolvidos antes.
 pub fn sensivel(v: &[u8]) -> bool {
-    parece_segredo(v) || documento(v)
+    let v = sem_escapes(v);
+    parece_segredo(&v) || doc_ou_cartao(&v)
 }
 
 /// CPF ou CNPJ (com ou sem pontuação) ou cartão de 13 a 19 dígitos (espaço ou hífen) que começa
-/// com 3 a 6 e passa no Luhn. Só o dígito verificador separa de um número qualquer: ~1% dos
+/// com 3 a 6 (ou 2221 a 2720, Mastercard série 2) e passa no Luhn. Só o dígito verificador separa de um número qualquer: ~1% dos
 /// textos de 11 dígitos passa no do CPF (falso positivo é o lado seguro).
-fn documento(v: &[u8]) -> bool {
+fn doc_ou_cartao(v: &[u8]) -> bool {
     if v.len() > 23 || v.len() < 11 {
         return false;
     }
@@ -102,61 +105,95 @@ fn cartao(d: &[u8]) -> bool {
             if x > 9 { x - 9 } else { x }
         })
         .sum();
-    (3..=6).contains(&d[0]) && soma.is_multiple_of(10)
+    let p4 = d[..4].iter().fold(0u32, |n, &x| n * 10 + u32::from(x));
+    ((3..=6).contains(&d[0]) || (2221..=2720).contains(&p4)) && soma.is_multiple_of(10)
 }
 
-/// Chama `marcar` com cada trecho a mascarar de `dados`, em ordem. JSONL (a 1ª linha não vazia
-/// fecha tudo o que abre, ou é inválida) é lido linha a linha, cada uma do zero; documento
-/// em várias linhas é lido de ponta a ponta. Depois de algo estranho, o resto da linha (e, no
-/// documento, o resto do arquivo) é `Bruto` se houver sinal de segredo: chave sensível aberta ou
-/// palavra suspeita (`suspeito`). Sem sinal fica como está: o erro da linha continua legível.
+/// Chama `marcar` com cada trecho a mascarar de `dados`, em ordem. JSONL (`por_linha`) é lido
+/// linha a linha, cada uma do zero; documento em várias linhas é lido de ponta a ponta
+/// (`documento`). Depois de algo estranho, o resto da linha (e, no documento, o resto do arquivo)
+/// é `Bruto` se houver sinal de segredo: chave sensível aberta ou palavra suspeita (`suspeito`).
+/// Sem sinal fica como está: o erro da linha continua legível.
 pub fn trechos(dados: &[u8], indice: &IndiceLinhas, mut marcar: impl FnMut(Range<usize>, Tipo)) {
-    let faixas = (0..indice.len()).filter_map(|i| indice.faixa(i, dados));
-    let mut l = Lexico::novo(dados, &mut marcar);
-    let mut por_linha = None;
-    // Documento que se perdeu: `Some(true)` se a chave aberta era sensível (o resto todo sai).
-    let mut estragado: Option<bool> = None;
-    for f in faixas {
-        if let Some(tudo) = estragado {
-            if tudo || suspeito(&dados[f.clone()]) {
-                (l.marcar)(f, Tipo::Bruto);
-            }
-            continue;
-        }
-        if por_linha != Some(false) {
-            l.pilha.clear();
-            l.chave = false;
-        }
-        let vazia = dados[f.clone()].iter().all(|c| c.is_ascii_whitespace());
-        let ok = l.linha(f.start, f.end);
-        if por_linha.is_none() && !vazia {
-            por_linha = Some(!ok || l.pilha.is_empty());
-        }
-        if !ok && por_linha == Some(false) {
-            estragado = Some(l.contexto_sensivel());
-        }
+    let todas = 0..indice.len();
+    match por_linha(dados, indice) {
+        true => jsonl(dados, indice, todas, &mut marcar),
+        false => documento(dados, indice, todas, &mut Estado::default(), &mut marcar),
     }
 }
 
 /// JSONL (cada linha lida do zero, ver `trechos`): a 1ª linha não vazia fecha tudo o que abre, ou
-/// é inválida. Senão é documento em várias linhas, que só se lê de ponta a ponta.
+/// é inválida. Senão é documento em várias linhas, que só se lê em ordem.
 pub fn por_linha(dados: &[u8], indice: &IndiceLinhas) -> bool {
     (0..indice.len())
         .filter_map(|i| indice.faixa(i, dados))
         .find(|f| !dados[f.clone()].iter().all(|c| c.is_ascii_whitespace()))
         .is_none_or(|f| {
             let mut nada = |_, _| {};
-            let mut l = Lexico::novo(dados, &mut nada);
-            !l.linha(f.start, f.end) || l.pilha.is_empty()
+            let mut l = Lexico::novo(dados, Estado::default(), &mut nada);
+            !l.linha(f.start, f.end) || l.e.pilha.is_empty()
         })
 }
 
-/// Mascara as `linhas` de um JSONL (`por_linha`) em `saida`, o pedaço de uma cópia dos dados que
-/// começa no byte `base` e cobre essas linhas; `true` se algo foi mascarado.
-pub fn mascarar_linhas(
+fn jsonl(
     dados: &[u8],
     indice: &IndiceLinhas,
     linhas: Range<usize>,
+    marcar: &mut impl FnMut(Range<usize>, Tipo),
+) {
+    let mut l = Lexico::novo(dados, Estado::default(), marcar);
+    for f in linhas.filter_map(|i| indice.faixa(i, dados)) {
+        l.e.pilha.clear();
+        l.e.chave = false;
+        l.linha(f.start, f.end);
+    }
+}
+
+/// Onde a leitura de um documento em várias linhas parou: lido em blocos de linhas, em ordem,
+/// cada bloco continua do `Estado` que o anterior deixou.
+#[derive(Default)]
+pub struct Estado {
+    /// Contêineres abertos: (é objeto, está abaixo de chave sensível).
+    pilha: Vec<(bool, bool)>,
+    /// No objeto do topo: a chave do valor que vem é sensível.
+    chave: bool,
+    /// `chave_de_segredo` já respondida (aloca por chamada; as mesmas chaves se repetem).
+    chaves: HashMap<Box<[u8]>, bool>,
+    /// Documento que se perdeu: `Some(true)` se a chave aberta era sensível (o resto todo sai).
+    estragado: Option<bool>,
+}
+
+/// As `linhas` de um documento em várias linhas, continuando de `estado` (que fica onde parou).
+pub fn documento(
+    dados: &[u8],
+    indice: &IndiceLinhas,
+    linhas: Range<usize>,
+    estado: &mut Estado,
+    marcar: &mut impl FnMut(Range<usize>, Tipo),
+) {
+    let mut l = Lexico::novo(dados, std::mem::take(estado), marcar);
+    for f in linhas.filter_map(|i| indice.faixa(i, dados)) {
+        if let Some(tudo) = l.e.estragado {
+            if tudo || suspeito(&dados[f.clone()]) {
+                (l.marcar)(f, Tipo::Bruto);
+            }
+            continue;
+        }
+        if !l.linha(f.start, f.end) {
+            l.e.estragado = Some(l.contexto_sensivel());
+        }
+    }
+    *estado = l.e;
+}
+
+/// Mascara as `linhas` em `saida`, o pedaço de uma cópia dos dados que começa no byte `base` e
+/// cobre essas linhas; `true` se algo foi mascarado. JSONL sem `estado`; documento com o
+/// `Estado` do bloco anterior (ver `documento`).
+pub fn mascarar_bloco(
+    dados: &[u8],
+    indice: &IndiceLinhas,
+    linhas: Range<usize>,
+    estado: Option<&mut Estado>,
     saida: &mut [u8],
     base: usize,
 ) -> bool {
@@ -165,20 +202,15 @@ pub fn mascarar_linhas(
         algo = true;
         aplicar(saida, r.start - base..r.end - base, t)
     };
-    let mut l = Lexico::novo(dados, &mut marcar);
-    for f in linhas.filter_map(|i| indice.faixa(i, dados)) {
-        l.pilha.clear();
-        l.chave = false;
-        l.linha(f.start, f.end);
+    match estado {
+        None => jsonl(dados, indice, linhas, &mut marcar),
+        Some(e) => documento(dados, indice, linhas, e, &mut marcar),
     }
     algo
 }
 
 /// `trechos` aplicados em `saida` (cópia de `dados`, mesmo tamanho); `true` se algo foi mascarado.
 pub fn mascarar_em(dados: &[u8], indice: &IndiceLinhas, saida: &mut [u8]) -> bool {
-    if por_linha(dados, indice) {
-        return mascarar_linhas(dados, indice, 0..indice.len(), saida, 0);
-    }
     let mut algo = false;
     trechos(dados, indice, |r, t| {
         algo = true;
@@ -200,29 +232,18 @@ fn suspeito(r: &[u8]) -> bool {
 
 struct Lexico<'a, F> {
     d: &'a [u8],
-    /// Contêineres abertos: (é objeto, está abaixo de chave sensível).
-    pilha: Vec<(bool, bool)>,
-    /// No objeto do topo: a chave do valor que vem é sensível.
-    chave: bool,
-    /// `chave_de_segredo` já respondida (aloca por chamada; JSONL repete as mesmas chaves).
-    chaves: HashMap<Box<[u8]>, bool>,
+    e: Estado,
     marcar: &'a mut F,
 }
 
 impl<'a, F: FnMut(Range<usize>, Tipo)> Lexico<'a, F> {
-    fn novo(d: &'a [u8], marcar: &'a mut F) -> Self {
-        Lexico {
-            d,
-            pilha: Vec::new(),
-            chave: false,
-            chaves: HashMap::new(),
-            marcar,
-        }
+    fn novo(d: &'a [u8], e: Estado, marcar: &'a mut F) -> Self {
+        Lexico { d, e, marcar }
     }
 
     fn valor_sensivel(&self) -> bool {
-        match self.pilha.last() {
-            Some((true, _)) => self.chave,
+        match self.e.pilha.last() {
+            Some((true, _)) => self.e.chave,
             Some((false, s)) => *s,
             None => false,
         }
@@ -235,17 +256,21 @@ impl<'a, F: FnMut(Range<usize>, Tipo)> Lexico<'a, F> {
             match d[i] {
                 b' ' | b'\t' | b'\r' | b'\n' | b':' => i += 1,
                 b',' => {
-                    self.chave = false;
+                    self.e.chave = false;
                     i += 1;
                 }
                 c @ (b'{' | b'[') => {
+                    // Teto: abaixo dele a pilha (e a memória) não cresce; o resto é estranho.
+                    if self.e.pilha.len() >= MAX_PROFUNDIDADE {
+                        return self.estranho(i, fim);
+                    }
                     let s = self.valor_sensivel();
-                    self.pilha.push((c == b'{', s));
-                    self.chave = false;
+                    self.e.pilha.push((c == b'{', s));
+                    self.e.chave = false;
                     i += 1;
                 }
                 c @ (b'}' | b']') => {
-                    if self.pilha.pop().map(|(obj, _)| obj) != Some(c == b'}') {
+                    if self.e.pilha.pop().map(|(obj, _)| obj) != Some(c == b'}') {
                         return self.estranho(i, fim);
                     }
                     i += 1;
@@ -260,10 +285,10 @@ impl<'a, F: FnMut(Range<usize>, Tipo)> Lexico<'a, F> {
                         k += 1;
                     }
                     if k < fim && d[k] == b':' {
-                        let Some(&(true, s)) = self.pilha.last() else {
+                        let Some(&(true, s)) = self.e.pilha.last() else {
                             return self.estranho(i, fim);
                         };
-                        self.chave = s || self.chave_sensivel(&d[conteudo]);
+                        self.e.chave = s || self.chave_sensivel(&d[conteudo]);
                     } else if self.valor_sensivel() || sensivel(&d[conteudo.clone()]) {
                         (self.marcar)(conteudo, Tipo::Texto);
                     }
@@ -296,19 +321,19 @@ impl<'a, F: FnMut(Range<usize>, Tipo)> Lexico<'a, F> {
     }
 
     fn chave_sensivel(&mut self, k: &[u8]) -> bool {
-        if let Some(&s) = self.chaves.get(k) {
+        if let Some(&s) = self.e.chaves.get(k) {
             return s;
         }
         let s = chave_de_segredo(k);
-        if self.chaves.len() < 4096 {
-            self.chaves.insert(k.into(), s);
+        if self.e.chaves.len() < 4096 {
+            self.e.chaves.insert(k.into(), s);
         }
         s
     }
 
     /// Algo aberto (chave do topo ou contêiner) está abaixo de chave sensível.
     fn contexto_sensivel(&self) -> bool {
-        self.chave || self.pilha.iter().any(|&(_, s)| s)
+        self.e.chave || self.e.pilha.iter().any(|&(_, s)| s)
     }
 
     /// Algo estranho em `i`: o resto da linha sai `Bruto` se houver sinal de segredo.
@@ -416,9 +441,12 @@ mod testes {
             (-1e9f64..1e9).prop_map(Value::from),
             "\\PC{0,12}".prop_map(Value::String),
             Just(Value::String("111.444.777-35".into())),
+            "[a-z0-9\\\\\"\u{e3}\u{1f600}]{0,8}".prop_map(Value::String),
         ];
         let chave = prop_oneof![
             Just("senha".to_string()),
+            Just("cart\u{e3}o".to_string()),
+            Just("cpfCliente".to_string()),
             Just("cvv".to_string()),
             Just("nome".to_string()),
             "[a-z_\"\\\\ ]{0,6}",
@@ -477,14 +505,40 @@ mod testes {
         }
     }
 
+    /// Troca letras e dígitos dentro dos textos de `c` por `\uXXXX` onde `escape` manda: o mesmo
+    /// JSON, escrito de outro jeito.
+    fn com_escapes(c: &str, escape: u64) -> String {
+        let (mut s, mut dentro, mut barra) = (String::new(), false, false);
+        for (i, ch) in c.chars().enumerate() {
+            if dentro && !barra && ch.is_ascii_alphanumeric() && escape >> (i % 64) & 1 == 1 {
+                s += &format!("\\u{:04x}", ch as u32);
+                continue;
+            }
+            s.push(ch);
+            match (barra, ch) {
+                (true, _) => barra = false,
+                (false, '\\') => barra = true,
+                (false, '"') => dentro = !dentro,
+                _ => {}
+            }
+        }
+        s
+    }
+
     proptest! {
-        /// JSON válido (compacto ou formatado) segue válido, do mesmo tamanho e sem segredo.
+        /// JSON válido (compacto ou formatado, com ou sem `\uXXXX`) segue válido, do mesmo tamanho
+        /// e sem segredo.
         #[test]
-        fn json_valido_segue_valido_sem_segredo(v in valor_json(), bonito in any::<bool>()) {
+        fn json_valido_segue_valido_sem_segredo(
+            v in valor_json(),
+            bonito in any::<bool>(),
+            escape in prop_oneof![Just(0u64), any::<u64>()],
+        ) {
             let c = match bonito {
                 true => serde_json::to_string_pretty(&v).unwrap(),
                 false => serde_json::to_string(&v).unwrap(),
             };
+            let c = com_escapes(&c, escape);
             let s = m(&c);
             prop_assert_eq!(s.len(), c.len());
             let b: Value = serde_json::from_str(&s).map_err(|e| TestCaseError::fail(format!("{e}: {s}")))?;
@@ -670,11 +724,134 @@ mod testes {
             let e = (a + 1000).min(ind.len());
             let fim = ind.faixa(e, d).map_or(d.len(), |f| f.start);
             let (p, r) = std::mem::take(&mut resto).split_at_mut(fim - base);
-            mascarar_linhas(d, &ind, a..e, p, base);
+            mascarar_bloco(d, &ind, a..e, None, p, base);
             base = fim;
             resto = r;
         }
         assert_eq!(em_blocos, so);
+    }
+
+    #[test]
+    fn documento_em_blocos_da_o_mesmo_que_de_uma_vez() {
+        // Documento formatado: segredo aberto num bloco e fechado em outro, e um que se perde.
+        let mut d = String::from("{\n \"lista\": [\n");
+        for i in 0..5_000 {
+            d += &format!("  {{\"id\": {i}, \"senha\": \n  \"s{i}\", \"n\": \"ok\"}},\n");
+        }
+        d += "  {\"token\": [\n   1,\n   2\n  ]},\n  x \"111.444.777-35\"\n]}\n";
+        let d = d.as_bytes();
+        let ind = IndiceLinhas::construir(d);
+        assert!(!por_linha(d, &ind));
+        let so = mascarar(d);
+        for passo in [1, 7, 1000] {
+            let mut e = Estado::default();
+            let mut em_blocos = d.to_vec();
+            for a in (0..ind.len()).step_by(passo) {
+                let z = (a + passo).min(ind.len());
+                let de = ind.faixa(a, d).unwrap().start;
+                let ate = ind.faixa(z, d).map_or(d.len(), |f| f.start);
+                mascarar_bloco(d, &ind, a..z, Some(&mut e), &mut em_blocos[de..ate], de);
+            }
+            assert_eq!(em_blocos, so, "passo {passo}");
+        }
+        let s = String::from_utf8(so).unwrap();
+        assert!(!s.contains("\"s4999\"") && !s.contains("777-35") && s.contains("\"ok\""));
+    }
+
+    #[test]
+    fn escapes_do_json_nao_furam_a_mascara() {
+        for c in [
+            r#"{"\u0073enha":"LEAK1"}"#,
+            r#"{"se\u006eha":"LEAK1"}"#,
+            r#"{"tok\u0065n":"LEAK3"}"#,
+            r#"{"cart\u00e3o":"LEAK4"}"#,
+            r#"{"x":"\u0034111 1111 1111 1111"}"#,
+            r#"{"x":"111.444.777\u002d35"}"#,
+            r#"{"x":"\u0065yJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJh"}"#,
+            r#"{"x":"Bearer\u0020abcdefghijklmnopqrstu"}"#,
+            r#"{"x":"\ud83d\ude00", "\u0063pf": "LEAK5"}"#,
+        ] {
+            let s = m(c);
+            let a: Value = serde_json::from_str(c).unwrap();
+            let b: Value = serde_json::from_str(&s).unwrap();
+            conferir(&a, &b, false).unwrap_or_else(|e| panic!("{e}: {c} -> {s}"));
+            assert!(
+                !s.contains("LEAK") && !s.contains("4111") && !s.contains("abcdefghij"),
+                "{c} -> {s}"
+            );
+        }
+        // Escape inválido ou sem par não quebra nem esconde à toa.
+        assert_eq!(m(r#"{"x":"\ud800"}"#), r#"{"x":"\ud800"}"#);
+    }
+
+    #[test]
+    fn padroes_de_credencial_e_cartao_serie_2() {
+        for v in [
+            "bearer abcdefghijklmnopqrstu",
+            "BEARER abcdefghijklmnopqrstu",
+            "AIzaSyA1234567890abcdefghijklmnopqrstu",
+            "glpat-abcdefghijklmnopqrst",
+            "sk_test_abcdefghijklmnopqrst",
+            "ASIAIOSFODNN7EXAMPLE",
+            "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+            "2221000000000009",
+            "2720 9900 0000 0007",
+        ] {
+            assert!(sensivel(v.as_bytes()), "{v}");
+        }
+        for v in [
+            "2220000000000000",
+            "2721000000000004",
+            "bearer curto",
+            "glpat-x",
+        ] {
+            assert!(!sensivel(v.as_bytes()), "{v}");
+        }
+    }
+
+    #[test]
+    fn linha_funda_tem_teto_e_nao_solta_segredo() {
+        let n = MAX_PROFUNDIDADE * 50;
+        let c = format!(
+            "{}{{\"senha\":\"LEAK1\"}}{}\n{{\"ok\":1}}",
+            "[".repeat(n),
+            "]".repeat(n)
+        );
+        let s = m(&c);
+        assert_eq!(s.len(), c.len());
+        assert!(!s.contains("LEAK1"));
+        assert!(
+            s.ends_with("\n{\"ok\":1}"),
+            "a linha seguinte (JSONL) é lida do zero"
+        );
+        // A pilha para no teto: nada cresce com a profundidade.
+        let mut nada = |_, _| {};
+        let mut l = Lexico::novo(c.as_bytes(), Estado::default(), &mut nada);
+        assert!(!l.linha(0, n + 20));
+        assert_eq!(l.e.pilha.len(), MAX_PROFUNDIDADE);
+        // Documento que passa do teto: o resto suspeito sai mascarado.
+        let doc = format!("{}\n{{\"pin\": \"1\"}}\n", "[".repeat(n));
+        assert!(!m(&doc).contains("\"1\""));
+    }
+
+    #[test]
+    fn cnpj_com_digito_errado_nao_e_segredo() {
+        for v in ["11.222.333/0001-82", "11222333000180", "11.222.333/0001-91"] {
+            let s = format!(r#"{{"x":"{v}"}}"#);
+            assert_eq!(m(&s), s, "{v}");
+        }
+    }
+
+    #[test]
+    fn sal_muda_por_chamada() {
+        assert_ne!(sal_novo(), sal_novo());
+    }
+
+    #[test]
+    fn anonimizar_linha_estranha_nao_solta_o_segredo() {
+        let cru = b"{\"senha\": oops \"S3NT1N3LA\"}\n{\"x\": tru \"111.444.777-35\"}\n";
+        let a = String::from_utf8(anonimizar(cru, &IndiceLinhas::construir(cru), 7)).unwrap();
+        assert!(!a.contains("S3NT1N3LA") && !a.contains("777-35"), "{a}");
     }
 
     #[test]
