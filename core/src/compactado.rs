@@ -53,6 +53,9 @@ pub struct Opcoes<'a> {
     pub progresso: Option<&'a dyn Fn(u64, u64)>,
     /// Tetos da conversão de MessagePack, CBOR, BSON, YAML e TOML (ver `formatos`).
     pub formatos: crate::formatos::Limites,
+    /// Abre sem a máscara de segredos (`mascara`): `bytes()` devolve o arquivo como está. Só a
+    /// CLI liga (`--sem-mascara`); o padrão é mascarar.
+    pub sem_mascara: bool,
 }
 
 impl Default for Opcoes<'_> {
@@ -69,6 +72,7 @@ impl Default for Opcoes<'_> {
             cancelar: None,
             progresso: None,
             formatos: crate::formatos::Limites::default(),
+            sem_mascara: false,
         }
     }
 }

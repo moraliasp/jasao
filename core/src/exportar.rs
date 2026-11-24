@@ -7,7 +7,7 @@
 //! Segurança: nomes de campo e literais entram no código gerado só por `aspas` (JSON com
 //! escape de `<`, `>`, `&`, controles, bidi e U+2028/2029). Nenhum outro valor do arquivo entra.
 
-use crate::estrutura::{Discriminador, No, Resumo, Tipo, Unico};
+use crate::estrutura::{Discriminador, No, Resumo, Tipo, Unico, chave_de_segredo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Opcoes {
@@ -72,7 +72,9 @@ fn forma(no: &No, op: Opcoes) -> Forma {
         .into_iter()
         .filter(|&t| t != Tipo::Nulo && n(t))
         .collect();
+    // Segredo (pelo valor) nunca vira literal: o literal é o próprio valor (mascarado ou não).
     if op.literal
+        && !no.valores.segredo
         && let [t] = nao_nulos[..]
         && escalares.contains(&t)
         && let Unico::Um(_, v) = &no.valores.unico
@@ -154,7 +156,14 @@ fn campos(no: &No, op: Opcoes) -> Vec<Campo> {
         .into_iter()
         .map(|(nome, f)| Campo {
             opcional: f.presenca < objetos,
-            forma: forma(&f, op),
+            // Abaixo de chave de segredo (`senha`, `cpf`…), nada vira literal: ver `mascara`.
+            forma: forma(
+                &f,
+                Opcoes {
+                    literal: op.literal && !chave_de_segredo(nome.as_bytes()),
+                    ..op
+                },
+            ),
             nome,
         })
         .collect()
@@ -165,7 +174,12 @@ fn modelo(r: &Resumo, op: Opcoes) -> Forma {
     let so_objetos = raiz.tipo(Tipo::Objeto).n == r.registros() && raiz.mapa.is_none();
     // Mais de um candidato: o de menos variantes (um id ou data única também separa).
     let ds = r.discriminadores();
-    match ds.iter().min_by_key(|d| d.variantes.len()) {
+    // Campo de segredo não discrimina: as variantes seriam os valores (mascarados).
+    match ds
+        .iter()
+        .filter(|d| !chave_de_segredo(&d.cru))
+        .min_by_key(|d| d.variantes.len())
+    {
         Some(d) if so_objetos && r.registros() > 0 => Forma {
             nulo: false,
             alts: vec![uniao(raiz, d, op)],
