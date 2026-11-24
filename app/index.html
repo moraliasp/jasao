@@ -391,11 +391,15 @@
           </form>
           <form class="busca consulta" id="consulta">
             <div class="campo">
-              <input type="text" autocomplete="off" spellcheck="false" aria-keyshortcuts="Meta+J Control+J" />
+              <input type="text" autocomplete="off" spellcheck="false" list="filtros-salvos" aria-keyshortcuts="Meta+J Control+J" />
+              <datalist id="filtros-salvos"></datalist>
+              <button class="ib alt" type="button" data-salvar aria-pressed="false" disabled>★</button>
             </div>
             <span class="info" role="status" aria-live="polite"></span>
             <button class="btn" type="button" data-cancelar hidden></button>
             <button class="btn" type="button" data-voltar hidden></button>
+            <button class="btn" type="button" data-exportar="jsonl" hidden></button>
+            <button class="btn" type="button" data-exportar="csv" hidden></button>
           </form>
         </div>
         <div class="tools">

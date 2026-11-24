@@ -545,9 +545,12 @@ function teclaEstrutura(e: KeyboardEvent): void {
   Promise.resolve(acao()).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
 }
 
-/** Foca `el`, a menos que o usuário esteja andando pela barra de abas (aba ainda preparando não rouba o foco). */
+/** Foca `el`, a menos que o usuário esteja andando pela barra de abas (aba ainda preparando não rouba o foco)
+ *  ou digitando a consulta enquanto o resultado dela abre (ao vivo). */
 function focar(el: HTMLElement | null | undefined): void {
-  if (!$("arquivos-lista").contains(document.activeElement)) el?.focus();
+  const foco = document.activeElement;
+  if ($("arquivos-lista").contains(foco) || (abaAtiva()?.quieta && $("consulta").contains(foco))) return;
+  el?.focus();
 }
 
 /** `rolagem`: [árvore, texto] guardados na aba; sem ela, a seleção vem para a vista. */
@@ -704,7 +707,9 @@ const consulta = criarConsulta($("consulta"), {
   // Resultado e volta abrem na visão em uso, sem passar pelo painel de entrada.
   abrir: async (c, id) => {
     const a = lista.find((x) => x.doc === id);
-    if (a) await mostrar(c, a, a === abaAtiva() ? (noPainel ? undefined : modo) : a.modo);
+    if (!a) return;
+    a.quieta = true; // `preparar` desliga ao terminar
+    await mostrar(c, a, a === abaAtiva() ? (noPainel ? undefined : modo) : a.modo);
   },
   voltar: () => visaoAtual().focus(),
   fmt,
@@ -726,6 +731,7 @@ interface Aba {
   modo: Modo;
   noPainel: boolean;
   resumo: Resumo | null; // null: aberta no Rust, mas ainda não preparada na tela
+  quieta?: boolean; // abrindo resultado de consulta: até preparar, não tira o foco do campo da consulta
   atual: Linha | undefined;
   alvo: number;
   rolagem: [number, number];
@@ -1037,7 +1043,9 @@ async function preparar(a: Aba, visao?: Modo | "painel"): Promise<void> {
     }
     grade.inferiu(); // já montada: confere o palpite agora
     busca.reabrir();
+    a.quieta = false;
   } catch (erro) {
+    a.quieta = false;
     if (v === versao) status.textContent = `${t.erro}: ${erro}`;
   }
 }
