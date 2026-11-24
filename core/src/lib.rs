@@ -9,6 +9,7 @@ pub mod diff;
 pub mod erros;
 pub mod estrutura;
 pub mod exportar;
+pub mod filtro;
 pub mod formatos;
 pub mod gerador;
 pub mod linha_do_tempo;

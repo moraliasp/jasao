@@ -433,7 +433,7 @@ fn pular(evs: &[Ev], i: &mut usize) {
 
 /// Chama `f` com cada valor do caminho `segs` dentro do valor em `evs[*i]`, e avança `i` para
 /// depois dele. Recursão limitada pelo tamanho do caminho (≤ `PROFUNDIDADE_MAX`).
-fn coletar(evs: &[Ev], i: &mut usize, b: &[u8], segs: &[Seg], f: &mut impl FnMut(Ev)) {
+pub(crate) fn coletar(evs: &[Ev], i: &mut usize, b: &[u8], segs: &[Seg], f: &mut impl FnMut(Ev)) {
     let Some((s, resto)) = segs.split_first() else {
         f(evs[*i]);
         return pular(evs, i);
