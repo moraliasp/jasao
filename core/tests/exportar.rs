@@ -438,23 +438,89 @@ fn schema_de_fora_nao_busca_ref_remoto() {
 
 #[test]
 fn schema_de_fora_recursivo_nao_derruba() {
-    let dados = b"{\"a\": {\"a\": {\"a\": 1}}}\n{\"a\": \"x\"}\n";
+    // Recursão que não anda no dado (ciclo de `$ref` puro): recusada na compilação.
     for s in [
-        // Ciclo sem consumir a entrada.
         r##"{"$ref": "#"}"##,
         r##"{"$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}}, "$ref": "#/$defs/a"}"##,
-        // Recursão legítima (árvore): a 2ª linha reprova.
-        r##"{"type": "object", "properties": {"a": {"anyOf": [{"type": "integer"}, {"$ref": "#"}]}}}"##,
+        r##"{"allOf": [{"$recursiveRef": "#"}]}"##,
     ] {
-        let v = validar::validar(dados, Entrada::Jsonl, s, &AtomicBool::new(false), |_| {})
-            .unwrap_or_else(|e| panic!("{s}: {e}"));
-        assert_eq!(v.passam + v.falham, 2, "{s}");
+        assert!(recusa(s).contains("recursão"), "{s}");
     }
+    // Recursão legítima (árvore): anda um nível no dado a cada volta; a 2ª linha reprova.
+    let dados = b"{\"a\": {\"a\": {\"a\": 1}}}\n{\"a\": \"x\"}\n";
     let arvore = r##"{"type": "object", "properties": {"a": {"anyOf": [{"type": "integer"}, {"$ref": "#"}]}}}"##;
     let v = validar(dados, Entrada::Jsonl, arvore);
     assert_eq!((v.passam, v.falham), (1, 1));
     assert_eq!(v.falhas[0].linha, 1);
     assert!(v.falhas[0].motivo.starts_with("/a"), "{:?}", v.falhas);
+    // "Qualquer valor JSON": dois `$ref` ao topo, mas um só vale para objeto e o outro para
+    // lista; nunca os dois no mesmo dado.
+    let json = r##"{"anyOf": [{"type": ["string", "number", "boolean", "null"]},
+        {"type": "object", "additionalProperties": {"$ref": "#"}},
+        {"type": "array", "items": {"$ref": "#"}}]}"##;
+    let v = validar(
+        b"{\"a\": [1, {\"b\": null}]}\n[[[]]]\n",
+        Entrada::Jsonl,
+        json,
+    );
+    assert_eq!((v.passam, v.falham), (2, 0));
+}
+
+/// `n` níveis de `allOf` com dois `$ref` ao nível seguinte: 2^n caminhos até o fim. Poucos
+/// bytes e poucos `$ref`, custo exponencial para o validador.
+fn bomba(n: usize) -> String {
+    let defs: Vec<String> = (0..n)
+        .map(|i| {
+            let r = format!(r##"{{"$ref": "#/$defs/a{}"}}"##, i + 1);
+            format!(r#""a{i}": {{"allOf": [{r}, {r}]}}"#)
+        })
+        .collect();
+    format!(
+        r##"{{"$defs": {{{}, "a{n}": {{"type": "integer"}}}}, "$ref": "#/$defs/a0"}}"##,
+        defs.join(",")
+    )
+}
+
+#[test]
+fn schema_de_fora_com_custo_explosivo_recusado() {
+    // Medido no #45 antes da correção: n=24 0,16 s; n=40 mais de 30 s (com 81 `$ref`).
+    let t = std::time::Instant::now();
+    for n in [15, 40, 300] {
+        assert!(recusa(&bomba(n)).contains("expandido"), "n={n}");
+    }
+    // Funda demais: para no encadeamento antes de expandir.
+    assert!(recusa(&bomba(5000)).contains("encadeado"));
+    assert!(t.elapsed().as_secs() < 2, "{:?}", t.elapsed());
+    // Abaixo do teto, o mesmo formato compila e valida.
+    let v = validar(b"1\n\"x\"\n", Entrada::Jsonl, &bomba(8));
+    assert_eq!((v.passam, v.falham), (1, 1));
+    // Fan-out na recursão: cada volta dobra (2^profundidade do dado). Direto, por um `$def`
+    // alcançado duas vezes, e com caminhos de tamanhos diferentes.
+    for s in [
+        r##"{"type": "object", "properties": {"x": {"allOf": [{"$ref": "#"}, {"$ref": "#"}]}}}"##,
+        r##"{"$defs": {"b": {"$ref": "#"}}, "properties": {"x": {"allOf": [{"$ref": "#/$defs/b"}, {"$ref": "#/$defs/b"}]}}}"##,
+        // Volta de 1 e de 2 níveis no mesmo caminho: Fibonacci.
+        r##"{"properties": {"x": {"allOf": [{"$ref": "#"}, {"properties": {"x": {"$ref": "#"}}}]}}}"##,
+        r##"{"items": {"$ref": "#"}, "additionalItems": {"$ref": "#"}}"##,
+    ] {
+        assert!(recusa(s).contains("recursão"), "{s}");
+    }
+    // Recursões em dados que não se cruzam (`x` e `y`; `x` e `y.z`, tamanhos diferentes) passam.
+    for s in [
+        r##"{"type": "object", "properties": {"x": {"$ref": "#"}, "y": {"$ref": "#"}}}"##,
+        r##"{"type": "object", "properties": {"x": {"$ref": "#"}, "y": {"properties": {"z": {"$ref": "#"}}}}}"##,
+    ] {
+        let v = validar(b"{\"x\": {\"y\": {\"z\": {}}}}\n", Entrada::Jsonl, s);
+        assert_eq!((v.passam, v.falham), (1, 0), "{s}");
+    }
+    // A mesma árvore recursiva usada em dois campos: cada uso recursa sozinho.
+    let v = validar(
+        b"{\"e\": {\"f\": [{\"f\": []}]}, \"d\": {\"f\": [1]}}\n",
+        Entrada::Jsonl,
+        r##"{"$defs": {"no": {"type": "object", "properties": {"f": {"items": {"$ref": "#/$defs/no"}}}}},
+            "properties": {"e": {"$ref": "#/$defs/no"}, "d": {"$ref": "#/$defs/no"}}}"##,
+    );
+    assert_eq!((v.passam, v.falham), (0, 1));
 }
 
 #[test]
@@ -470,8 +536,8 @@ fn schema_de_fora_fundo_ou_grande_demais() {
         "x".repeat(validar::MAX_SCHEMA)
     );
     assert!(recusa(&grande).contains("limite"));
-    // Cadeia longa de `$ref` (não cíclica): até `MAX_REFS` compila e valida numa thread com a
-    // pilha padrão (a das validações do app); acima, recusada antes de estourar a pilha.
+    // Cadeia longa de `$ref` (não cíclica): até `MAX_ENCADEADO` compila e valida numa thread
+    // com a pilha padrão (a das validações do app); acima, recusada antes de estourar a pilha.
     let cadeia = |n: usize| {
         let defs: Vec<String> = (0..n)
             .map(|i| format!(r##""a{i}": {{"$ref": "#/$defs/a{}"}}"##, i + 1))
@@ -483,9 +549,10 @@ fn schema_de_fora_fundo_ou_grande_demais() {
     };
     let longa = cadeia(20_000);
     assert!(longa.len() < validar::MAX_SCHEMA);
-    assert!(recusa(&longa).contains("$ref"));
-    // `MAX_REFS - 1` na cadeia + o do topo = `MAX_REFS`.
-    let s = cadeia(validar::MAX_REFS - 1);
+    assert!(recusa(&longa).contains("encadeado"));
+    // `cadeia(n)` encadeia o topo e n + 1 defs: n + 2 objetos.
+    assert!(recusa(&cadeia(validar::MAX_ENCADEADO - 1)).contains("encadeado"));
+    let s = cadeia(validar::MAX_ENCADEADO - 2);
     std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {

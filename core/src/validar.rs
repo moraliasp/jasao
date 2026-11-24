@@ -2,6 +2,7 @@
 //! terceiros (`jsonschema`), independente do gerador (`crate::exportar`). Cada registro é lido
 //! pelo `serde_json` (não pelo leitor da inferência) e conferido em paralelo.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc;
 use std::thread;
@@ -23,10 +24,16 @@ const LOTE_UNICO: usize = 4096;
 pub const MAX_SCHEMA: usize = 1 << 20;
 /// Maior aninhamento de objeto/lista no schema.
 pub const MAX_PROFUNDIDADE: usize = 64;
-/// Mais `$ref` que isto no schema é recusado: o `jsonschema` segue uma cadeia de `$ref` por
-/// recursão, e numa thread de 2 MiB a cadeia de 3 mil estoura a pilha em debug (2 mil passa;
-/// em release, 4 mil passa). Margem de 2× sobre o debug.
-pub const MAX_REFS: usize = 1024;
+/// Teto do schema expandido: valores visitados seguindo cada `$ref` como se o alvo estivesse
+/// copiado no lugar (a volta de uma recursão é cortada). Limita o custo de validar um nó do
+/// dado; sem isto, `allOf` com dois `$ref` ao nível seguinte dobra o custo a cada nível.
+pub const MAX_EXPANDIDO: usize = 100_000;
+/// Mais objetos/listas encadeados que isto (aninhamento mais `$ref` seguidos) é recusado: o
+/// `jsonschema` segue a cadeia por recursão, e numa thread de 2 MiB a cadeia de 3 mil `$ref`
+/// estoura a pilha em debug (2 mil passa; em release, 4 mil). Margem de 2× sobre o debug.
+pub const MAX_ENCADEADO: usize = 1024;
+/// Voltas de recursão abertas ao mesmo tempo na expansão.
+const MAX_VOLTAS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Falha {
@@ -146,8 +153,27 @@ pub fn compilar(schema: &str) -> Result<jsonschema::Validator, String> {
         ));
     }
     let s: serde_json::Value = serde_json::from_str(schema).map_err(|e| e.to_string())?;
-    let mut refs = 0;
-    conferir_schema(&s, 1, false, &mut refs)?;
+    conferir_schema(&s, 1, false)?;
+    // Pilha própria: a expansão desce até `MAX_ENCADEADO` níveis com alguns quadros por nível,
+    // e quem chama pode estar numa thread de 2 MiB.
+    thread::scope(|t| {
+        thread::Builder::new()
+            .stack_size(32 << 20)
+            .spawn_scoped(t, || {
+                Custo {
+                    raiz: &s,
+                    nos: 0,
+                    pilha: 0,
+                    caminho: Vec::new(),
+                    ativos: HashMap::new(),
+                    voltas: Vec::new(),
+                }
+                .visitar(&s)
+            })
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "análise do schema falhou".to_string())?
+    })?;
     jsonschema::options()
         .offline()
         .with_pattern_options(jsonschema::PatternOptions::regex())
@@ -155,15 +181,10 @@ pub fn compilar(schema: &str) -> Result<jsonschema::Validator, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Profundidade e referências. O `serde_json` já para em 128 níveis, então a recursão aqui é
-/// limitada. `nomes`: objeto de nome → schema (`properties` e afins), onde a chave é dado
-/// (um campo pode se chamar `$ref`).
-fn conferir_schema(
-    v: &serde_json::Value,
-    nivel: usize,
-    nomes: bool,
-    refs: &mut usize,
-) -> Result<(), String> {
+/// Profundidade e formato das referências. O `serde_json` já para em 128 níveis, então a
+/// recursão aqui é limitada. `nomes`: objeto de nome → schema (`properties` e afins), onde a
+/// chave é dado (um campo pode se chamar `$ref`).
+fn conferir_schema(v: &serde_json::Value, nivel: usize, nomes: bool) -> Result<(), String> {
     use serde_json::Value::{Array, Object};
     if nivel > MAX_PROFUNDIDADE {
         return Err(format!(
@@ -191,11 +212,10 @@ fn conferir_schema(
                         )
                     ));
                 }
-                if !nomes && matches!(k.as_str(), "$ref" | "$dynamicRef" | "$recursiveRef") {
-                    *refs += 1;
-                    if *refs > MAX_REFS {
-                        return Err(format!("schema com mais de {MAX_REFS} $ref"));
-                    }
+                // Um `$id` abaixo da raiz muda a base dos `$ref` de baixo, e a análise de custo
+                // resolve tudo a partir da raiz.
+                if !nomes && nivel > 1 && matches!(k.as_str(), "$id" | "id") && f.is_string() {
+                    return Err(format!("{k} abaixo da raiz não é aceito"));
                 }
                 // Valor de dado, não schema: um `{"$ref": ...}` ali não é referência.
                 if !nomes && matches!(k.as_str(), "const" | "enum" | "default" | "examples") {
@@ -210,15 +230,207 @@ fn conferir_schema(
                             | "definitions"
                             | "dependentSchemas"
                     );
-                conferir_schema(f, nivel + 1, filhos_sao_nomes, refs)?;
+                conferir_schema(f, nivel + 1, filhos_sao_nomes)?;
             }
             Ok(())
         }
         Array(a) => a
             .iter()
-            .try_for_each(|f| conferir_schema(f, nivel + 1, false, refs)),
+            .try_for_each(|f| conferir_schema(f, nivel + 1, false)),
         _ => Ok(()),
     }
+}
+
+/// Um passo no dado a partir da instância onde o schema se aplica.
+#[derive(Debug, Clone, PartialEq)]
+enum Passo {
+    Campo(String),
+    QualquerCampo,
+    Item,
+}
+
+/// Um caminho pode ser começo do outro (com `QualquerCampo` casando qualquer campo)? Se nenhum
+/// par de voltas é, o conjunto é livre de prefixo e cada dado é alcançado por uma só sequência
+/// de voltas; se algum é (`[x]` e `[x, x]`), o mesmo dado é alcançado de vários jeitos.
+fn cruzam(a: &[Passo], b: &[Passo]) -> bool {
+    use Passo::*;
+    a.iter().zip(b).all(|p| match p {
+        (Campo(x), Campo(y)) => x == y,
+        (Item, Item) | (Campo(_) | QualquerCampo, Campo(_) | QualquerCampo) => true,
+        _ => false,
+    })
+}
+
+/// Custo do schema: expande os `$ref` (até `MAX_EXPANDIDO` valores e `MAX_ENCADEADO` níveis)
+/// e confere as recursões. Recursão aceita é a que anda no dado a cada volta e cujas voltas
+/// abertas não são começo uma da outra (`cruzam`): com duas que são, o número de aplicações
+/// num mesmo dado cresce exponencialmente com a profundidade do registro.
+struct Custo<'a> {
+    raiz: &'a serde_json::Value,
+    nos: usize,
+    pilha: usize,
+    /// Caminho no dado desde a raiz do registro.
+    caminho: Vec<Passo>,
+    /// Objeto/lista do schema em expansão → tamanho do `caminho` ao entrar nele.
+    ativos: HashMap<*const serde_json::Value, usize>,
+    /// Voltas de recursão abertas: alvo e caminho no dado percorrido desde o alvo.
+    voltas: Vec<(*const serde_json::Value, Vec<Passo>)>,
+}
+
+impl<'a> Custo<'a> {
+    fn visitar(&mut self, v: &'a serde_json::Value) -> Result<(), String> {
+        use serde_json::Value::{Array, Object};
+        self.nos += 1;
+        if self.nos > MAX_EXPANDIDO {
+            return Err(format!(
+                "schema expandido (cada $ref no lugar do alvo) passa de {MAX_EXPANDIDO} valores"
+            ));
+        }
+        if !matches!(v, Object(_) | Array(_)) {
+            return Ok(());
+        }
+        self.pilha += 1;
+        if self.pilha > MAX_ENCADEADO {
+            return Err(format!(
+                "schema com mais de {MAX_ENCADEADO} níveis encadeados (aninhamento e $ref seguidos)"
+            ));
+        }
+        let id: *const serde_json::Value = v;
+        self.ativos.insert(id, self.caminho.len());
+        let r = self.filhos(v);
+        self.ativos.remove(&id);
+        self.voltas.retain(|(alvo, _)| *alvo != id);
+        self.pilha -= 1;
+        r
+    }
+
+    fn descer(&mut self, p: Passo, v: &'a serde_json::Value) -> Result<(), String> {
+        self.caminho.push(p);
+        let r = self.visitar(v);
+        self.caminho.pop();
+        r
+    }
+
+    /// Só as palavras que aplicam schema; as desconhecidas o validador não aplica.
+    fn filhos(&mut self, v: &'a serde_json::Value) -> Result<(), String> {
+        use serde_json::Value::{Array, Object};
+        let m = match v {
+            Array(a) => return a.iter().try_for_each(|f| self.visitar(f)),
+            Object(m) => m,
+            _ => return Ok(()),
+        };
+        for (k, f) in m {
+            match (k.as_str(), f) {
+                ("$ref" | "$dynamicRef" | "$recursiveRef", serde_json::Value::String(r)) => {
+                    self.seguir(r)?
+                }
+                ("properties", Object(p)) => {
+                    for (nome, s) in p {
+                        self.descer(Passo::Campo(nome.clone()), s)?;
+                    }
+                }
+                ("patternProperties", Object(p)) => {
+                    for s in p.values() {
+                        self.descer(Passo::QualquerCampo, s)?;
+                    }
+                }
+                ("dependentSchemas" | "dependencies", Object(p)) => {
+                    for s in p.values() {
+                        self.visitar(s)?;
+                    }
+                }
+                ("additionalProperties" | "unevaluatedProperties" | "propertyNames", _) => {
+                    self.descer(Passo::QualquerCampo, f)?
+                }
+                (
+                    "items" | "prefixItems" | "additionalItems" | "unevaluatedItems" | "contains",
+                    _,
+                ) => self.descer(Passo::Item, f)?,
+                ("allOf" | "anyOf" | "oneOf" | "not" | "if" | "then" | "else", _) => {
+                    self.visitar(f)?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn seguir(&mut self, r: &str) -> Result<(), String> {
+        let alvo = resolver(self.raiz, r)?;
+        let id: *const serde_json::Value = alvo;
+        let Some(&entrada) = self.ativos.get(&id) else {
+            return self.visitar(alvo);
+        };
+        let volta = self.caminho[entrada..].to_vec();
+        let mostrar = || crate::exportar::aspas(&r.chars().take(120).collect::<String>());
+        if volta.is_empty() {
+            return Err(format!(
+                "recursão de $ref sem avançar no dado: {}",
+                mostrar()
+            ));
+        }
+        if self.voltas.iter().any(|(_, o)| cruzam(o, &volta)) {
+            return Err(format!(
+                "recursão com mais de um caminho pelo mesmo dado em {} (custo exponencial)",
+                mostrar()
+            ));
+        }
+        if self.voltas.len() >= MAX_VOLTAS {
+            return Err(format!("recursão com mais de {MAX_VOLTAS} voltas abertas"));
+        }
+        self.voltas.push((id, volta));
+        Ok(())
+    }
+}
+
+/// Resolve `#` ou `#/ponteiro` (RFC 6901, com escape `%XX` de fragmento de URI) na raiz.
+fn resolver<'a>(raiz: &'a serde_json::Value, r: &str) -> Result<&'a serde_json::Value, String> {
+    let nada = || {
+        format!(
+            "$ref não encontrado: {}",
+            crate::exportar::aspas(&r.chars().take(120).collect::<String>())
+        )
+    };
+    let frag = r.strip_prefix('#').unwrap_or(r);
+    if frag.is_empty() {
+        return Ok(raiz);
+    }
+    if !frag.starts_with('/') {
+        return Err(format!(
+            "$ref para âncora não é aceito: {}",
+            crate::exportar::aspas(&r.chars().take(120).collect::<String>())
+        ));
+    }
+    let b = frag.as_bytes();
+    let mut bytes = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let h = b
+                .get(i + 1..i + 3)
+                .and_then(|h| std::str::from_utf8(h).ok());
+            bytes.push(
+                h.and_then(|h| u8::from_str_radix(h, 16).ok())
+                    .ok_or_else(nada)?,
+            );
+            i += 3;
+        } else {
+            bytes.push(b[i]);
+            i += 1;
+        }
+    }
+    let ponteiro = String::from_utf8(bytes).map_err(|_| nada())?;
+    let mut v = raiz;
+    for seg in ponteiro.split('/').skip(1) {
+        let seg = seg.replace("~1", "/").replace("~0", "~");
+        v = match v {
+            serde_json::Value::Object(m) => m.get(&seg),
+            serde_json::Value::Array(a) => seg.parse::<usize>().ok().and_then(|i| a.get(i)),
+            _ => None,
+        }
+        .ok_or_else(nada)?;
+    }
+    Ok(v)
 }
 
 /// Valida cada registro de `dados` (lido como `entrada`, a mesma da inferência) contra
