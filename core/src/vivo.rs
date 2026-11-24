@@ -11,7 +11,7 @@ use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use memmap2::Mmap;
+use memmap2::MmapOptions;
 
 use crate::compactado::{self, Formato, Opcoes};
 use crate::linhas::{ArquivoLinhas, IndiceLinhas, arquivo_comum};
@@ -31,13 +31,60 @@ pub enum Mudanca {
     Reescrito,
 }
 
+/// Como estava o arquivo que o documento mostra ao ser aberto sem seguir: o 1º `seguir`
+/// confere se ainda é o mesmo antes de só acrescentar (lido com `read`, nunca pelo mapa).
+pub struct Marca {
+    identidade: Option<(u64, u64)>,
+    tamanho: u64,
+    rabo: Vec<u8>,
+}
+
+impl Marca {
+    /// Marca de `caminho` com os `tamanho` bytes que o documento tem dele.
+    pub fn ler(caminho: impl AsRef<Path>, tamanho: u64) -> io::Result<Self> {
+        let mut f = File::open(caminho)?;
+        let identidade = identidade(&f.metadata()?);
+        let mut rabo = vec![0u8; tamanho.min(RABO as u64) as usize];
+        f.seek(SeekFrom::Start(tamanho - rabo.len() as u64))?;
+        f.read_exact(&mut rabo)?;
+        Ok(Self {
+            identidade,
+            tamanho,
+            rabo,
+        })
+    }
+
+    /// `f` ainda é o arquivo marcado: mesma identidade e os mesmos últimos bytes no lugar.
+    fn confere(&self, f: &mut File) -> io::Result<bool> {
+        let meta = f.metadata()?;
+        if identidade(&meta) != self.identidade || meta.len() < self.tamanho {
+            return Ok(false);
+        }
+        bytes_em(f, self.tamanho, &self.rabo)
+    }
+}
+
+/// Os bytes que terminam em `fim` no arquivo são `esperado` (o arquivo encolheu: não são).
+fn bytes_em(f: &mut File, fim: u64, esperado: &[u8]) -> io::Result<bool> {
+    let mut agora = vec![0u8; esperado.len()];
+    f.seek(SeekFrom::Start(fim - esperado.len() as u64))?;
+    match f.read_exact(&mut agora) {
+        Ok(()) => Ok(agora == esperado),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Um JSONL seguido: de onde lê, quanto já copiou e a cópia mapeável.
 pub struct Vivo {
     origem: PathBuf,
     /// (dispositivo, inode) do original; rotação troca o arquivo por trás do mesmo caminho.
     identidade: Option<(u64, u64)>,
-    /// Bytes do original já copiados; sempre logo depois de um `\n`.
+    /// Bytes do original já lidos (e gravados na cópia), com a linha parcial do fim.
     lidos: u64,
+    /// Bytes da cópia até o último `\n`: só eles são mapeados e indexados.
+    copiados: u64,
+    /// Últimos `RABO` bytes lidos (os da linha parcial também).
     rabo: Vec<u8>,
     copia: File,
     max: u64,
@@ -50,6 +97,17 @@ impl Vivo {
     /// Copia as linhas completas de `caminho` e devolve o arquivo pronto para as visões.
     /// Recusa compactado (o cache dele já é outra cópia, que não cresce).
     pub fn abrir(caminho: impl AsRef<Path>, op: &Opcoes) -> io::Result<(Self, ArquivoLinhas)> {
+        let (v, a, _) = Self::continuar(caminho, op, None)?;
+        Ok((v, a))
+    }
+
+    /// Como `abrir`, e diz se o arquivo ainda é o de `marca` (o que o documento mostra): só então
+    /// as linhas copiadas podem entrar como acréscimo ao que já está na tela. Sem marca: não é.
+    pub fn continuar(
+        caminho: impl AsRef<Path>,
+        op: &Opcoes,
+        marca: Option<&Marca>,
+    ) -> io::Result<(Self, ArquivoLinhas, bool)> {
         let origem = caminho.as_ref().to_path_buf();
         arquivo_comum(&origem)?;
         let mut f = File::open(&origem)?;
@@ -61,10 +119,15 @@ impl Vivo {
                 "arquivo compactado não dá para seguir; descompacte e abra o JSONL",
             ));
         }
+        let mesmo = match marca {
+            Some(m) => m.confere(&mut f)?,
+            None => false,
+        };
         let mut v = Self {
             identidade: identidade(&f.metadata()?),
             origem,
             lidos: 0,
+            copiados: 0,
             rabo: Vec::new(),
             copia: criar_copia(&compactado::pasta_cache(op)?)?,
             max: op.max_saida,
@@ -73,7 +136,7 @@ impl Vivo {
         };
         v.copiar(&mut f)?;
         let arquivo = v.mapear()?;
-        Ok((v, arquivo))
+        Ok((v, arquivo, mesmo))
     }
 
     /// Lê o que o original ganhou desde a última vez. Original sumido é erro (pode voltar numa
@@ -84,32 +147,24 @@ impl Vivo {
         if identidade(&meta) != self.identidade || !self.rabo_confere(&mut f)? {
             return Ok(Mudanca::Reescrito);
         }
-        let antes = self.lidos;
+        let antes = self.copiados;
         self.copiar(&mut f)?;
-        if self.lidos == antes {
+        if self.copiados == antes {
             return Ok(Mudanca::Nada);
         }
         Ok(Mudanca::Cresceu(self.mapear()?))
     }
 
-    /// Os últimos bytes copiados ainda estão no mesmo lugar do original.
+    /// Os últimos bytes lidos ainda estão no mesmo lugar do original.
     fn rabo_confere(&self, f: &mut File) -> io::Result<bool> {
-        let mut agora = vec![0u8; self.rabo.len()];
-        f.seek(SeekFrom::Start(self.lidos - self.rabo.len() as u64))?;
-        match f.read_exact(&mut agora) {
-            Ok(()) => Ok(agora == self.rabo),
-            // Encolheu entre o `metadata` e a leitura.
-            Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(false),
-            Err(e) => Err(e),
-        }
+        bytes_em(f, self.lidos, &self.rabo)
     }
 
-    /// Copia do original, a partir de `lidos`, tudo até o último `\n` que já chegou.
+    /// Lê do original, a partir de `lidos`, tudo o que já chegou e grava na cópia; só a parte
+    /// até o último `\n` passa a valer (`copiados`). A linha parcial fica no disco, não na
+    /// memória, e não é relida: a próxima leitura continua de onde esta parou.
     fn copiar(&mut self, f: &mut File) -> io::Result<()> {
         f.seek(SeekFrom::Start(self.lidos))?;
-        // shortcut: a linha parcial fica toda na memória até o `\n` chegar; ler em blocos com
-        // reinício se aparecer log com linha parcial de centenas de MB.
-        let mut pendente = Vec::new();
         let mut bloco = vec![0u8; BLOCO];
         loop {
             let n = match f.read(&mut bloco) {
@@ -118,39 +173,38 @@ impl Vivo {
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             };
-            pendente.extend_from_slice(&bloco[..n]);
-            let Some(p) = memchr::memrchr(b'\n', &pendente) else {
-                continue;
-            };
-            let completo = &pendente[..=p];
-            if self.lidos + completo.len() as u64 > self.max {
+            if self.lidos + n as u64 > self.max {
                 return Err(io::Error::new(
                     ErrorKind::FileTooLarge,
                     "o arquivo seguido passou do teto de tamanho; pause e reabra",
                 ));
             }
-            self.copia.write_all(completo)?;
-            self.lidos += completo.len() as u64;
-            if completo.len() >= RABO {
-                self.rabo = completo[completo.len() - RABO..].to_vec();
-            } else {
-                self.rabo.extend_from_slice(completo);
-                let sobra = self.rabo.len().saturating_sub(RABO);
-                self.rabo.drain(..sobra);
+            let lido = &bloco[..n];
+            self.copia.write_all(lido)?;
+            if let Some(p) = memchr::memrchr(b'\n', lido) {
+                self.copiados = self.lidos + p as u64 + 1;
             }
-            pendente.drain(..=p);
+            self.lidos += n as u64;
+            self.rabo.extend_from_slice(&lido[n.saturating_sub(RABO)..]);
+            let sobra = self.rabo.len().saturating_sub(RABO);
+            self.rabo.drain(..sobra);
         }
         Ok(())
     }
 
     /// Mapeia a cópia inteira e estende o índice com o que ainda não estava nele.
     fn mapear(&mut self) -> io::Result<ArquivoLinhas> {
-        if self.lidos == 0 {
+        if self.copiados == 0 {
             return Ok(ArquivoLinhas::de_mapa(None, IndiceLinhas::default()));
         }
         // SAFETY: a cópia é só do app (criada com `create_new`, apagada do diretório no Unix) e
         // só cresce; nenhum outro processo a encolhe por baixo do mapa.
-        let mapa = unsafe { Mmap::map(&self.copia)? };
+        // Só até o último `\n`: a linha parcial gravada depois dele não entra.
+        let mapa = unsafe {
+            MmapOptions::new()
+                .len(self.copiados as usize)
+                .map(&self.copia)?
+        };
         self.indice.estender(&mapa, self.indexados);
         self.indexados = mapa.len();
         // shortcut: cada crescimento clona o vetor de inícios (8 bytes por linha); dividir em
@@ -334,6 +388,64 @@ mod testes {
         assert!(matches!(v.atualizar().unwrap(), Mudanca::Reescrito));
         let (_, a) = Vivo::abrir(&log, &op(pasta.path())).unwrap();
         assert_eq!(a.linhas(), 2);
+    }
+
+    /// Teto de tamanho: passar dele é erro, também quando é uma linha só sem `\n` (JSON
+    /// minificado), que senão cresceria sem limite.
+    #[test]
+    fn teto() {
+        let pasta = tempfile::tempdir().unwrap();
+        let log = pasta.path().join("log.jsonl");
+        let op = Opcoes {
+            max_saida: 20,
+            ..op(pasta.path())
+        };
+        fs::write(&log, "{\"i\":0}\n").unwrap();
+        let (mut v, _) = Vivo::abrir(&log, &op).unwrap();
+        acrescentar(&log, b"{\"i\":1}\n");
+        assert_eq!(cresceu(v.atualizar().unwrap()).linhas(), 2);
+        acrescentar(&log, b"{\"i\":2}\n");
+        let erro = v.atualizar().err().unwrap();
+        assert_eq!(erro.kind(), ErrorKind::FileTooLarge, "{erro}");
+        fs::write(&log, format!("[{}]", "1,".repeat(20))).unwrap();
+        let erro = Vivo::abrir(&log, &op).err().unwrap();
+        assert_eq!(erro.kind(), ErrorKind::FileTooLarge, "{erro}");
+    }
+
+    /// A linha parcial não é relida a cada leitura: o que já chegou dela foi lido uma vez. Se
+    /// ela muda por baixo (reescrita no meio da linha), o rabo, que a inclui, denuncia.
+    #[test]
+    fn parcial_reescrita() {
+        let pasta = tempfile::tempdir().unwrap();
+        let log = pasta.path().join("log.jsonl");
+        fs::write(&log, "{\"i\":0}\n{\"i\":").unwrap();
+        let (mut v, _) = Vivo::abrir(&log, &op(pasta.path())).unwrap();
+        assert_eq!(v.lidos, 13);
+        assert!(matches!(v.atualizar().unwrap(), Mudanca::Nada));
+        assert_eq!(v.lidos, 13);
+        let mut f = OpenOptions::new().write(true).open(&log).unwrap();
+        f.seek(SeekFrom::Start(9)).unwrap();
+        f.write_all(b"j").unwrap();
+        assert!(matches!(v.atualizar().unwrap(), Mudanca::Reescrito));
+    }
+
+    /// 1º seguir de um arquivo aberto sem seguir: só continua se ainda é o marcado no `abrir`.
+    #[test]
+    fn continuar_confere_a_marca() {
+        let pasta = tempfile::tempdir().unwrap();
+        let log = pasta.path().join("log.jsonl");
+        fs::write(&log, "{\"a\":[1,2,3]}\n{\"i\":1}\n").unwrap();
+        let marca = Marca::ler(&log, 22).unwrap();
+        acrescentar(&log, b"{\"i\":2}\n");
+        let (_, a, mesmo) = Vivo::continuar(&log, &op(pasta.path()), Some(&marca)).unwrap();
+        assert!(mesmo);
+        assert_eq!(a.linhas(), 3);
+        // Trocado por outro com mais linhas (mesmo inode e nome): não é acréscimo.
+        fs::write(&log, "{\"z\":1}\n{\"z\":2}\n{\"z\":3}\n{\"z\":4}\n").unwrap();
+        let (_, a, mesmo) = Vivo::continuar(&log, &op(pasta.path()), Some(&marca)).unwrap();
+        assert!(!mesmo);
+        assert_eq!(a.linhas(), 4);
+        assert!(!Vivo::continuar(&log, &op(pasta.path()), None).unwrap().2);
     }
 
     #[test]

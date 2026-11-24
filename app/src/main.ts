@@ -823,7 +823,8 @@ async function lerSeguido(a: Aba): Promise<void> {
       caminho: a.arquivo,
       id: a.doc,
     });
-    if (!lista.includes(a) || !a.seguindo) return; // fechada ou pausada no meio
+    // Pausada no meio: o Rust já instalou a leitura, então a aba a aplica do mesmo jeito.
+    if (!lista.includes(a)) return; // fechada no meio
     const ativaAgora = a === abaAtiva();
     const fim = ativaAgora && noFim();
     if (fim) a.novas = 0;
@@ -863,9 +864,10 @@ setInterval(() => {
 seguirBtn.addEventListener("click", () => {
   const a = abaAtiva();
   if (!a || !podeSeguir(a)) return;
+  // Pausar só para de chamar: a cópia fica no Rust e, ao retomar, confere o original contra a
+  // última leitura (trocado no meio da pausa: reabre).
   a.seguindo = !a.seguindo;
-  if (a.seguindo) void lerSeguido(a);
-  else void chamar("parar_seguir").catch(() => {}); // doc já fechado: nada a parar
+  if (a.seguindo && !lendo.has(a)) void lerSeguido(a);
   mostrarSeguir();
 });
 novasBtn.addEventListener("click", () => {

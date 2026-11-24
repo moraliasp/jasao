@@ -88,8 +88,11 @@ struct Doc {
     consulta: Mutex<EstadoConsulta>,
     exportar: Mutex<EstadoExportar>,
     ordem: Mutex<EstadoOrdem>,
-    /// Modo seguir (arquivo vivo): a cópia que cresce; `None` fora dele.
+    /// Modo seguir (arquivo vivo): a cópia que cresce; `None` antes do 1º `seguir`. Pausar
+    /// não a solta: ao retomar, ela confere o original contra a última leitura.
     vivo: Mutex<Option<nucleo::Vivo>>,
+    /// Como estava o arquivo aberto (sem seguir): o 1º `seguir` só acrescenta se ainda é ele.
+    marca: Mutex<Option<nucleo::Marca>>,
 }
 
 /// Ordenação da Tabela: a pronta (com a direção) e a que roda em 2º plano.
@@ -590,11 +593,14 @@ async fn abrir<R: Runtime>(
         &estado,
     )?);
     let novo = id.is_none();
-    if let Some(id) = id {
-        // Reabrir no mesmo documento (resultado de jq) sai do modo seguir.
-        *estado.doc(id)?.vivo.lock().map_err(|e| e.to_string())? = None;
-    }
+    // Lida depois do mapa: se o arquivo mudar entre os dois, o 1º `seguir` reabre à toa, mas
+    // nunca acrescenta a um arquivo trocado.
+    let marca = nucleo::Marca::ler(&caminho, arvore.arquivo().bytes().len() as u64).ok();
     let aberto = instalar(Some(arvore), id, &app, &estado)?;
+    // Reabrir no mesmo documento (resultado de jq) sai do modo seguir.
+    let doc = estado.doc(aberto.id)?;
+    *doc.vivo.lock().map_err(|e| e.to_string())? = None;
+    *doc.marca.lock().map_err(|e| e.to_string())? = marca;
     // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
     // jq reabre num documento que já existe (`id` Some), então também fica.
     if novo && exemplos::embutido(&caminho).is_none() {
@@ -628,6 +634,7 @@ fn instalar<R: Runtime>(
                 exportar: Default::default(),
                 ordem: Default::default(),
                 vivo: Default::default(),
+                marca: Default::default(),
             });
             let mut docs = estado.docs.lock().map_err(|e| e.to_string())?;
             docs.insert(id, Arc::clone(&doc));
@@ -764,10 +771,19 @@ async fn seguir<R: Runtime>(
         }
         Some(Ok(nucleo::Mudanca::Cresceu(a))) => (a, false),
         Some(Err(e)) => return Err(erro(e)),
-        reaberto => {
+        Some(Ok(nucleo::Mudanca::Reescrito)) => {
             let (v, a) = nucleo::Vivo::abrir(&caminho, &Opcoes::default()).map_err(erro)?;
             *vivo = Some(v);
-            (a, reaberto.is_some())
+            (a, true)
+        }
+        // 1º seguir: o documento mostra o arquivo do `abrir`; só acrescenta se ainda é ele.
+        None => {
+            let marca = doc.marca.lock().map_err(|e| e.to_string())?.take();
+            let (v, a, mesmo) =
+                nucleo::Vivo::continuar(&caminho, &Opcoes::default(), marca.as_ref())
+                    .map_err(erro)?;
+            *vivo = Some(v);
+            (a, !mesmo)
         }
     };
     let novas = doc.com(|a| {
@@ -794,13 +810,6 @@ async fn seguir<R: Runtime>(
         novas,
         reescrito,
     })
-}
-
-/// Sai do modo seguir: o documento fica com a cópia que já tem, sem ler mais o original.
-#[tauri::command]
-fn parar_seguir(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
-    *estado.doc(id)?.vivo.lock().map_err(|e| e.to_string())? = None;
-    Ok(())
 }
 
 /// Fecha o documento: some do mapa (a árvore e o mapeamento do arquivo saem com ele), as
@@ -1741,7 +1750,6 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             recente_ausente,
             abrir,
             seguir,
-            parar_seguir,
             nova_abertura,
             cancelar_abertura,
             fechar,
@@ -2019,7 +2027,6 @@ mod testes {
         assert!(!a.registrar(y).load(Relaxed));
     }
 
-    /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
     /// Modo seguir pelo IPC: cresce sem reabrir, espera a linha parcial e reabre ao truncar.
     #[test]
     fn seguir_pelo_ipc() {
@@ -2083,11 +2090,29 @@ mod testes {
             seguir(),
             Ok(json!({"total": 1, "registros": 1, "novas": 0, "reescrito": true}))
         );
-        assert_eq!(chamar("parar_seguir", json!({"id": 1})), Ok(Value::Null));
+        // Pausa (a interface só deixa de chamar) e o arquivo é trocado por outro maior:
+        // retomar reabre, não acrescenta à árvore de antes.
+        std::fs::write(&log, "{\"z\":1}\n{\"z\":2}\n{\"z\":3}\n").unwrap();
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 3, "registros": 3, "novas": 0, "reescrito": true}))
+        );
         acrescentar(b"{}\n");
-        // Pausado: a próxima chamada recomeça a cópia (a interface só chama ao retomar).
-        assert_eq!(seguir().unwrap()["registros"], 2);
+        assert_eq!(seguir().unwrap()["novas"], 1);
+        // 1º seguir de arquivo trocado depois do `abrir` (o caso do verificador): reabre.
+        std::fs::write(&log, "{\"a\":[1,2,3]}\n{\"i\":1}\n").unwrap();
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": caminho, "id": 1 })),
+            Ok(json!({"id": 1, "total": 2}))
+        );
+        std::fs::write(&log, "{\"z\":1}\n{\"z\":2}\n{\"z\":3}\n{\"z\":4}\n").unwrap();
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 4, "registros": 4, "novas": 0, "reescrito": true}))
+        );
     }
+
+    /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
 
     #[test]
     fn comandos_pelo_ipc() {
