@@ -239,10 +239,9 @@ impl Acum {
 
     fn valor(&mut self, ev: Ev, b: &[u8]) {
         self.valores += 1;
-        let (tipo, token) = match ev {
-            Ev::Escalar(t, a, z) => (t, &b[a..z]),
-            Ev::Texto(a, z) => (Tipo::Texto, &b[a - 1..z + 1]),
-            _ => return, // objeto e lista: contam como valor, sem estatística
+        // Objeto e lista: contam como valor, sem estatística.
+        let Some((tipo, token)) = token(ev, b) else {
+            return;
         };
         let mut h = DefaultHasher::new();
         (tipo as u8, token).hash(&mut h);
@@ -266,10 +265,7 @@ impl Acum {
         }
         match tipo {
             Tipo::Inteiro | Tipo::Decimal => {
-                let x = std::str::from_utf8(token)
-                    .ok()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
+                let x = numero(token);
                 *self.faixas.entry(faixa(x)).or_default() += 1;
                 self.ver_num(((x, curto.into()), (x, curto.into())));
             }
@@ -401,6 +397,37 @@ impl Acum {
             cancelado: self.cancelado,
         }
     }
+}
+
+/// Escalar como sai no perfil: o tipo e o token cru (texto com as aspas e os escapes).
+pub(crate) fn token(ev: Ev, b: &[u8]) -> Option<(Tipo, &[u8])> {
+    match ev {
+        Ev::Escalar(t, a, z) => Some((t, &b[a..z])),
+        Ev::Texto(a, z) => Some((Tipo::Texto, &b[a - 1..z + 1])),
+        _ => None,
+    }
+}
+
+pub(crate) fn numero(token: &[u8]) -> f64 {
+    std::str::from_utf8(token)
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+/// O token conta junto com o valor `comum` dos mais comuns (o mesmo corte e o mesmo texto).
+pub(crate) fn e_comum(token: &[u8], comum: &str) -> bool {
+    let c = corte(token);
+    match std::str::from_utf8(c) {
+        Ok(t) if c.len() <= VALOR_MAX => t == comum,
+        _ => texto(c) == comum,
+    }
+}
+
+/// O número cai na `Faixa` de sinal `negativo` e `expoente` dados.
+pub(crate) fn na_faixa(token: &[u8], negativo: bool, expoente: Option<i32>) -> bool {
+    let k = expoente.map_or(0, |e| if negativo { -(e + 32) } else { e + 32 });
+    faixa(numero(token)) == k
 }
 
 /// Ordem de grandeza e = ⌊log10 |x|⌋ (de −30 a 30) como chave que ordena do mais negativo ao

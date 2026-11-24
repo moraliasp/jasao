@@ -11,7 +11,7 @@ import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
 import { abrirLinkDe, criarDetalhe, selo } from "./detalhe";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
-import { detalhe as detalheE, type Estrutura, type ItemE, itens as itensEstrutura, type Perfil } from "./estrutura";
+import { detalhe as detalheE, type Estrutura, faceta, type ItemE, itens as itensEstrutura, type Perfil } from "./estrutura";
 import { erroDoRust, type Motivo, t, tamanho } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { type Acao, type Laudo, laudoHtml } from "./laudo";
@@ -97,6 +97,7 @@ let registrosE = 0;
 const perfilEl = $("estrutura-perfil");
 let perfilDe = ""; // documento, geração e caminho do perfil mostrado (ou pedido)
 let esperaPerfil: number | undefined;
+let perfilAtual: Perfil | null = null; // o que o painel mostra (as facetas filtram por ele)
 const tabelaEl = $("tabela");
 const grade = criarGrade(tabelaEl, {
   geracao: () => resumo?.geracao,
@@ -488,10 +489,14 @@ function pedirPerfil(): void {
   perfilDe = de;
   clearTimeout(esperaPerfil);
   perfilEl.innerHTML = `<p class="pm">${esc(t.estrutura.calculando)}</p>`;
+  perfilAtual = null;
   esperaPerfil = window.setTimeout(() => {
     chamar<Perfil | null>("perfil", { indice })
       .then((p) => {
-        if (p && de === perfilDe) perfilEl.innerHTML = detalheE(it!.caminho, p, t, fmt);
+        if (p && de === perfilDe) {
+          perfilAtual = p;
+          perfilEl.innerHTML = detalheE(it!.caminho, p, t, fmt);
+        }
       })
       .catch((erro) => de === perfilDe && (status.textContent = `${t.erro}: ${erro}`));
   }, 200);
@@ -1330,6 +1335,9 @@ perfilEl.addEventListener("click", (e) => {
     void filtrarRegistros({ caminho: it.indice, tem }, rotuloFiltro({ caminho: it.caminho, tem, valor: null }, t))
       .catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
   }
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-comum], [data-faixa]");
+  const fc = b && it?.indice != null && perfilAtual && faceta(it.indice, it.caminho, perfilAtual, b.dataset, t);
+  if (fc) void filtrarRegistros(fc.alvo, fc.rotulo).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());

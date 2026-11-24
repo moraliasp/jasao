@@ -79,7 +79,7 @@
       .menu button:hover, .menu button:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); outline: 0; }
       .menu kbd { color: var(--bar-muted); font: inherit; }
       .ac.at { background: color-mix(in srgb, var(--change) 60%, transparent); box-shadow: 0 0 0 1px var(--change); }
-      .status { color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .status { color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; } /* rótulo longo de filtro não invade a barra */
 
       /* Árvore virtualizada: só as linhas visíveis existem no DOM. */
       .tree { position: relative; flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.5 var(--mono); }
@@ -148,10 +148,15 @@
       .eperf { flex: none; width: min(320px, 34%); max-height: none; margin-top: 0; }
       .eperf p { margin: 2px 0 6px; }
       .eperf .pm { color: var(--bar-muted); font-family: system-ui, sans-serif; text-transform: none; letter-spacing: 0; }
+      /* Faixas e valores comuns são botões: filtram a Tabela. */
+      .eperf .fx, .eperf .fc { width: 100%; padding: 1px 2px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+      .eperf .fx:hover, .eperf .fc:hover { background: var(--hover); }
       .eperf .fx { display: grid; grid-template-columns: 9em 1fr auto; gap: 6px; align-items: center; font-variant-numeric: tabular-nums; }
       .eperf .fx i { height: 8px; border-radius: 2px; background: var(--accent); }
       .eperf .cm { margin: 0 0 6px; padding-left: 20px; }
-      .eperf .cm li span:last-child { float: right; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
+      .eperf .fc { display: flex; justify-content: space-between; gap: 8px; }
+      .eperf .fc span:first-child { min-width: 0; overflow-wrap: anywhere; unicode-bidi: isolate; }
+      .eperf .fc span:last-child { flex: none; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
       .eperf .pl { display: flex; flex-wrap: wrap; gap: 4px; max-height: 8em; overflow: auto; }
       .eperf .lk { padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; background: none; color: inherit; font: inherit; cursor: pointer; }
       .vista:has(.estr:not([hidden]), .exp:not([hidden])) .regua { display: none; }
@@ -160,7 +165,8 @@
       .tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
       .tocultas { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
       .tocultas .chip, .tfiltro .chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; background: none; color: var(--bar-fg); font: 11.5px var(--mono); overflow: hidden; white-space: nowrap; cursor: pointer; unicode-bidi: isolate; }
-      .tfiltro .chip { cursor: default; }
+      .tfiltro .chip { cursor: default; max-width: 420px; }
+      .tfiltro .chip .tx { overflow: hidden; text-overflow: ellipsis; min-width: 0; } /* rótulo longo encolhe; o × fica */
       .tfiltro .chip .ib { padding: 0; border: 0; background: none; color: inherit; cursor: pointer; display: inline-flex; }
       .tfiltro, .tordem { display: inline-flex; align-items: center; gap: 8px; }
       .tfiltro progress { width: 120px; }

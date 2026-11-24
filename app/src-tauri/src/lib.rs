@@ -201,6 +201,10 @@ struct FiltroUi {
     tem: Option<bool>,
     /// Filtro por variante: o valor, cru.
     valor: Option<String>,
+    /// Filtro por valor dos mais comuns: o token cru (`"a"`, `1.5`, `null`).
+    comum: Option<String>,
+    /// Filtro por faixa de número: sinal e ordem de grandeza.
+    faixa: Option<(bool, Option<i32>)>,
 }
 
 /// Evento com o id do documento de onde veio.
@@ -1961,11 +1965,21 @@ fn cancelar_ordenacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> 
 }
 
 /// O que filtrar: os registros com (ou sem) o caminho `caminho` (posição em
-/// `estrutura().caminhos`), ou os da `variante` do `discriminador` (posições em
-/// `estrutura().discriminadores`).
-#[derive(Clone, Copy, Deserialize)]
+/// `estrutura().caminhos`), os da `variante` do `discriminador` (posições em
+/// `estrutura().discriminadores`), ou, no caminho, os de um valor dos mais comuns do `perfil`
+/// (`comum`) ou de uma faixa de número dele (`negativo`/`expoente`).
+#[derive(Clone, Deserialize)]
 #[serde(untagged)]
 enum Alvo {
+    Comum {
+        caminho: usize,
+        comum: String,
+    },
+    Faixa {
+        caminho: usize,
+        negativo: bool,
+        expoente: Option<i32>,
+    },
     Caminho {
         caminho: usize,
         tem: bool,
@@ -2002,19 +2016,57 @@ fn filtrar<R: Runtime>(
     let Some((inf, arquivo)) = inferencia(&estado, id)? else {
         return Ok(None);
     };
+    let no_caminho = |caminho: usize| {
+        inf.resumo
+            .caminhos()
+            .into_iter()
+            .nth(caminho)
+            .ok_or_else(|| format!("caminho {caminho} não existe"))
+    };
+    // Filtrar por valor é perguntar o valor: o perfil não mostra os de um segredo, nem isto.
+    let com_valores = |caminho: usize| {
+        no_caminho(caminho).and_then(|c| {
+            if c.avisos.contains(&nucleo::estrutura::Aviso::Segredo) {
+                Err(format!("caminho {caminho} tem segredo"))
+            } else {
+                Ok(c)
+            }
+        })
+    };
+    let vazio = |caminho| FiltroUi {
+        achados: 0,
+        caminho,
+        tem: None,
+        valor: None,
+        comum: None,
+        faixa: None,
+    };
     let (segs, valor, ui) = match alvo {
         Alvo::Caminho { caminho, tem } => {
-            let c = inf
-                .resumo
-                .caminhos()
-                .into_iter()
-                .nth(caminho)
-                .ok_or_else(|| format!("caminho {caminho} não existe"))?;
+            let c = no_caminho(caminho)?;
             let ui = FiltroUi {
-                achados: 0,
-                caminho: c.caminho,
                 tem: Some(tem),
-                valor: None,
+                ..vazio(c.caminho)
+            };
+            (c.segs, None, ui)
+        }
+        Alvo::Comum { caminho, comum } => {
+            let c = com_valores(caminho)?;
+            let ui = FiltroUi {
+                comum: Some(comum),
+                ..vazio(c.caminho)
+            };
+            (c.segs, None, ui)
+        }
+        Alvo::Faixa {
+            caminho,
+            negativo,
+            expoente,
+        } => {
+            let c = com_valores(caminho)?;
+            let ui = FiltroUi {
+                faixa: Some((negativo, expoente)),
+                ..vazio(c.caminho)
             };
             (c.segs, None, ui)
         }
@@ -2034,10 +2086,8 @@ fn filtrar<R: Runtime>(
                 .nth(variante)
                 .ok_or_else(|| format!("variante {variante} não existe"))?;
             let ui = FiltroUi {
-                achados: 0,
-                caminho: d.campo,
-                tem: None,
                 valor: Some(v.valor.clone()),
+                ..vazio(d.campo)
             };
             // Discriminador é campo do topo do registro.
             (vec![Seg::Campo(d.cru)], Some(v.valor), ui)
@@ -2071,10 +2121,12 @@ fn filtrar<R: Runtime>(
                 emitir(&app, "filtragem", id, p);
             }
         };
-        let criterio = match (&valor, ui.tem) {
-            (Some(v), _) => Criterio::Igual(&segs, v.as_bytes()),
-            (None, Some(false)) => Criterio::NaoTem(&segs),
-            (None, _) => Criterio::Tem(&segs),
+        let criterio = match (&valor, ui.tem, &ui.comum, ui.faixa) {
+            (Some(v), ..) => Criterio::Igual(&segs, v.as_bytes()),
+            (_, _, Some(c), _) => Criterio::Comum(&segs, c),
+            (_, _, _, Some((neg, e))) => Criterio::Faixa(&segs, neg, e),
+            (None, Some(false), ..) => Criterio::NaoTem(&segs),
+            (None, ..) => Criterio::Tem(&segs),
         };
         let r = filtro::filtrar_ate(
             &inf,
@@ -3828,7 +3880,7 @@ mod testes {
             assert_eq!(registros(), [0, 2]);
             assert_eq!(
                 em(2, "tabela", json!({})).unwrap()["filtro"],
-                json!({"achados": 2, "caminho": ".tipo", "tem": null, "valor": "x"})
+                json!({"achados": 2, "caminho": ".tipo", "tem": null, "valor": "x", "comum": null, "faixa": null})
             );
             assert_eq!(
                 em(2, "filtrado", json!({"posicao": 1})),
@@ -3849,6 +3901,24 @@ mod testes {
             assert_eq!(fim["achados"], 1);
             assert_eq!(em(2, "tabela", json!({})).unwrap()["ordem"], Value::Null);
             assert_eq!(registros(), [1], "sem `.x`; a inválida não entra");
+            // Valor dos mais comuns (token cru) e faixa de número do perfil.
+            let fim = filtrar(json!({"caminho": 2, "comum": "2"}));
+            assert_eq!(fim["achados"], 1);
+            assert_eq!(registros(), [2]);
+            assert_eq!(
+                em(2, "tabela", json!({})).unwrap()["filtro"],
+                json!({"achados": 1, "caminho": ".x", "tem": null, "valor": null, "comum": "2", "faixa": null})
+            );
+            let fim = filtrar(json!({"caminho": 2, "negativo": false, "expoente": 0}));
+            assert_eq!(fim["achados"], 2);
+            assert_eq!(registros(), [0, 2]);
+            assert_eq!(
+                em(2, "tabela", json!({})).unwrap()["filtro"]["faixa"],
+                json!([false, 0])
+            );
+            assert!(em(2, "filtrar", json!({"alvo": {"caminho": 99, "comum": "2"}})).is_err());
+            let fim = filtrar(json!({"caminho": 2, "tem": false}));
+            assert_eq!(fim["achados"], 1);
             // Teto no call site: com o do documento baixado, recusa e não publica nada.
             app.state::<Estado>()
                 .doc(2)
@@ -4242,6 +4312,20 @@ mod testes {
             !tudo.contains("hunter2xyz") && !tudo.contains("s3cr3tvalue"),
             "{tudo}"
         );
+        // Nem filtrar pelo valor (seria perguntar se ele existe).
+        let i = em(id, "estrutura", json!({})).unwrap()["caminhos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|c| c["caminho"] == ".token")
+            .unwrap();
+        for alvo in [
+            json!({"caminho": i, "comum": "\"hunter2xyz\""}),
+            json!({"caminho": i, "negativo": false, "expoente": 0}),
+        ] {
+            let erro = em(id, "filtrar", json!({ "alvo": alvo })).unwrap_err();
+            assert!(erro.as_str().unwrap().contains("segredo"), "{erro}");
+        }
 
         // Pasta: `pastas` avisa e `abrir` recusa com mensagem clara.
         let dir = tempfile::tempdir().unwrap();
@@ -4342,7 +4426,7 @@ mod testes {
             assert_eq!(linhas(), [0, 3, 4], ".k = p");
             assert_eq!(
                 em(id, "tabela", json!({})).unwrap()["filtro"],
-                json!({"achados": 3, "caminho": ".k", "tem": null, "valor": "p"})
+                json!({"achados": 3, "caminho": ".k", "tem": null, "valor": "p", "comum": null, "faixa": null})
             );
             assert_eq!(em(id, "fechar", json!({})), Ok(Value::Null));
         }

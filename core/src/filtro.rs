@@ -13,9 +13,9 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::busca::{BLOCO_PADRAO, fatiar};
-use crate::estrutura::{Entrada, Ev, Inferencia, Leitor, Seg, registros_json_unico};
+use crate::estrutura::{Entrada, Ev, Inferencia, Leitor, Seg, Tipo, registros_json_unico};
 use crate::linhas::BOM;
-use crate::perfil::coletar;
+use crate::perfil::{coletar, e_comum, na_faixa, token};
 
 /// Registros guardados no máximo (4 B cada: 200 MB), o mesmo teto de `tabela::MAX_REGISTROS`.
 pub const MAX_FILTRADOS: usize = 50_000_000;
@@ -30,6 +30,11 @@ pub enum Criterio<'a> {
     /// A 1ª ocorrência do caminho é o texto `valor` (cru, sem aspas, escapes intactos), como a
     /// variante de um discriminador conta.
     Igual(&'a [Seg], &'a [u8]),
+    /// Algum valor do caminho conta junto com o valor `comum` dos mais comuns do `perfil` (token
+    /// cru: `"a"`, `1.50`, `null`; o texto cortado em `VALOR_MAX` vale para os que começam igual).
+    Comum(&'a [Seg], &'a str),
+    /// Algum número do caminho cai na faixa (`perfil::Faixa`: sinal e ordem de grandeza).
+    Faixa(&'a [Seg], bool, Option<i32>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,15 +173,28 @@ impl Avaliador {
             return false;
         }
         let segs = match criterio {
-            Criterio::Tem(s) | Criterio::NaoTem(s) | Criterio::Igual(s, _) => s,
+            Criterio::Tem(s)
+            | Criterio::NaoTem(s)
+            | Criterio::Igual(s, _)
+            | Criterio::Comum(s, _)
+            | Criterio::Faixa(s, ..) => s,
         };
         let mut primeiro: Option<Ev> = None;
         let mut visto = false;
+        let mut algum = false;
         coletar(&self.evs, &mut 0, b, segs, &mut |ev| {
             if !visto {
                 primeiro = Some(ev);
             }
             visto = true;
+            algum = algum
+                || match (criterio, token(ev, b)) {
+                    (Criterio::Comum(_, v), Some((_, t))) => e_comum(t, v),
+                    (Criterio::Faixa(_, neg, e), Some((Tipo::Inteiro | Tipo::Decimal, t))) => {
+                        na_faixa(t, neg, e)
+                    }
+                    _ => false,
+                };
         });
         match criterio {
             Criterio::Tem(_) => visto,
@@ -184,6 +202,7 @@ impl Avaliador {
             Criterio::Igual(_, valor) => {
                 matches!(primeiro, Some(Ev::Texto(a, z)) if &b[a..z] == valor)
             }
+            Criterio::Comum(..) | Criterio::Faixa(..) => algum,
         }
     }
 }
@@ -282,6 +301,90 @@ mod testes {
             [1]
         );
         assert_eq!(rodar(d, |c| Criterio::Igual(&c.segs, b""), ".t", 4096), [3]);
+    }
+
+    /// Cada valor dos mais comuns e cada faixa filtra exatamente os registros que o perfil conta
+    /// (um valor por registro aqui): escapes, `null`, booleano, decimal, texto cortado.
+    #[test]
+    fn comum_e_faixa_batem_com_o_perfil() {
+        let longo = "x".repeat(crate::perfil::VALOR_MAX + 10);
+        let vs = [
+            r#""a\"b""#.to_string(),
+            r#""a\\(b""#.to_string(),
+            r#""a""#.to_string(),
+            "null".into(),
+            "true".into(),
+            "false".into(),
+            "1.50".into(),
+            "1.5".into(),
+            "-0.5".into(),
+            "0".into(),
+            "10".into(),
+            "100".into(),
+            "99".into(),
+            format!("\"{longo}\""),
+            format!("\"{longo}y\""),
+        ];
+        let mut d = String::new();
+        for (i, v) in vs.iter().enumerate() {
+            d.push_str(&format!("{{\"v\":{v},\"i\":{i}}}\n"));
+        }
+        d.push_str("{\"i\":99}\n");
+        let i = inferir_em_blocos(d.as_bytes(), 7, &nao(), |_| {});
+        let cam = caminho(&i, ".v");
+        let p = crate::perfil::perfil(&i, d.as_bytes(), &cam, &nao());
+        let n = |c| {
+            filtrar(&i, d.as_bytes(), c, &nao(), &|_| {})
+                .unwrap()
+                .registros
+        };
+        assert!(p.comuns.len() >= 9, "{:?}", p.comuns);
+        for (v, k) in &p.comuns {
+            assert_eq!(n(Criterio::Comum(&cam.segs, v)).len() as u64, *k, "{v}");
+        }
+        // Valor inteiro, não prefixo nem número equivalente.
+        assert_eq!(n(Criterio::Comum(&cam.segs, "1.5")), [7]);
+        assert_eq!(n(Criterio::Comum(&cam.segs, r#""a\"b""#)), [0]);
+        assert_eq!(n(Criterio::Comum(&cam.segs, "\"a")), Vec::<u32>::new());
+        // Os dois textos longos começam igual: contam juntos.
+        let corte = p.comuns.iter().find(|(v, _)| v.ends_with('…')).unwrap();
+        assert_eq!(n(Criterio::Comum(&cam.segs, &corte.0)), [13, 14]);
+        let f = p.numeros.unwrap().faixas;
+        for x in &f {
+            assert_eq!(
+                n(Criterio::Faixa(&cam.segs, x.negativo, x.expoente)).len() as u64,
+                x.n,
+                "{x:?}"
+            );
+        }
+        // Borda: 100 (o máximo) fica na faixa 1e2, não na de 99.
+        assert_eq!(n(Criterio::Faixa(&cam.segs, false, Some(2))), [11]);
+        assert_eq!(n(Criterio::Faixa(&cam.segs, false, Some(1))), [10, 12]);
+        assert_eq!(n(Criterio::Faixa(&cam.segs, true, Some(-1))), [8]);
+        assert_eq!(n(Criterio::Faixa(&cam.segs, false, None)), [9]);
+    }
+
+    /// Lista: passa se algum elemento bate.
+    #[test]
+    fn comum_em_lista_e_qualquer_elemento() {
+        let d = b"{\"t\":[\"a\",\"b\"]}\n{\"t\":[\"b\"]}\n{\"t\":[1,20]}\n";
+        assert_eq!(
+            rodar(d, |c| Criterio::Comum(&c.segs, "\"a\""), ".t[]", 4096),
+            [0]
+        );
+        assert_eq!(
+            rodar(d, |c| Criterio::Comum(&c.segs, "\"b\""), ".t[]", 4096),
+            [0, 1]
+        );
+        assert_eq!(
+            rodar(
+                d,
+                |c| Criterio::Faixa(&c.segs, false, Some(1)),
+                ".t[]",
+                4096
+            ),
+            [2]
+        );
     }
 
     /// Uma thread só: os blocos vão em ordem, e o que corre depois do sinal fica contado.

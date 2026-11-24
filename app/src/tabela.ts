@@ -1,6 +1,7 @@
 // Modo Tabela, parte pura: formata o que `nucleo::tabela` devolve (comandos `tabela` e
 // `tabela_linhas`). Sem DOM, para rodar com `node --test`; a grade virtual fica em `grade.ts`.
 // Todo texto que vem do arquivo (nome de coluna, valor, linha inválida) passa por `visivel`.
+import { faixa } from "./estrutura.ts";
 import type { Motivo, Textos } from "./i18n.ts";
 import { visivel, visivelTexto } from "./texto.ts";
 
@@ -30,9 +31,18 @@ export interface TabelaUi {
   /** Filtro pronto: a grade só tem os `achados`. */
   filtro: FiltroUi | null;
 }
-export interface FiltroUi { achados: number; caminho: string; tem: boolean | null; valor: string | null }
-/** O que filtrar (posições em `estrutura().caminhos` / `discriminadores`). */
-export type Alvo = { caminho: number; tem: boolean } | { discriminador: number; variante: number };
+/** `comum`: token cru de um valor dos mais comuns do perfil; `faixa`: [negativo, expoente]. */
+export interface FiltroUi {
+  achados: number; caminho: string; tem: boolean | null; valor: string | null;
+  comum?: string | null; faixa?: [boolean, number | null] | null;
+}
+/** O que filtrar (posições em `estrutura().caminhos` / `discriminadores`); no caminho, também um
+ * valor dos mais comuns (`comum`, inteiro) ou uma faixa de número do perfil. */
+export type Alvo =
+  | { caminho: number; tem: boolean }
+  | { discriminador: number; variante: number }
+  | { caminho: number; comum: string }
+  | { caminho: number; negativo: boolean; expoente: number | null };
 
 type Fmt = (n: number) => string;
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
@@ -165,10 +175,13 @@ export function filtroRespondeu(e: EstadoFiltro, geracao: number, rotulo: string
   return e.fimF?.geracao === geracao ? filtroChegou(e, e.fimF) : null;
 }
 
-/** `.tipo = "x"`, `com .a.b`, `sem .a.b`: texto puro (vai para `textContent` ou por `esc`). */
-export function rotuloFiltro(f: { caminho: string; tem: boolean | null; valor: string | null }, t: Textos): string {
+/** `.tipo = "x"`, `com .a.b`, `sem .a.b`, `.n = 1.5`, `.n em 1e2…1e3`: texto puro (vai para
+ * `textContent` ou por `esc`). */
+export function rotuloFiltro(f: Omit<FiltroUi, "achados">, t: Textos): string {
   const tf = t.tabela.filtro;
   const c = visivelTexto(f.caminho);
+  if (f.comum != null) return tf.comum(c, visivelTexto(f.comum));
+  if (f.faixa) return tf.faixa(c, faixa({ negativo: f.faixa[0], expoente: f.faixa[1] }));
   if (f.valor !== null) return tf.igual(c, visivelTexto(f.valor));
   return f.tem === false ? tf.sem(c) : tf.com(c);
 }
@@ -185,7 +198,7 @@ export function chipFiltro(e: EstadoFiltro, info: TabelaUi | null, t: Textos, fm
   const f = info?.filtro;
   if (!f) return "";
   const rot = rotuloFiltro(f, t);
-  return `<span class="chip on" title="${esc(rot)}">${esc(rot)} · ${esc(tf.achados(fmt(f.achados), fmt(info.registros)))}` +
+  return `<span class="chip on" title="${esc(rot)}"><span class="tx">${esc(rot)} · ${esc(tf.achados(fmt(f.achados), fmt(info.registros)))}</span>` +
     `<button class="ib" type="button" data-limpar-filtro aria-label="${esc(tf.limpar)}" title="${esc(tf.limpar)}">` +
     `<svg class="i" aria-hidden="true"><use href="#x"/></svg></button></span>`;
 }
