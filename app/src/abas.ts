@@ -56,3 +56,8 @@ export function triar(caminhos: string[], pastas: boolean[]) {
   caminhos.forEach((c, i) => (pastas[i] ? pastasSoltas : aceito(c) ? abrir : recusados).push(c));
   return { abrir, recusados, pastas: pastasSoltas };
 }
+
+/** Registros novos que o usuário ainda não viu depois de uma leitura do modo seguir: zera quando
+ * a tela está no fim (rola até eles) ou quando o arquivo foi reaberto do zero. */
+export const naoVistas = (antes: number, r: { novas: number; reescrito: boolean }, noFim: boolean): number =>
+  r.reescrito || noFim ? 0 : antes + r.novas;

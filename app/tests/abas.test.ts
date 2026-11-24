@@ -1,7 +1,7 @@
 // Lógica pura das abas de arquivo (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aceito, aposFechar, ciclo, nomes, porAtalho, posicaoNova, triar } from "../src/abas.ts";
+import { aceito, aposFechar, ciclo, naoVistas, nomes, porAtalho, posicaoNova, triar } from "../src/abas.ts";
 
 test("aceita JSON, JSON Lines e compactados; recusa o resto", () => {
   for (const c of ["a.json", "b.JSONL", "/x/c.ndjson", "d.jsonl.gz", "e.json.zst", "f.NDJSON.GZ"]) assert.ok(aceito(c), c);
@@ -60,4 +60,11 @@ test("triar separa os que abrem, os de formato recusado e as pastas", () => {
     recusados: ["/foto.png"],
     pastas: ["/dados"],
   });
+});
+
+test("seguir: novas acumulam fora do fim e zeram no fim ou ao reabrir", () => {
+  assert.equal(naoVistas(0, { novas: 3, reescrito: false }, false), 3);
+  assert.equal(naoVistas(3, { novas: 2, reescrito: false }, false), 5);
+  assert.equal(naoVistas(5, { novas: 2, reescrito: false }, true), 0);
+  assert.equal(naoVistas(5, { novas: 0, reescrito: true }, false), 0);
 });
