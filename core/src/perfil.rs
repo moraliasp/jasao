@@ -436,7 +436,19 @@ fn faixa(x: f64) -> i32 {
     if x == 0.0 || x.is_nan() {
         return 0;
     }
-    let e = x.abs().log10().floor().clamp(-30.0, 30.0) as i32 + 32;
+    let a = x.abs();
+    let mut e = a.log10().floor();
+    // log10 arredonda: 1 ulp abaixo de 1e3 dá 3. Acerta pelo literal `1e{e}`, o mesmo que o jq
+    // de "salvar como" compara, para a Tabela e o arquivo salvo contarem igual.
+    if e.is_finite() {
+        let p = |e: f64| format!("1e{e}").parse::<f64>().unwrap_or(f64::INFINITY);
+        if a < p(e) {
+            e -= 1.0;
+        } else if a >= p(e + 1.0) {
+            e += 1.0;
+        }
+    }
+    let e = e.clamp(-30.0, 30.0) as i32 + 32;
     if x < 0.0 { -e } else { e }
 }
 
@@ -778,5 +790,14 @@ mod testes {
         assert!(faixa(-100.0) < faixa(-1.0) && faixa(-1.0) < 0);
         assert!(0 < faixa(0.01) && faixa(0.01) < faixa(9.9) && faixa(9.9) < faixa(10.0));
         assert_eq!(faixa(1e300), faixa(1e31));
+        // Borda por ulp: o vizinho de baixo de cada potência fica na faixa de baixo.
+        for k in -29..30 {
+            let p: f64 = format!("1e{k}").parse().unwrap();
+            let abaixo = f64::from_bits(p.to_bits() - 1);
+            assert_eq!(faixa(p), k + 32, "1e{k}");
+            assert_eq!(faixa(abaixo), k + 31, "abaixo de 1e{k}");
+            assert_eq!(faixa(-abaixo), -(k + 31));
+        }
+        assert_eq!(faixa(f64::INFINITY), 62);
     }
 }

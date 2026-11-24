@@ -705,6 +705,22 @@ mod testes {
         assert_eq!(so(Criterio::Faixa(&n, true, Some(-1))), [4]);
         assert_eq!(so(Criterio::Faixa(&n, false, None)), [5]);
         assert_eq!(so(Criterio::Faixa(&n, false, Some(30))), [9]); // preso em 30
+        // Borda por ulp (1 abaixo de 1e3): o jq e o filtro da Tabela põem na mesma faixa.
+        let borda = b"{\"n\":999.9999999999999}\n";
+        for e in [2, 3] {
+            let jq = jsonl(
+                borda,
+                Fonte::filtro(&Criterio::Faixa(&n, false, Some(e))).unwrap(),
+                &t,
+            );
+            let rust = crate::perfil::na_faixa(b"999.9999999999999", false, Some(e));
+            assert_eq!(!jq.is_empty(), rust, "faixa 1e{e}");
+        }
+        assert!(crate::perfil::na_faixa(
+            b"999.9999999999999",
+            false,
+            Some(2)
+        ));
         // Valor cortado pelo perfil não tem tradução fiel: recusa em vez de salvar outro conjunto.
         assert!(Fonte::filtro(&Criterio::Comum(&n, "\"abc…")).is_err());
     }
