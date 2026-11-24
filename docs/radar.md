@@ -116,7 +116,7 @@ Conferido contra `docs/plano.md`, `docs/decisoes.md`, `docs/concorrencia.md` e o
 | Expectativa | Quem cria | Situação no Jasão |
 |---|---|---|
 | Abrir de stdin (`cat x \| jasao`) | jless, fx, jq, lnav | ❌ não achei leitura de stdin em `cli/src/main.rs`; nenhum doc trata |
-| Abrir de URL / colar cURL | OK JSON, Dadroit, JSON Crack, lnav | ❌ só arquivo local; nenhum doc trata (o link no painel do valor só abre no navegador, #40) |
+| Abrir de URL / colar cURL | OK JSON, Dadroit, JSON Crack, lnav | ✅ `jasao/abertura/url`: CLI aceita URL/cURL no lugar do arquivo, app tem "Abrir URL…" (decisões em `decisoes.md`, "Abrir de URL e colar cURL") |
 | S3 e remoto (SSH) | DuckDB, lnav | ❌ não aparece em nenhum doc nem mockup |
 | Assinatura e notarização do Mac | (pré-requisito de distribuir) | ❌ nenhuma menção em docs nem config; sem isso o Gatekeeper barra o download gratuito |
 | Atualização automática | OK JSON (App Store) | ❌ nenhuma decisão em `decisoes.md`/`plano.md` |
@@ -143,7 +143,7 @@ Conferido contra `docs/plano.md`, `docs/decisoes.md`, `docs/concorrencia.md` e o
 1. **`jasao/abertura/stdin`**: CLI lê `-` e pipe; o app aceita `jasao abrir -` gravando num temporário. Impacto alto para dev, esforço pequeno (o núcleo já indexa arquivo; é um temporário).
 2. **`jasao/distribuicao/notarizacao`**: Developer ID, `hardenedRuntime`, notarização no CI de release, com decisão escrita. Impacto alto (sem isso o "grátis" não instala sem susto), esforço pequeno em código, depende de conta Apple do Eduardo.
 3. **`jasao/estrutura/facetas-clique`**: clicar num valor de "Mais comuns" ou numa faixa de número no modo Estrutura filtra a Tabela por ele (a contagem e as faixas já existem em #43; o filtro da Tabela já existe em #49). Impacto médio, esforço pequeno: é ligar dois pedaços prontos. Gráfico de datas no tempo fica para depois, se aparecer pedido.
-4. **`jasao/abertura/url`**: abrir `https://…` e colar cURL, baixando para o cache que o `.gz` já usa, só por ação explícita e sem enviar nada além do pedido. Impacto alto (OK JSON e Dadroit têm), esforço médio; precisa decisão de privacidade antes.
+4. ✅ **`jasao/abertura/url`** (feito): abrir `https://…` e colar cURL, baixando para o cache que o `.gz` já usa, só por ação explícita e sem enviar nada além do pedido. Impacto alto (OK JSON e Dadroit têm), esforço médio; precisa decisão de privacidade antes.
 5. **`jasao/radar/benchmark-dadroit`**: o gap 1 de sempre, só leitura de páginas do Dadroit e medição nossa.
 6. **`jasao/macos/quicklook`**: prévia no Finder com o laudo (#52). Impacto médio, esforço médio.
 7. **`jasao/abertura/reparar`**: sugerir conserto de linha inválida (vírgula sobrando, aspas) sem gravar no original. Impacto médio, esforço médio.

@@ -253,6 +253,13 @@
       .salvar-como code { font: 12px var(--mono); opacity: .8; }
       .salvar-como .aviso { margin: 4px 0 0; color: var(--del); }
       .salvar-como footer { display: flex; justify-content: flex-end; gap: 8px; }
+      #url { width: min(560px, calc(100vw - 32px)); }
+      #url form { display: flex; flex-direction: column; gap: 8px; }
+      #url form > :not(header) { margin: 0 16px; }
+      #url label { padding-top: 4px; font-size: 13px; }
+      #url textarea { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); color: var(--bar-fg); font: 12.5px/1.5 var(--mono); resize: vertical; }
+      #url p { font-size: 12px; color: var(--bar-muted); }
+      #url footer { display: flex; justify-content: flex-end; margin-bottom: 16px !important; }
       .vazio { margin: 24px; color: var(--bar-muted); }
 
       /* Micronavegador: régua do arquivo inteiro ao lado das visões. */
@@ -372,6 +379,7 @@
       <div class="name"><span id="nome"></span><span class="faixa" id="faixa"></span></div>
       <div class="side end">
         <button class="ib" id="tema" type="button" aria-label="Alternar tema claro e escuro"><svg class="i"><use href="#moon"/></svg></button>
+        <button class="btn" id="abrir-url" type="button">Abrir URL…</button>
         <button class="btn" id="abrir" type="button">Abrir…</button>
       </div>
     </header>
@@ -383,7 +391,7 @@
       <svg class="i" style="width:32px;height:32px" aria-hidden="true"><use href="#braces"/></svg>
       <h1 id="sem-arquivo-titulo"></h1>
       <p id="sem-arquivo-dica"></p>
-      <button class="btn" id="sem-arquivo-abrir" type="button"></button>
+      <div><button class="btn" id="sem-arquivo-abrir" type="button"></button> <button class="btn" id="sem-arquivo-url" type="button"></button></div>
       <nav class="recentes" id="recentes" hidden></nav>
     </section>
     <div class="soltar" id="soltar" hidden></div>
@@ -492,6 +500,15 @@
     <dialog id="formatado" aria-labelledby="formatado-titulo">
       <header><h2 id="formatado-titulo"></h2><button class="ib" id="formatado-fechar" type="button" aria-label="Fechar"><svg class="i"><use href="#x"/></svg></button></header>
       <pre id="formatado-texto" tabindex="0"></pre>
+    </dialog>
+    <dialog id="url" aria-labelledby="url-titulo">
+      <form id="url-form">
+        <header><h2 id="url-titulo"></h2><button class="ib" id="url-fechar" type="button" aria-label="Fechar"><svg class="i"><use href="#x"/></svg></button></header>
+        <label for="url-entrada" id="url-rotulo"></label>
+        <textarea id="url-entrada" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
+        <p id="url-dica"></p>
+        <footer><button class="btn" id="url-baixar" type="submit"></button></footer>
+      </form>
     </dialog>
   </body>
 </html>
