@@ -64,6 +64,13 @@
 //!                                         sai, mesmo parcial, com linhas inválidas ou binário (o
 //!                                         texto diz); 1 se o arquivo não abre; 2 em uso errado
 //!
+//! `-` no lugar de um arquivo lê stdin: `cat x.jsonl | jasao laudo -`. Um `-` por execução (`diff
+//! - -` é erro); em `buscar`, só o primeiro argumento; `linha-do-tempo` não lê. Arquivo chamado
+//! `-`: `./-`. Sem `-`, stdin não é lido (pipe sem arquivo dá o uso, código 2). stdin vai para um
+//! temporário (`nucleo::entrada`), apagado ao sair, em erro e em SIGINT/SIGTERM (sai com 130);
+//! vazio, terminal, acima de 10 GiB ou sem espaço em disco sai com 1 (3 em `diff` e `validar`).
+//! `JASAO_TETO_STDIN_TESTE` (bytes) baixa o teto, só para teste.
+//!
 //! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir`, `diff` e `linha-do-tempo` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
 //! hostil não manda sequência ESC/CSI/OSC ao terminal nem inverte o texto. O mesmo vale para os
@@ -83,7 +90,7 @@ use nucleo::erros::{self, OpcoesErros};
 use nucleo::transformar::{Fonte, Mascara, Saida, Transformacao};
 use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
-const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
+const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra; `-` no lugar do arquivo lê stdin, uma vez; arquivo chamado `-`: ./-):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]\n\
                    \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N] [--anonimizar]\n  \
@@ -117,9 +124,29 @@ fn main() -> ExitCode {
         args.remove(i);
         SEM_MASCARA.store(true, Relaxed);
     }
+    // Vive até o fim do `main`: o `Drop` apaga o temporário, inclusive em erro.
+    let entrada = match ler_stdin(&args) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("erro: {e}");
+            let codigo = match args.first() {
+                Some(&"diff") => DIFF_SEM_COMPARAR,
+                Some(&"validar") => VALIDAR_SEM_VALIDAR,
+                _ => 1,
+            };
+            return ExitCode::from(codigo);
+        }
+    };
+    let caminho_stdin = entrada
+        .as_ref()
+        .map(|t| t.caminho().to_string_lossy().into_owned());
+    if let (Some(c), Some(i)) = (&caminho_stdin, posicao_stdin(&args)) {
+        args[i] = c;
+        let _ = STDIN.set(c.clone());
+    }
     if let ["consultar" | "jq", resto @ ..] = args.as_slice() {
         match opcoes_consulta(resto) {
-            Some(op) if std::env::var_os(VAR_FILHO).is_none() => return supervisionar(&op),
+            Some(op) if std::env::var_os(VAR_FILHO).is_none() => return supervisionar(&op, &args),
             Some(op) => nucleo::memoria::limitar(op.max_memoria),
             None => {}
         }
@@ -247,6 +274,63 @@ fn main() -> ExitCode {
 
 type Resultado = Result<(), Box<dyn std::error::Error>>;
 
+/// Índice, em `args`, do `-` que está no lugar de um arquivo (stdin). Um só: stdin se lê uma vez.
+/// `linha-do-tempo` recebe pasta; em `buscar`, só o primeiro argumento é arquivo (o padrão pode
+/// ser `-`).
+fn posicao_stdin(args: &[&str]) -> Option<usize> {
+    match args {
+        ["buscar", "-", ..] => Some(1),
+        ["buscar" | "linha-do-tempo", ..] | [] => None,
+        [_, resto @ ..] => resto.iter().position(|a| *a == "-").map(|i| i + 1),
+    }
+}
+
+/// Teto de stdin só para teste (bytes); nunca sobe acima do padrão.
+const VAR_TETO_TESTE: &str = "JASAO_TETO_STDIN_TESTE";
+
+/// Se algum argumento pede stdin (`-`), grava stdin num temporário do núcleo. Antes de gravar,
+/// liga o tratador de SIGINT/SIGTERM que apaga o temporário (o `Drop` não roda em sinal).
+fn ler_stdin(args: &[&str]) -> io::Result<Option<nucleo::entrada::Temporario>> {
+    let Some(i) = posicao_stdin(args) else {
+        return Ok(None);
+    };
+    if args[i + 1..].contains(&"-") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stdin só se lê uma vez: use `-` em um arquivo só (para um arquivo chamado `-`, escreva `./-`)",
+        ));
+    }
+    if io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "`-` lê stdin, mas stdin é o terminal; mande os dados por pipe (ex.: cat x.jsonl | jasao laudo -)",
+        ));
+    }
+    nucleo::entrada::apagar_no_sinal();
+    let padrao = Opcoes::default();
+    let teto = std::env::var(VAR_TETO_TESTE)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(padrao.max_saida, |t: u64| t.min(padrao.max_saida));
+    let op = Opcoes {
+        max_saida: teto,
+        ..padrao
+    };
+    nucleo::entrada::gravar(io::stdin().lock(), "stdin", &op).map(Some)
+}
+
+/// Caminho do temporário de stdin, para as mensagens mostrarem `-` no lugar dele.
+static STDIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Como `arquivo` aparece para quem lê: `-` se for o temporário de stdin.
+fn exibido(arquivo: &str) -> &str {
+    if STDIN.get().is_some_and(|c| c == arquivo) {
+        "-"
+    } else {
+        arquivo
+    }
+}
+
 /// `--sem-mascara`: abre sem a máscara de segredos.
 static SEM_MASCARA: AtomicBool = AtomicBool::new(false);
 
@@ -267,7 +351,7 @@ fn abrir(arquivo: &str) -> Result<ArquivoLinhas, Box<dyn std::error::Error>> {
     if mostrou.get() {
         eprintln!();
     }
-    r.map_err(|e| format!("{arquivo}: {e}").into())
+    r.map_err(|e| format!("{}: {e}", exibido(arquivo)).into())
 }
 
 /// `laudo <arquivo> [--json] [--teto SEG]`, em qualquer ordem.
@@ -291,7 +375,7 @@ fn laudo(arquivo: &str, json: bool, teto: Duration, out: &mut Terminal<impl Writ
     if json {
         writeln!(out, "{}", serde_json::to_string(&l)?)?;
     } else {
-        write!(out, "{}", nucleo::laudo::markdown(&l, arquivo))?;
+        write!(out, "{}", nucleo::laudo::markdown(&l, exibido(arquivo)))?;
     }
     Ok(out.flush()?)
 }
@@ -525,17 +609,20 @@ const FOLGA_TEMPO: Duration = Duration::from_secs(2);
 /// Marca o processo filho da consulta (ver `supervisionar`).
 const VAR_FILHO: &str = "JASAO_CLI_FILHO";
 
-/// Reexecuta o próprio binário como filho (mesmos argumentos, stdio herdado) e o vigia: mata no
+/// Reexecuta o próprio binário como filho (mesmos argumentos, com o `-` já trocado pelo
+/// temporário de stdin; stdout e stderr herdados) e o vigia: mata no
 /// relógio de parede e troca a morte por sinal (teto de heap, pilha estourada) por mensagem e
 /// código 3, em vez de o processo abortar.
-fn supervisionar(op: &OpcoesConsulta) -> ExitCode {
+fn supervisionar(op: &OpcoesConsulta, args: &[&str]) -> ExitCode {
     let falhar = |m: String| {
         eprintln!("erro: {m}");
         ExitCode::from(3)
     };
     let mut filho = match std::env::current_exe().and_then(|exe| {
         std::process::Command::new(exe)
-            .args(std::env::args_os().skip(1))
+            .args(args)
+            .args(SEM_MASCARA.load(Relaxed).then_some("--sem-mascara"))
+            .stdin(std::process::Stdio::null())
             .env(VAR_FILHO, "1")
             .spawn()
     }) {
