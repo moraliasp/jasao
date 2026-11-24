@@ -26,7 +26,8 @@
 //!
 //! Arquivo grande: MessagePack, CBOR, BSON e YAML são lidos por `mmap` e convertidos em fluxo
 //! (memória proporcional à profundidade, não ao tamanho); TOML é carregado inteiro e tem teto
-//! próprio (`Limites::max_texto`). A saída tem o mesmo teto dos compactados (`Opcoes::max_saida`).
+//! próprio (`Limites::max_toml`). A saída tem os mesmos tetos dos compactados
+//! (`Opcoes::max_saida` e `max_razao` × a entrada).
 //!
 //! Entrada é não confiável: comprimento declarado nunca vira alocação (é conferido contra o que
 //! resta do arquivo), e profundidade, nós, chaves, âncoras e aliases têm teto (`Limites`).
@@ -75,13 +76,19 @@ pub struct Limites {
     pub nos: u64,
     /// Nós que os aliases do YAML podem acrescentar (contra a bomba de aliases, "billion laughs").
     pub nos_alias: u64,
+    /// Bytes de JSON que os aliases do YAML podem acrescentar (a mesma bomba com poucos nós e
+    /// âncoras gordas: um texto de 16 MiB repetido 600 vezes).
+    pub bytes_alias: u64,
     /// Bytes de JSON guardados por âncora do YAML para repetir no alias; acima disso a âncora
     /// não é guardada e um alias para ela é recusado.
     pub max_ancora: usize,
     /// Bytes de uma chave que não é texto, depois de virar JSON.
     pub max_chave: usize,
-    /// TOML inteiro, e cada texto/binário CBOR em pedaços (indefinido), que precisam de memória.
+    /// Cada texto/binário CBOR em pedaços (indefinido), que precisa ser juntado na memória.
     pub max_texto: u64,
+    /// Arquivo TOML: é carregado inteiro como árvore, que ocupa até ~180× o arquivo na memória
+    /// (medido: tabelas pequenas); 1 MiB dá no máximo ~200 MB.
+    pub max_toml: u64,
 }
 
 impl Default for Limites {
@@ -90,9 +97,11 @@ impl Default for Limites {
             profundidade: crate::arvore::MAX_PROFUNDIDADE,
             nos: 1 << 31,
             nos_alias: 1_000_000,
+            bytes_alias: 256 * MIB,
             max_ancora: 16 << 20,
             max_chave: 64 << 10,
             max_texto: 64 * MIB,
+            max_toml: MIB,
         }
     }
 }
@@ -228,8 +237,11 @@ struct Emissor<'a, 'o> {
     lim: &'a Limites,
     nome: &'static str,
     escritos: u64,
+    /// Saída máxima: `max_saida`, e no máximo `max_razao` × a entrada (como nos compactados).
+    limite: u64,
     nos: u64,
     nos_alias: u64,
+    bytes_alias: u64,
     pilha: Vec<Quadro>,
     /// Chaves em construção (a chave vira texto só quando termina).
     chaves: Vec<Vec<u8>>,
@@ -251,8 +263,10 @@ impl<'a, 'o> Emissor<'a, 'o> {
             lim: &op.formatos,
             nome,
             escritos: 0,
+            limite: compactado::limite(op, total),
             nos: 0,
             nos_alias: 0,
+            bytes_alias: 0,
             pilha: Vec::new(),
             chaves: Vec::new(),
             gravando: Vec::new(),
@@ -302,11 +316,16 @@ impl<'a, 'o> Emissor<'a, 'o> {
             return Ok(());
         }
         self.escritos += b.len() as u64;
-        if self.escritos > self.op.max_saida {
-            let mib = self.op.max_saida / MIB;
-            return Err(self.teto(format!(
-                "convertido para JSON passa de {mib} MiB, o teto do app"
-            )));
+        if self.escritos > self.limite {
+            let mib = self.limite / MIB;
+            return Err(self.teto(if self.limite < self.op.max_saida {
+                format!(
+                    "convertido para JSON passa de {mib} MiB, mais de {}× o arquivo",
+                    self.op.max_razao
+                )
+            } else {
+                format!("convertido para JSON passa de {mib} MiB, o teto do app")
+            }));
         }
         self.out.write_all(b)
     }
@@ -574,6 +593,13 @@ impl<'a, 'o> Emissor<'a, 'o> {
             let max = self.lim.nos_alias;
             return Err(self.teto(format!(
                 "aliases expandem mais de {max} valores (bomba de aliases?)"
+            )));
+        }
+        self.bytes_alias += a.texto.len() as u64;
+        if self.bytes_alias > self.lim.bytes_alias {
+            let max = self.lim.bytes_alias / MIB;
+            return Err(self.teto(format!(
+                "aliases expandem mais de {max} MiB (bomba de aliases?)"
             )));
         }
         self.no_inicio(0)?;
@@ -1234,14 +1260,23 @@ fn toml(d: &[u8], e: &mut Emissor) -> io::Result<()> {
         Tab(toml::map::Iter<'a, String, toml::Value>),
         Lista(std::slice::Iter<'a, toml::Value>),
     }
-    if d.len() as u64 > e.lim.max_texto {
-        let max = e.lim.max_texto / MIB;
+    if d.len() as u64 > e.lim.max_toml {
+        let max = e.lim.max_toml >> 10;
         return Err(e.teto(format!(
-            "arquivo com mais de {max} MiB; TOML é carregado inteiro na memória"
+            "arquivo com mais de {max} KiB; TOML é carregado inteiro na memória, que gasta até \
+             ~180× o arquivo"
         )));
     }
     let s = std::str::from_utf8(d).map_err(|err| e.malformado(format!("não é UTF-8 ({err})")))?;
-    let t: toml::Table = s.parse().map_err(|err| e.malformado(err))?;
+    let t: toml::Table = s.parse().map_err(|err: toml::de::Error| {
+        // A mensagem do `toml` cita a linha inteira, que pode ser o arquivo todo.
+        let mut m = err.to_string();
+        if let Some((i, _)) = m.char_indices().nth(500) {
+            m.truncate(i);
+            m.push('…');
+        }
+        e.malformado(m)
+    })?;
     e.abrir(true, 0)?;
     let mut pilha = vec![Iter::Tab(t.iter())];
     while let Some(topo) = pilha.last_mut() {

@@ -512,27 +512,28 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 - Binário (MessagePack `bin`, CBOR byte string): texto base64 padrão, com `=`.
 - Chave que não é texto (MessagePack, CBOR e YAML aceitam qualquer valor como chave): o JSON compacto dela vira a chave (`1` → `"1"`, `[1,2]` → `"[1,2]"`). Chave repetida fica repetida, como no JSONL cru.
 - MessagePack ext: `{"$ext": tipo, "$dados": base64}`; o timestamp (ext −1) vira ISO 8601 em UTC (anos 0–9999; fora disso, a forma genérica).
-- CBOR: marcas (tags) são transparentes (data, URI etc. saem como o valor marcado), exceto bignum (2 e 3) de até 1 KiB, que vira inteiro decimal; acima, base64. `undefined` vira `null`; valor simples não atribuído vira `"simple(N)"`.
+- CBOR: marcas (tags) são transparentes: sai o valor marcado, sem interpretar (data da tag 1 sai como o número de segundos; fração decimal da tag 4 sai como a lista `[expoente, mantissa]`; URI sai como texto). Exceção: bignum (2 e 3) de até 1 KiB vira inteiro decimal; acima, base64. `undefined` vira `null`; valor simples não atribuído vira `"simple(N)"`.
 - BSON: documentos concatenados (o que o `mongodump` grava), cada um uma linha, no Extended JSON relaxado do MongoDB (`{"$oid": …}`, `{"$date": "…Z"}`, `{"$binary": …}`, `{"$numberDecimal": …}`), o mesmo do `mongoexport`. Código com escopo vira `{"$code": …, "$scope": {…}}`.
-- YAML: esquema core do YAML 1.2 (`yes`/`no`/`on` são texto; `0x10` e `0o7` são inteiros; zero à esquerda é removido); datas ficam texto; vários documentos (`---`) viram várias linhas; `<<` (merge do YAML 1.1) fica como chave comum, sem mesclar.
-- TOML: data e hora viram texto RFC 3339.
+- YAML: esquema core do YAML 1.2 (`yes`/`no`/`on` são texto; `0x10` e `0o7` são inteiros; zero à esquerda é removido; real que estoura o `f64`, como `1e400`, vira `"Infinity"`, igual a `.inf`); datas ficam texto; vários documentos (`---`) viram várias linhas; `<<` (merge do YAML 1.1) fica como chave comum, sem mesclar.
+- TOML: data e hora viram texto RFC 3339; chaves na ordem do arquivo (feature `preserve_order`).
 
 **Tetos (`formatos::Limites`, cada um com teste em `core/tests/formatos.rs` que falha se ele for desligado).** Entrada é não confiável: erro sempre `InvalidData` com mensagem ("YAML: aliases expandem mais de 1000000 valores (bomba de aliases?)…"), nunca pânico.
-- Profundidade: 1000 níveis (`arvore::MAX_PROFUNDIDADE`), então tudo que converte a árvore abre. Os leitores próprios e os percursos são iterativos (pilha no heap); 100 mil níveis dão erro, não estouro de pilha (teste).
+- Profundidade: 1000 níveis (`arvore::MAX_PROFUNDIDADE`), então tudo que converte a árvore abre. No YAML o limite real é menor: o parser do `yaml-rust2` recusa a partir de 255 níveis ("recursion limit exceeded"). Os leitores próprios e os percursos são iterativos (pilha no heap); 100 mil níveis dão erro, não estouro de pilha (teste).
 - Nós: 2^31 valores no arquivo, aliases expandidos inclusive.
-- Saída: o mesmo `max_saida` dos compactados (10 GiB); parcial é apagado.
-- Bomba de aliases do YAML ("billion laughs"): aliases podem acrescentar no máximo 1 milhão de valores; cada âncora guarda no máximo 16 MiB de JSON para repetir (acima disso, alias para ela é erro).
+- Saída: os mesmos tetos dos compactados: `max_saida` (10 GiB) e no máximo `max_razao` (100×) o arquivo, com piso de 16 MiB; parcial é apagado. Sem o "abrir assim mesmo" dos compactados: conversão legítima não chega a 100× (o pior caso sem alias é um caractere de controle, 1 byte → 6).
+- Bomba de aliases do YAML ("billion laughs"): aliases podem acrescentar no máximo 1 milhão de valores e 256 MiB de JSON (a variante com poucos nós e âncora gorda: um texto de 16 MiB repetido 600 vezes); cada âncora guarda no máximo 16 MiB de JSON para repetir (acima disso, alias para ela é erro). O alias passa pelo mesmo teto de saída que o resto.
 - Tags YAML fora do esquema (`!python/object`, `!Ref`, `!custom`, `!<tag:…>`) são recusadas; `!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!seq`, `!!map`, `!!binary`, `!!timestamp` e `!` passam.
 - Comprimento declarado mentiroso (MessagePack `array32`/`map32`/`bin32`/`str32`, CBOR com tamanho de 64 bits, BSON `int32`): conferido contra o que resta do arquivo antes de qualquer leitura; nunca vira alocação. Contêiner com N itens exige ao menos N bytes restantes.
 - Chave que não é texto: até 64 KiB de JSON.
-- TOML inteiro e texto/binário CBOR em pedaços (indefinido) precisam de memória: 64 MiB.
+- Texto/binário CBOR em pedaços (indefinido) precisa ser juntado na memória: 64 MiB.
+- TOML: arquivo de no máximo 1 MiB. O `toml` monta a árvore inteira, que mede até ~180× o arquivo (medido: 5,5 MB de tabelas pequenas → 965 MB de RSS; 4 MB de `a=[1,1,…]` → 378 MB); com 1 MiB, o pico fica perto de 100 MB. Configuração real (Cargo.lock, pyproject) cabe com folga.
 
-**Arquivo grande.** MessagePack, CBOR, BSON e YAML são lidos por `mmap` e convertidos em fluxo, com memória proporcional à profundidade (e às âncoras do YAML), não ao tamanho; progresso e cancelamento como na descompactação. TOML não tem leitura em fluxo no `toml`: arquivo acima de 64 MiB é recusado com mensagem ("TOML é carregado inteiro na memória"). O cache gasta disco: o JSONL convertido costuma ter 1–3× o original.
+**Arquivo grande.** MessagePack, CBOR, BSON e YAML são lidos por `mmap` e convertidos em fluxo, com memória proporcional à profundidade (e às âncoras do YAML), não ao tamanho; progresso e cancelamento como na descompactação. TOML não tem leitura em fluxo no `toml`: arquivo acima de 1 MiB é recusado com mensagem ("TOML é carregado inteiro na memória"); a mensagem de erro de sintaxe é cortada em 500 caracteres (o `toml` cita a linha, que pode ser o arquivo todo). O cache gasta disco: o JSONL convertido costuma ter 1–3× o original.
 
 **Dependências novas.**
 - `yaml-rust2` 0.13 (MIT): parser YAML 1.2 puro Rust, mantido (fork ativo do `yaml-rust`), com API de eventos: dá para converter em fluxo e controlar âncora, alias e tag sem montar a árvore. `serde_yaml` está arquivado; `serde_yml` teve problemas de manutenção.
 - `bson` 3.1 (MIT OR Apache-2.0), o crate oficial do MongoDB: `RawDocument` lê sobre o `mmap` sem copiar e gera o Extended JSON relaxado; features `serde` e `serde_json-1` para isso. Puxa `bitvec`, `rand`, `serde_bytes`, `hashlink` e afins (MIT/Apache).
-- `toml` 1.2 (MIT OR Apache-2.0), que já vinha transitivo pelo Tauri; entra direto no núcleo com `parse` e `serde`.
+- `toml` 1.2 (MIT OR Apache-2.0), que já vinha transitivo pelo Tauri; entra direto no núcleo com `parse`, `serde` e `preserve_order` (esta puxa o `indexmap`, já na árvore).
 - MessagePack e CBOR têm leitor próprio (~250 linhas): os crates (`rmpv`, `ciborium`) montam a árvore inteira em memória e alocam pelo tamanho declarado em alguns caminhos; o formato é simples e o leitor próprio confere cada comprimento contra o arquivo.
 
 **Fuzz:** um alvo por decodificador (`formato_msgpack`, `formato_cbor`, `formato_bson`, `formato_yaml`, `formato_toml`), todos com tetos pequenos e conferindo que a saída é JSONL válido (`serde_json`). Com 18 alvos, o fuzz curto passou de 23 para 16 s por alvo (`FUZZ_SEG`, CI e `gates.sh`), para caber no mesmo tempo do job (18 × 16 ≈ 13 × 23).

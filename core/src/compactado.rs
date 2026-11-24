@@ -126,7 +126,7 @@ pub fn razao_estourada(e: &io::Error) -> bool {
 }
 
 /// Saída máxima aceita para um compactado de `total` bytes.
-fn limite(op: &Opcoes, total: u64) -> u64 {
+pub(crate) fn limite(op: &Opcoes, total: u64) -> u64 {
     op.max_saida
         .min(total.saturating_mul(op.max_razao).max(SAIDA_LIVRE))
 }

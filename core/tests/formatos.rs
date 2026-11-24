@@ -82,6 +82,13 @@ fn detecta_pela_assinatura_sem_extensao() {
     assert_eq!(c.linhas("c", &bson), [r#"{"x":1}"#]);
     // Sem assinatura: o caminho de sempre (JSONL cru).
     assert_eq!(c.linhas("d", b"{\"x\":1}\n"), [r#"{"x":1}"#]);
+    // JSONL de negativos começa com `-`, mas não com `---`: não é YAML.
+    assert_eq!(c.linhas("f", b"-1\n-2\n"), ["-1", "-2"]);
+    // Cabeçalho de BSON coerente (tamanho 8, tipo 0x01) sem o zero final: não é BSON.
+    assert_eq!(
+        c.linhas("g", b"\x08\x00\x00\x00\x01ab\n"),
+        ["\u{8}\0\0\0\u{1}ab"]
+    );
     // `.json` nunca passa pela conversão, mesmo começando como YAML.
     assert_eq!(c.linhas("e.json", b"---\n"), ["---"]);
 }
@@ -211,8 +218,10 @@ fn toml_representacao() {
     validas(&l);
     assert_eq!(
         l,
-        [r#"{"a":1,"n":"NaN","quando":"1979-05-27T07:32:00Z","t":{"l":[1.5,"x"]}}"#]
+        [r#"{"a":1,"quando":"1979-05-27T07:32:00Z","n":"NaN","t":{"l":[1.5,"x"]}}"#]
     );
+    // Ordem do arquivo, não alfabética (como no JSON cru).
+    assert_eq!(c.linhas("o.toml", b"z = 1\na = 2\n"), [r#"{"z":1,"a":2}"#]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -431,9 +440,17 @@ fn teto_de_chave() {
 #[test]
 fn teto_de_texto_toml_e_cbor_em_pedacos() {
     let c = Caso::novo();
-    let op = c.com(|l| l.max_texto = 16);
-    let m = c.erro("x.toml", b"a = \"0123456789abcdef\"\n", &op);
+    let op = c.com(|l| {
+        l.max_texto = 16;
+        l.max_toml = 1024;
+    });
+    let m = c.erro(
+        "x.toml",
+        format!("a = \"{}\"\n", "x".repeat(1024)).as_bytes(),
+        &op,
+    );
     assert!(m.contains("TOML é carregado inteiro"), "{m}");
+    assert_eq!(c.linhas_com("y.toml", b"a = 1\n", &op), [r#"{"a":1}"#]);
     let mut d = vec![0x7F];
     for _ in 0..3 {
         d.extend([0x68]);
@@ -457,4 +474,54 @@ fn cancelamento_interrompe_a_conversao() {
         panic!("abriu apesar do cancelamento");
     };
     assert!(nucleo::compactado::cancelada(&e), "{e}");
+}
+
+#[test]
+fn alias_gordo_yaml_conta_bytes() {
+    let c = Caso::novo();
+    // Poucos nós, âncora gorda: 1 KiB repetido 100 vezes.
+    let mut y = format!("a: &A {}\nl:\n", "x".repeat(1024));
+    y += &"  - *A\n".repeat(100);
+    let op = c.com(|l| l.bytes_alias = 64 << 10);
+    let m = c.erro("gordo.yaml", y.as_bytes(), &op);
+    assert!(m.contains("bomba de aliases"), "{m}");
+    // Sem o teto de bytes, a razão saída/entrada segura (o alias passa pelo mesmo teto de saída).
+    let op = Opcoes {
+        max_razao: 10,
+        ..c.com(|l| l.bytes_alias = u64::MAX)
+    };
+    let y = format!(
+        "a: &A {}\nl: [{}]\n",
+        "x".repeat(4 << 20),
+        ["*A"; 10].join(",")
+    );
+    let m = c.erro("razao.yaml", y.as_bytes(), &op);
+    assert!(m.contains("mais de 10× o arquivo"), "{m}");
+    // Dentro dos tetos, expande.
+    assert_eq!(
+        c.linhas("ok.yaml", b"a: &A xy\nb: [*A, *A]\n"),
+        [r#"{"a":"xy","b":["xy","xy"]}"#]
+    );
+}
+
+#[test]
+fn erro_toml_nao_cita_o_arquivo_inteiro() {
+    let c = Caso::novo();
+    let t = format!("a = [{}, ]]\n", "1,".repeat(100_000));
+    let m = c.erro("longo.toml", t.as_bytes(), &c.op());
+    assert!(m.len() < 1000, "{} bytes", m.len());
+}
+
+#[test]
+fn bignum_cbor_ate_1_kib_vira_inteiro() {
+    let c = Caso::novo();
+    let bignum = |n: usize| {
+        let mut d = vec![0xC2, 0x59, (n >> 8) as u8, n as u8, 1];
+        d.resize(4 + n, 0);
+        d
+    };
+    let l = c.linhas("a.cbor", &bignum(1024));
+    assert!(l[0].bytes().all(|b| b.is_ascii_digit()), "{}", &l[0][..20]);
+    let l = c.linhas("b.cbor", &bignum(1025));
+    assert!(l[0].starts_with("\"AQAA"), "{}", &l[0][..20]);
 }
