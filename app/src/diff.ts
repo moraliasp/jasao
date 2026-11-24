@@ -61,21 +61,24 @@ export function agrupar(d: DiffEstrutura) {
 const grupo = (id: string, titulo: string, n: string, itens: string[]) =>
   `<section class="dgrupo ${id}" aria-labelledby="dg-${id}"><h3 id="dg-${id}">${titulo} <span>${n}</span></h3><ul>${itens.join("")}</ul></section>`;
 
+/** Uma mudança em `<li>`: caminho, regra, tipos ou variante, e a evidência antes → depois. */
+export function itemMudanca(m: Mudanca, x: X, fmt: Fmt): string {
+  const ev = (e: [number, number]) => x.evidencia(fmt(e[0]), fmt(e[1]));
+  const detalhe = m.tipos
+    ? ` <span class="dtipos">${m.tipos[0].join(" | ") || "∅"} → ${m.tipos[1].join(" | ") || "∅"}</span>`
+    : m.variante !== undefined
+      ? ` <code>${visivel(m.variante)}</code>`
+      : "";
+  return `<li><code>${visivel(m.caminho)}</code> <b>${x.regras[m.regra] ?? m.regra}</b>${detalhe} <span class="dev">${ev(m.antes)} → ${ev(m.depois)}</span></li>`;
+}
+
 /** Resumo (texto puro, para o status) e o HTML dos grupos com itens. */
 export function htmlEstrutura(d: DiffEstrutura, x: X, fmt: Fmt): { resumo: string; html: string } {
   const g = agrupar(d);
   const resumo = d.mudancas.length
     ? x.resumoEstrutura(fmt(g.quebra.length), fmt(g.compativel.length), fmt(g.igual.length))
     : x.semMudanca;
-  const ev = (e: [number, number]) => x.evidencia(fmt(e[0]), fmt(e[1]));
-  const item = (m: Mudanca) => {
-    const detalhe = m.tipos
-      ? ` <span class="dtipos">${m.tipos[0].join(" | ") || "∅"} → ${m.tipos[1].join(" | ") || "∅"}</span>`
-      : m.variante !== undefined
-        ? ` <code>${visivel(m.variante)}</code>`
-        : "";
-    return `<li><code>${visivel(m.caminho)}</code> <b>${x.regras[m.regra] ?? m.regra}</b>${detalhe} <span class="dev">${ev(m.antes)} → ${ev(m.depois)}</span></li>`;
-  };
+  const item = (m: Mudanca) => itemMudanca(m, x, fmt);
   const html = [
     g.quebra.length ? grupo("quebra", x.grupos.quebra, fmt(g.quebra.length), g.quebra.map(item)) : "",
     g.compativel.length ? grupo("compativel", x.grupos.compativel, fmt(g.compativel.length), g.compativel.map(item)) : "",

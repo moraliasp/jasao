@@ -85,7 +85,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 ### Fase 3: diff
 - Diff de estrutura com quebra × compatível, usando a taxonomia do oasdiff/buf. Feito no núcleo e na CLI (`jasao diff a b [--json] [--falha-em quebra|qualquer]`, 23/11/2026) e na interface (visão Diff, ⌥⌘6, 24/11/2026; ver decisoes.md).
 - Diff de valores entre dois registros ou dois arquivos. Feito no núcleo, na CLI (`jasao diff --valores`) e na visão Diff (24/11/2026), por posição e com memória limitada; alinhar por chave fica fora (ver decisoes.md).
-- Linha do tempo de uma pasta de arquivos datados.
+- Linha do tempo de uma pasta de arquivos datados. Feito no núcleo, na CLI (`jasao linha-do-tempo <pasta> [--json]`) e na visão Diff (tipo "Linha do tempo", botão Pasta… ou soltar a pasta; marcar dois pontos abre o diff deles), 24/11/2026; ver decisoes.md.
 
 ### Fase 4: exportar e validar
 - Zod 4 e JSON Schema 2020-12, validados contra o arquivo; tipos TypeScript. ✅ (tipos TS em 24/11/2026)
@@ -94,7 +94,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 
 ### Fase 5: potência
 - **Consulta jq** com resultado ao vivo e filtros salvos; exportar resultado em JSONL e CSV. Feito (24/11/2026), com `jasao jq` na linha de comando; Parquet ficou fora (dependência pesada; ver decisoes.md).
-- **Acompanhar arquivo vivo** (como `tail -f`) ✅ (24/11: botão Seguir/Pausar, indicador de novas, truncado/rotacionado/reescrito reabre com aviso); vigiar pasta e linha do tempo de pasta ainda não.
+- **Acompanhar arquivo vivo** (como `tail -f`) ✅ (24/11: botão Seguir/Pausar, indicador de novas, truncado/rotacionado/reescrito reabre com aviso); vigiar pasta ainda não (a linha do tempo de pasta é estática, Fase 3).
 - **Linha de comando:** `inferir`, `diff --falha-em quebra`, `validar`, para CI.
 - **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada. Feito em 24/11/2026 (somente leitura, convertidos para JSONL no cache; ver `docs/decisoes.md`, "Formatos de entrada").
 - **Máscara de segredos** na tela e na exportação; anonimização. ✅ (24/11/2026: ligada por padrão em todo caminho de saída, "Mostrar valor" campo a campo, anonimizar no jq; ver `docs/decisoes.md`, "Máscara de segredos")
@@ -107,4 +107,4 @@ Edição, decriptar age/gpg, colaboração, nuvem.
 1. **Nome.** Decidido em 21/11/2026: **Jasão** (substitui o provisório "Dr. J"; ver `docs/decisoes.md`). Falta conferir INPI/USPTO.
 2. **Pasta do repositório.** Sugestão: `~/Code/moralia/<nome>`.
 3. **JSON Schema: um gerador ou dois.** Gerar no Rust a partir do modelo interno (rápido, valida arquivo grande) e conferir no CI contra `z.toJSONSchema()`; ou gerar só o Zod e derivar o Schema na interface (menos código, validação mais lenta). Recomendo o primeiro.
-4. **Origem das "versões" no Diff.** Dois arquivos escolhidos, mais a linha do tempo de pasta na Fase 3. Histórico git fica fora.
+4. **Origem das "versões" no Diff.** Dois arquivos escolhidos, mais a linha do tempo de pasta na Fase 3 (feita em 24/11/2026). Histórico git fica fora.

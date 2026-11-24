@@ -236,7 +236,7 @@ fn identidade(_: &fs::Metadata) -> Option<(u64, u64)> {
 
 /// Arquivo novo e exclusivo no cache. No Unix sai do diretório na hora: vive só enquanto o app
 /// o tem aberto ou mapeado, e nada sobra em disco se o app cair.
-fn criar_copia(dir: &Path) -> io::Result<File> {
+pub(crate) fn criar_copia(dir: &Path) -> io::Result<File> {
     let caminho = dir.join(format!(
         "vivo.{}.{}.jsonl",
         std::process::id(),
