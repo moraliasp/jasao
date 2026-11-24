@@ -54,7 +54,7 @@ Cada alvo vira benchmark (`criterion`). A meta é rodar no CI e reprovar regress
 - **Fuzzing (`cargo-fuzz`)** em leitura, índice e inferência: nenhuma entrada derruba o processo.
 - **Corpus hostil:** JSONTestSuite, arquivo truncado, UTF-8 inválido, BOM, CRLF, linha de 1 GB, profundidade 10.000, chave duplicada, número de 400 dígitos, arquivo vazio.
 - **Limites explícitos** de profundidade, tamanho de linha e memória, com mensagem que diz o problema e a saída.
-- **Arquivo que muda por baixo:** detecta, reindexa só o acréscimo, avisa se foi reescrito.
+- **Arquivo que muda por baixo:** detecta, reindexa só o acréscimo, avisa se foi reescrito. ✅ no modo seguir (Fase 5); ao abrir sem seguir, o arquivo continua mapeado e encolher por baixo ainda derruba o app (achado 14, ver `decisoes.md`, "Arquivo vivo").
 - **Testes dourados** para o Diff e para cada formato de exportação.
 - **Acessibilidade:** árvore com papéis ARIA e navegação completa por teclado.
 
@@ -94,7 +94,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 
 ### Fase 5: potência
 - **Consulta jq** com resultado ao vivo e filtros salvos; exportar resultado em JSONL, CSV e Parquet.
-- **Acompanhar arquivo vivo** (como `tail -f`) e vigiar pasta.
+- **Acompanhar arquivo vivo** (como `tail -f`) ✅ (24/11: botão Seguir/Pausar, indicador de novas, truncado/rotacionado/reescrito reabre com aviso); vigiar pasta e linha do tempo de pasta ainda não.
 - **Linha de comando:** `inferir`, `diff --falha-em quebra`, `validar`, para CI.
 - **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada.
 - **Máscara de segredos** na tela e na exportação; anonimização.
