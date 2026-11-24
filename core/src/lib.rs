@@ -13,6 +13,7 @@ pub mod gerador;
 pub mod linhas;
 pub mod regua;
 pub mod resumo;
+pub mod tabela;
 pub mod texto;
 pub mod validar;
 

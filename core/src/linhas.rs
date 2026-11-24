@@ -65,6 +65,11 @@ impl IndiceLinhas {
         }
         Some(inicio..fim)
     }
+
+    /// Linha que contém o byte `b` (`None` com o índice vazio).
+    pub fn linha_do_byte(&self, b: usize) -> Option<usize> {
+        self.inicios.partition_point(|&i| i <= b).checked_sub(1)
+    }
 }
 
 /// Arquivo JSONL aberto por `mmap`, com o índice de linhas pronto.
@@ -126,6 +131,12 @@ impl ArquivoLinhas {
 
     pub fn linhas(&self) -> usize {
         self.indice.len()
+    }
+
+    /// Linha que contém o byte `b` do arquivo e o byte onde ela começa.
+    pub fn linha_do_byte(&self, b: usize) -> Option<(usize, usize)> {
+        let l = self.indice.linha_do_byte(b)?;
+        Some((l, self.indice.faixa(l, self.bytes())?.start))
     }
 
     /// Até `quantidade` linhas cruas a partir de `inicio`; vazio se `inicio` passar do fim.
