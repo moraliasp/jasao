@@ -78,9 +78,9 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 
 ### Fase 2: estrutura
 - Tipo, presença, formato e evidência por caminho; união discriminada; união dentro de objeto; objeto que é mapa.
-- Avisos: número como texto, data fora do ISO, valor único, campo opaco, "parece segredo".
-- **Estatísticas por campo:** mínimo, máximo, distribuição, cardinalidade, valores mais comuns.
-- **Registros que fogem:** da estrutura para a lista de linhas que têm (ou não têm) um campo.
+- Avisos: número como texto, data fora do ISO, valor único, campo opaco, "parece segredo". Feito (24/11/2026; ver decisoes.md).
+- **Estatísticas por campo:** mínimo, máximo, distribuição, cardinalidade, valores mais comuns. Feito, sob pedido por caminho, com aproximação avisada (24/11/2026).
+- **Registros que fogem:** da estrutura para a lista de linhas que têm (ou não têm) um campo. Feito: lista no painel, que abre a Árvore (24/11/2026); falta filtrar a Tabela.
 
 ### Fase 3: diff
 - Diff de estrutura com quebra × compatível, usando a taxonomia do oasdiff/buf. Feito no núcleo e na CLI (`jasao diff a b [--json] [--falha-em quebra|qualquer]`, 23/11/2026; ver decisoes.md); falta a interface.
