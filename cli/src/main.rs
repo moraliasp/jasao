@@ -131,6 +131,7 @@ fn main() -> ExitCode {
         args.remove(i);
         HTTP.store(true, Relaxed);
     }
+    let _baixados = Baixados;
     // Vive até o fim do `main`: o `Drop` apaga o temporário, inclusive em erro.
     let entrada = match ler_stdin(&args) {
         Ok(t) => t,
@@ -352,8 +353,22 @@ fn remoto(arquivo: &str) -> bool {
         .any(|p| a.len() >= p.len() && a[..p.len()].eq_ignore_ascii_case(p))
 }
 
+/// Temporários dos downloads; vivem até o fim do `main` (ver `Baixados`).
+static BAIXADOS: std::sync::Mutex<Vec<nucleo::entrada::Temporario>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Solta (e assim apaga) os downloads no fim do `main`, inclusive em erro: estático não roda `Drop`.
+struct Baixados;
+
+impl Drop for Baixados {
+    fn drop(&mut self) {
+        BAIXADOS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
 fn baixar(entrada: &str) -> Result<String, Box<dyn std::error::Error>> {
     let pedido = nucleo::url::Pedido::interpretar(entrada)?;
+    nucleo::entrada::apagar_no_sinal();
     if pedido.inseguro() && HTTP.load(Relaxed) {
         eprintln!("aviso: http:// não é cifrado; qualquer um no caminho lê e altera o conteúdo");
     }
@@ -378,7 +393,9 @@ fn baixar(entrada: &str) -> Result<String, Box<dyn std::error::Error>> {
             e.to_string()
         }
     })?;
-    Ok(r.to_string_lossy().into_owned())
+    let caminho = r.caminho().to_string_lossy().into_owned();
+    BAIXADOS.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+    Ok(caminho)
 }
 
 /// Como a origem aparece (laudo, mensagens): a URL sem consulta, credencial nem cabeçalho;

@@ -276,7 +276,7 @@ fn fnv(partes: &[&[u8]]) -> u64 {
 }
 
 /// Apaga o arquivo parcial ao sair por erro, cancelamento ou pânico.
-pub(crate) struct Parcial(pub(crate) Option<PathBuf>);
+struct Parcial(Option<PathBuf>);
 
 impl Drop for Parcial {
     fn drop(&mut self) {
@@ -503,12 +503,9 @@ impl<W: Write> Write for Reserva<'_, W> {
 
 /// Tira do cache os arquivos usados há mais tempo até a soma caber em `teto`. Nunca tira
 /// `manter`. Parciais com mais de um dia (sobra de processo que morreu) também saem.
-pub(crate) fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
+fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
     let agora = SystemTime::now();
     let mut entradas = Vec::new();
-    // `.parcial` recente pode ser de outro processo baixando agora: não apaga, mas conta no
-    // teto (um sinal que mata o processo deixa até `max_bytes` ali até a faxina de 24 h).
-    let mut parciais: u64 = 0;
     for e in fs::read_dir(dir)? {
         let e = e?;
         let caminho = e.path();
@@ -526,12 +523,11 @@ pub(crate) fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result
             {
                 let _ = fs::remove_file(&caminho);
             }
-            Some("parcial") => parciais += meta.len(),
             _ => {}
         }
     }
     entradas.sort();
-    let mut soma: u64 = parciais + entradas.iter().map(|e| e.1).sum::<u64>();
+    let mut soma: u64 = entradas.iter().map(|e| e.1).sum();
     for (_, tamanho, caminho) in entradas {
         if soma <= teto {
             break;
@@ -580,16 +576,5 @@ mod testes {
         // Reserva 2200 passou do teto: o velho sai antes de o descompactado crescer mais.
         assert!(!velho.exists());
         assert_eq!((r.escritos, r.reservado), (1100, 2200));
-    }
-    #[test]
-    fn parcial_recente_conta_no_teto() {
-        let dir = tempfile::tempdir().unwrap();
-        let velho = dir.path().join("velho.dados");
-        let parcial = dir.path().join("url-1-2.parcial");
-        fs::write(&velho, [0u8; 600]).unwrap();
-        fs::write(&parcial, [0u8; 600]).unwrap();
-        // 600 + 600 passam do teto de 1000: sai o completo, o parcial (de outro processo) fica.
-        limpar(dir.path(), 1000, None).unwrap();
-        assert!(!velho.exists() && parcial.exists());
     }
 }

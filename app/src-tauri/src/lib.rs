@@ -578,11 +578,17 @@ async fn baixar_url<R: Runtime>(
         _ if e.to_string() == nucleo::url::ERRO_HTTP => ERRO_HTTP.into(),
         _ => e.to_string(),
     })?;
-    app.state::<abertura::Concedidos>().conceder(&caminho);
-    let caminho = caminho
-        .into_os_string()
-        .into_string()
-        .map_err(|_| NEGADO.to_owned())?;
+    app.state::<abertura::Concedidos>()
+        .conceder(caminho.caminho());
+    let texto = caminho
+        .caminho()
+        .to_str()
+        .ok_or_else(|| NEGADO.to_owned())?
+        .to_owned();
+    if let Ok(mut b) = app.state::<Baixados>().0.lock() {
+        b.push(caminho);
+    }
+    let caminho = texto;
     Ok(Baixado {
         caminho,
         nome: pedido.nome(),
@@ -746,6 +752,10 @@ fn conceder_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String], cwd: &Path) {
     stdin_argv(app, argv);
 }
 
+/// Temporários dos downloads de `baixar_url`; saem no `RunEvent::Exit`.
+#[derive(Default)]
+struct Baixados(Mutex<Vec<nucleo::entrada::Temporario>>);
+
 /// Temporário de stdin da 1ª instância; sai no `RunEvent::Exit`.
 #[derive(Default)]
 struct Stdin(Mutex<Option<nucleo::entrada::Temporario>>);
@@ -824,8 +834,10 @@ async fn abrir<R: Runtime>(
     *doc.marca.lock().map_err(|e| e.to_string())? = marca;
     // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
     // jq reabre num documento que já existe (`id` Some), então também fica.
-    // Baixado de URL também: o cache é temporário e o recente apontaria para um arquivo que some.
-    if novo && exemplos::embutido(&caminho).is_none() && !nucleo::url::baixado(Path::new(&caminho))
+    // Temporário (stdin, download de URL) também: some ao fechar e o recente apontaria para o nada.
+    if novo
+        && exemplos::embutido(&caminho).is_none()
+        && !nucleo::entrada::temporario(Path::new(&caminho))
     {
         lembrar(&app, &caminho);
     }
@@ -3056,6 +3068,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
         .manage(abertura::Abertura::default())
         .manage(abertura::Concedidos::default())
         .manage(Stdin::default())
+        .manage(Baixados::default())
         .invoke_handler(tauri::generate_handler![
             escolher,
             salvar_como,
@@ -3283,6 +3296,9 @@ pub fn run() {
                 }
                 if let Ok(mut t) = app.state::<Stdin>().0.lock() {
                     t.take();
+                }
+                if let Ok(mut b) = app.state::<Baixados>().0.lock() {
+                    b.clear();
                 }
             }
             _ => {}

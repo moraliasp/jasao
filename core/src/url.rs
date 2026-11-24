@@ -8,17 +8,17 @@
 //! sem cabeçalho sensível quando o salto muda de servidor.
 
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use crate::compactado::{self, Parcial, privado};
+use crate::compactado;
+use crate::entrada::{self, Temporario};
 
 const MIB: u64 = 1 << 20;
 /// Prefixo do arquivo baixado no cache (ver `baixado`).
-const PREFIXO: &str = "url-";
 const MAX_REDIRECIONAMENTOS: u32 = 5;
 /// Erro quando o pedido é `http://` e `permitir_http` está desligado: quem chama pergunta.
 pub const ERRO_HTTP: &str = "http:// não é cifrado: qualquer um no caminho lê e altera o conteúdo; confirme para abrir assim mesmo";
@@ -456,21 +456,15 @@ impl Default for Opcoes<'_> {
     }
 }
 
-/// Se `caminho` é um arquivo baixado por `baixar` (o app não o põe nos recentes).
-pub fn baixado(caminho: &Path) -> bool {
-    caminho
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with(PREFIXO) && n.ends_with(".dados"))
-}
-
 fn erro(kind: ErrorKind, msg: impl Into<String>) -> io::Error {
     io::Error::new(kind, msg.into())
 }
 
-/// Baixa `pedido` para o cache (`.parcial`, renomeado só ao terminar, 0600) e devolve o caminho.
-/// Erro, cancelamento ou teto apagam o parcial. A mensagem de erro nunca traz credencial.
-pub fn baixar(pedido: &Pedido, op: &Opcoes) -> io::Result<PathBuf> {
+/// Baixa `pedido` para um temporário `download` (ver `entrada::criar`: 0600, apagado no `Drop`,
+/// no sinal se quem chama ligou `entrada::apagar_no_sinal`, ou como órfão) e o devolve; quem
+/// chama o segura enquanto o arquivo estiver aberto. Erro, cancelamento ou teto apagam o
+/// temporário. A mensagem de erro nunca traz credencial.
+pub fn baixar(pedido: &Pedido, op: &Opcoes) -> io::Result<Temporario> {
     if pedido.inseguro() && !op.permitir_http {
         return Err(erro(ErrorKind::PermissionDenied, ERRO_HTTP));
     }
@@ -478,18 +472,7 @@ pub fn baixar(pedido: &Pedido, op: &Opcoes) -> io::Result<PathBuf> {
         dir_cache: op.dir_cache.clone(),
         ..compactado::Opcoes::default()
     };
-    let dir = compactado::pasta_cache(&cop)?;
-    compactado::limpar(&dir, cop.teto_cache.saturating_sub(op.max_bytes), None)?;
-    let agora = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let nome = format!("{PREFIXO}{:x}-{agora:x}", std::process::id());
-    let tmp = dir.join(format!("{nome}.parcial"));
-    let destino = dir.join(format!("{nome}.dados"));
-    let mut guarda = Parcial(Some(tmp.clone()));
-    let mut saida = File::create(&tmp)?;
-    privado(&tmp, 0o600)?;
+    let (tmp, mut saida) = entrada::criar("download", &cop)?;
     transferir(pedido, op, &mut saida).map_err(|e| {
         // O cancelamento segue reconhecível (`compactado::cancelada`); não traz texto do pedido.
         if compactado::cancelada(&e) {
@@ -499,10 +482,7 @@ pub fn baixar(pedido: &Pedido, op: &Opcoes) -> io::Result<PathBuf> {
         }
     })?;
     saida.sync_all()?;
-    drop(saida);
-    fs::rename(&tmp, &destino)?;
-    guarda.0 = None;
-    Ok(destino)
+    Ok(tmp)
 }
 
 fn agente(pedido: &Pedido, op: &Opcoes) -> ureq::Agent {

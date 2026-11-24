@@ -161,3 +161,83 @@ fn laudo_de_url_mostra_a_origem_limpa() {
     );
     assert!(!out.contains("seg-f") && !out.contains("fulano"), "{out}");
 }
+
+/// Temporários de download (`download.*.parcial`) em qualquer lugar sob `dir`.
+fn downloads(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut achados = Vec::new();
+    let mut pilha = vec![dir.to_path_buf()];
+    while let Some(d) = pilha.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let c = e.path();
+            if c.is_dir() {
+                pilha.push(c);
+            } else if e.file_name().to_string_lossy().starts_with("download.") {
+                achados.push(c);
+            }
+        }
+    }
+    achados
+}
+
+#[test]
+fn baixado_sai_ao_terminar() {
+    let cache = tempfile::tempdir().unwrap();
+    let porta = servir(vec![resposta("200 OK", "{\"a\":1}\n")]);
+    let url = format!("http://127.0.0.1:{porta}/x.jsonl");
+    let (codigo, _, err) = jasao(&["linhas", &url, "--http"], cache.path());
+    assert_eq!(codigo, 0, "{err}");
+    assert!(
+        downloads(cache.path()).is_empty(),
+        "{:?}",
+        downloads(cache.path())
+    );
+}
+
+/// SIGTERM no meio do download: o tratador de `entrada::apagar_no_sinal` apaga o temporário.
+#[cfg(unix)]
+#[test]
+fn sigterm_no_meio_do_download_apaga_o_temporario() {
+    use std::process::Stdio;
+    let cache = tempfile::tempdir().unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let porta = l.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap();
+        let mut ler = BufReader::new(&mut s);
+        let mut linha = String::new();
+        while ler.read_line(&mut linha).unwrap_or(0) > 0 && linha != "\r\n" {
+            linha.clear();
+        }
+        // Promete 1 GiB, manda um pedaço e para: o download fica no meio.
+        let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\n\r\n");
+        let _ = s.write_all(&b"{\"a\":1}\n".repeat(4096));
+        thread::sleep(std::time::Duration::from_secs(30));
+    });
+    let url = format!("http://127.0.0.1:{porta}/x.jsonl");
+    let mut filho = Command::new(env!("CARGO_BIN_EXE_jasao"))
+        .args(["linhas", &url, "--http"])
+        .env("HOME", cache.path())
+        .env("XDG_CACHE_HOME", cache.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let inicio = std::time::Instant::now();
+    while downloads(cache.path()).is_empty() {
+        assert!(inicio.elapsed().as_secs() < 10, "o temporário não apareceu");
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    thread::sleep(std::time::Duration::from_millis(200));
+    let ok = Command::new("kill")
+        .args(["-TERM", &filho.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let status = filho.wait().unwrap();
+    assert_eq!(status.code(), Some(130), "{status:?}");
+    assert!(
+        downloads(cache.path()).is_empty(),
+        "{:?}",
+        downloads(cache.path())
+    );
+}

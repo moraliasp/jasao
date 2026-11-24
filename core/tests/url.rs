@@ -66,11 +66,14 @@ fn op(dir: &Path) -> Opcoes<'static> {
     }
 }
 
-/// Nada de `.parcial` nem `url-*.dados` sobrando no cache.
+/// Nenhum temporário de download sobrando no cache.
 fn cache_vazio(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .unwrap()
-        .all(|e| !e.unwrap().file_name().to_string_lossy().starts_with("url-"))
+    std::fs::read_dir(dir).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("download.")
+    })
 }
 
 #[test]
@@ -85,8 +88,14 @@ fn baixa_json_e_jsonl() {
         &op(dir.path()),
     )
     .unwrap();
-    assert!(url::baixado(&p));
-    assert_eq!(std::fs::read(&p).unwrap(), br#"{"x":[1,2]}"#);
+    assert!(nucleo::entrada::temporario(p.caminho()));
+    assert_eq!(std::fs::read(p.caminho()).unwrap(), br#"{"x":[1,2]}"#);
+    let c = p.caminho().to_path_buf();
+    drop(p);
+    assert!(
+        !c.exists() && cache_vazio(dir.path()),
+        "o Drop apaga o baixado"
+    );
     let pedido = rx.recv().unwrap();
     assert!(pedido.starts_with("GET /a.json "), "{pedido}");
     assert!(
@@ -100,12 +109,12 @@ fn baixa_json_e_jsonl() {
         &op(dir.path()),
     )
     .unwrap();
-    assert_eq!(ArquivoLinhas::abrir(&p).unwrap().linhas(), 3);
+    assert_eq!(ArquivoLinhas::abrir(p.caminho()).unwrap().linhas(), 3);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
-            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(p.caminho()).unwrap().permissions().mode() & 0o777,
             0o600
         );
     }
@@ -132,7 +141,12 @@ fn gzip_abre_transparente() {
         dir_cache: Some(dir.path().to_path_buf()),
         ..compactado::Opcoes::default()
     };
-    assert_eq!(ArquivoLinhas::abrir_com(&p, &cop).unwrap().linhas(), 2);
+    assert_eq!(
+        ArquivoLinhas::abrir_com(p.caminho(), &cop)
+            .unwrap()
+            .linhas(),
+        2
+    );
 }
 
 #[test]
@@ -290,7 +304,7 @@ fn https_baixa_e_certificado_e_validado() {
         ..op(dir.path())
     };
     let c = url::baixar(&p, &o).unwrap();
-    assert_eq!(std::fs::read(c).unwrap(), b"{\"ok\":true}");
+    assert_eq!(std::fs::read(c.caminho()).unwrap(), b"{\"ok\":true}");
     // Com as raízes do sistema, o autoassinado é recusado.
     let e = url::baixar(&p, &op(dir.path())).unwrap_err();
     assert!(e.to_string().contains("certificado"), "{e}");
