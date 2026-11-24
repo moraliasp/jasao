@@ -1,6 +1,6 @@
 # Radar: Jasão × top 5
 
-Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 612a0f8 (#6 a #39 mergeados). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
+Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em a8492da (#6 a #40 mergeados). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
 
 **Premissa: o Jasão é gratuito.** A barra a bater são os pagos (Dadroit, OK JSON Pro), e o adversário de preço são os grátis (JSON Hero, quicktype, Compass). Nenhum deles entrega o pacote completo: gratuito, desktop, arquivo de 10 GB, estrutura, diff e export.
 
@@ -30,7 +30,7 @@ Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 
 | Copiar caminho (jq, JSONPath, Pointer) | ✅ core e CLI (#7), interface (#19) | ✅ | ✅ | ✅ | — | — |
 | Linha inválida sem quebrar o resto | ✅ #7, #12 | ? | ? | ❌ | — | — |
 | Consulta jq | ✅ core e CLI (#10), interface (#19) | ◐ JSONPath | ✅ | ❌ | — | ✅ (consulta Mongo) |
-| Valores inteligentes (data, JWT, base64) | ◐ em PR (#40): datas, cores, URLs, imagens base64, JWT e JSON dentro de texto | ? | ? | ✅ prévias | — | — |
+| Valores inteligentes (data, JWT, base64) | ✅ #40: selo na árvore e painel do valor com data (época e ISO), cor, URL que só abre com clique, imagem base64, JWT decodificado sem a assinatura e JSON dentro de texto | ? | ? | ✅ prévias | — | — |
 | Visão do arquivo inteiro (régua por variante e inválidas) | ✅ #16 | ? | ❌ | ❌ | — | ❌ |
 | Resumo ao abrir (painel de entrada) | ✅ #12 | ? | ? | ❌ | — | ◐ |
 | **Presença e evidência por campo** | ✅ core e CLI (#8), modo Estrutura na interface (#21): tipos e "N de M" por caminho | ❌ | ❌ | ◐ | ◐ | ✅ só no Mongo |
@@ -43,8 +43,7 @@ Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 
 
 1. **Benchmark público de 1 GB contra o Dadroit.** O #38 mediu os tetos internos (1ª tela 0,28 s, índice 0,29 s, estrutura 3,41 s, busca 0,59–0,73 s, ≤63 MB além do mmap), mas o Dadroit não foi comparado e nada foi publicado. É o único argumento que o pago tem e que o Jasão pode tirar de graça.
 2. **Diff na interface**, mais o diff de valores. O core e a CLI (#39) já classificam quebra × compatível; nenhum concorrente faz isso.
-3. **Mergear valores inteligentes (#40).** O JSON Hero dita o padrão.
-4. **1ª tela no limite de 300 ms** (0,28 s no #38): qualquer regressão estoura a meta; a checagem de 10% no CI foi proposta e ainda não está ligada.
+3. **1ª tela no limite de 300 ms** (0,28 s no #38): qualquer regressão estoura a meta; a checagem de 10% no CI foi proposta e ainda não está ligada.
 
 ## Candidatos a "muito especial", de graça
 
@@ -60,7 +59,8 @@ Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 
 - 22/11/2026 (tarde): busca (⌘F, contagem, marcas na régua), copiar caminho (menu e atalhos) e consulta jq (⌘J, resultado no visualizador, volta ao arquivo) em PR. Sai o antigo gap 1; benchmark contra o Dadroit vira o primeiro.
 - 22/11/2026 (noite): abas de arquivo (estado por documento no Rust e no front, ⌘T/⌘W/⌘1…9/Ctrl+Tab) e arrastar vários arquivos para a janela em PR. Os exemplos embutidos viram duas abas.
 - 22/11/2026: em PR, recentes (os 10 últimos, na aba vazia e no menu Arquivo) e associação de `.json`/`.jsonl`/`.ndjson` como visualizador alternativo, com abertura pelo Finder e instância única. Fica fora do placar, que compara visualização e não integração com o sistema.
-- 22/11/2026 (fim do dia): mergeados #18 a #22 (exemplos, busca/caminho/jq na interface, abas, Estrutura, recentes). Presença e união discriminada passam a ✅ na interface; o Jasão fecha 20 de 26 pontos no radar 0–2, contra 13 do JSON Hero. Em PR: tetos de memória da árvore (#23). Gap 1 agora é a tabela por coluna.
+- 22/11/2026 (fim do dia): mergeados #18 a #22 (exemplos, busca/caminho/jq na interface, abas, Estrutura, recentes). Presença e união discriminada passam a ✅ na interface; o Jasão fecha 18 de 26 pontos no radar 0–2, contra 13 do JSON Hero. Em PR: tetos de memória da árvore (#23). Gap 1 agora é a tabela por coluna.
 - 23/11/2026: modo Tabela em PR (núcleo #33, interface empilhada): colunas por caminho, janela virtual do Rust, ordenação completa em 2º plano com progresso e cancelar, fixar e ocultar. Tabela por coluna passa a ✅ quando mergear. Gap 1 volta a ser o benchmark contra o Dadroit.
 - 23/11/2026 (tarde): mergeados #23 e #25 (tetos de memória), #26 a #31 (segurança e CI) e #32 (export Zod e Schema no core e na CLI). Em PR: interface do export (#35).
-- 24/11/2026: mergeados #33 e #34 (Tabela), #35 (Exportar na interface), #38 (benchmarks internos de 1 GB) e #39 (diff estrutural no core e na CLI). Tabela e Zod + Schema passam a ✅, diff a ◐; o Jasão vai a 25 de 26 pontos com o que está na `main`. Em PR: valores inteligentes (#40).
+- 24/11/2026: mergeados #33 e #34 (Tabela), #35 (Exportar na interface), #38 (benchmarks internos de 1 GB) e #39 (diff estrutural no core e na CLI). Tabela e Zod + Schema passam a ✅, diff a ◐; o Jasão vai a 23 de 26 pontos com o que está na `main`. Em PR: valores inteligentes (#40).
+- 24/11/2026 (noite): mergeado #40 (valores inteligentes na árvore e no painel do valor, tudo local: o link só abre com clique e o JWT nunca é conferido nem enviado). Valores inteligentes passa a ✅ e empata com as prévias do JSON Hero. Recontagem eixo a eixo: 25 de 26 pontos, e o único ponto aberto é o diff estrutural sem interface; as somas de 22/11 (20) e 24/11 (25) foram corrigidas para 18 e 23 nesta recontagem.

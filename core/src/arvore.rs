@@ -168,6 +168,14 @@ impl Arvore {
         self.arquivo.linhas()
     }
 
+    /// Troca o arquivo pelo mesmo com linhas a mais no fim (arquivo vivo, ver `vivo`): os
+    /// registros abertos continuam abertos, porque os bytes de antes não mudam.
+    pub fn crescer(&mut self, arquivo: ArquivoLinhas) {
+        let novas = arquivo.linhas().saturating_sub(self.registros());
+        self.arquivo = Arc::new(arquivo);
+        self.total += novas;
+    }
+
     /// Total de linhas visíveis.
     pub fn total(&self) -> usize {
         self.total

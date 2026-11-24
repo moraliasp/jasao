@@ -90,6 +90,13 @@ struct Doc {
     consulta: Mutex<EstadoConsulta>,
     exportar: Mutex<EstadoExportar>,
     ordem: Mutex<EstadoOrdem>,
+    /// Cancela o perfil em curso quando outro caminho é pedido.
+    perfil: Mutex<Arc<AtomicBool>>,
+    /// Modo seguir (arquivo vivo): a cópia que cresce; `None` antes do 1º `seguir`. Pausar
+    /// não a solta: ao retomar, ela confere o original contra a última leitura.
+    vivo: Mutex<Option<nucleo::Vivo>>,
+    /// Como estava o arquivo aberto (sem seguir): o 1º `seguir` só acrescenta se ainda é ele.
+    marca: Mutex<Option<nucleo::Marca>>,
 }
 
 /// Ordenação da Tabela: a pronta (com a direção) e a que roda em 2º plano.
@@ -325,6 +332,9 @@ impl Doc {
         }
         if let Ok(mut o) = self.ordem.lock() {
             o.reiniciar();
+        }
+        if let Ok(p) = self.perfil.lock() {
+            p.store(true, Relaxed);
         }
     }
 }
@@ -589,24 +599,39 @@ async fn abrir<R: Runtime>(
         &app,
         &estado,
     )?);
-    let total = arvore.total();
-    let arquivo = arvore.compartilhado();
-    let conteudo = resumo::conteudo(&arquivo);
-    let linhas = arquivo.linhas();
-    // JSON em várias linhas: "linhas inválidas" não faz sentido (ver `Conteudo`).
-    let pular = conteudo == Conteudo::JsonVariasLinhas;
-    // Sem régua para um JSON só (decisão 2 do micronavegador): nem 2ª passada.
-    let colorir = !pular && conteudo != Conteudo::JsonUnico;
-    let cancelar = Arc::new(AtomicBool::new(false));
-    let marcas: Arc<[AtomicU8]> = nucleo::regua::marcas(linhas).into();
     let novo = id.is_none();
-    let (id, doc) = match id {
-        Some(id) => {
+    // Lida depois do mapa: se o arquivo mudar entre os dois, o 1º `seguir` reabre à toa, mas
+    // nunca acrescenta a um arquivo trocado.
+    let marca = nucleo::Marca::ler(&caminho, arvore.arquivo().bytes().len() as u64).ok();
+    let aberto = instalar(Some(arvore), id, &app, &estado)?;
+    // Reabrir no mesmo documento (resultado de jq) sai do modo seguir.
+    let doc = estado.doc(aberto.id)?;
+    *doc.vivo.lock().map_err(|e| e.to_string())? = None;
+    *doc.marca.lock().map_err(|e| e.to_string())? = marca;
+    // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
+    // jq reabre num documento que já existe (`id` Some), então também fica.
+    if novo && exemplos::embutido(&caminho).is_none() {
+        lembrar(&app, &caminho);
+    }
+    Ok(aberto)
+}
+
+/// Põe `arvore` no documento `id` (ou num novo, sem `id`) e dispara a varredura em 2º plano.
+/// `arvore` `None`: a árvore do documento já foi trocada por quem chama (arquivo vivo).
+fn instalar<R: Runtime>(
+    arvore: Option<Arvore>,
+    id: Option<u32>,
+    app: &AppHandle<R>,
+    estado: &Estado,
+) -> Result<Aberto, String> {
+    let app = app.clone();
+    let (id, doc) = match (arvore, id) {
+        (Some(arvore), Some(id)) => {
             let doc = estado.doc(id)?;
             *doc.arvore.lock().map_err(|e| e.to_string())? = arvore;
             (id, doc)
         }
-        None => {
+        (Some(arvore), None) => {
             let id = estado.proximo.fetch_add(1, Relaxed) + 1;
             let doc = Arc::new(Doc {
                 arvore: Mutex::new(arvore),
@@ -615,12 +640,26 @@ async fn abrir<R: Runtime>(
                 consulta: Default::default(),
                 exportar: Default::default(),
                 ordem: Default::default(),
+                perfil: Default::default(),
+                vivo: Default::default(),
+                marca: Default::default(),
             });
             let mut docs = estado.docs.lock().map_err(|e| e.to_string())?;
             docs.insert(id, Arc::clone(&doc));
             (id, doc)
         }
+        (None, Some(id)) => (id, estado.doc(id)?),
+        (None, None) => return Err("instalar sem árvore nem documento".into()),
     };
+    let (total, arquivo) = doc.com(|a| (a.total(), a.compartilhado()))?;
+    let conteudo = resumo::conteudo(&arquivo);
+    let linhas = arquivo.linhas();
+    // JSON em várias linhas: "linhas inválidas" não faz sentido (ver `Conteudo`).
+    let pular = conteudo == Conteudo::JsonVariasLinhas;
+    // Sem régua para um JSON só (decisão 2 do micronavegador): nem 2ª passada.
+    let colorir = !pular && conteudo != Conteudo::JsonUnico;
+    let cancelar = Arc::new(AtomicBool::new(false));
+    let marcas: Arc<[AtomicU8]> = nucleo::regua::marcas(linhas).into();
     let geracao = {
         let mut v = doc.varredura.lock().map_err(|e| e.to_string())?;
         v.cancelar.store(true, Relaxed);
@@ -645,11 +684,6 @@ async fn abrir<R: Runtime>(
     };
     doc.ordem.lock().map_err(|e| e.to_string())?.reiniciar();
     doc.busca.lock().map_err(|e| e.to_string())?.reiniciar();
-    // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
-    // jq reabre num documento que já existe (`id` Some), então também fica.
-    if novo && exemplos::embutido(&caminho).is_none() {
-        lembrar(&app, &caminho);
-    }
     let doc = Arc::downgrade(&doc);
     std::thread::spawn(move || {
         // Grava no estado e emite, se o documento ainda estiver aberto com este arquivo.
@@ -705,6 +739,85 @@ async fn abrir<R: Runtime>(
         });
     });
     Ok(Aberto { id, total })
+}
+
+/// Resposta de `seguir`: o documento depois da leitura.
+#[derive(Serialize)]
+struct Seguido {
+    total: usize,
+    registros: usize,
+    /// Registros que chegaram nesta leitura (0 se nada chegou ou se o arquivo foi reaberto).
+    novas: usize,
+    /// O arquivo foi truncado, rotacionado ou reescrito e o documento foi reaberto do zero.
+    reescrito: bool,
+}
+
+/// Modo seguir (como `tail -f`): a 1ª chamada troca o documento por uma cópia que cresce
+/// (`nucleo::vivo`, sem SIGBUS se o original encolher); as seguintes acrescentam as linhas
+/// completas que chegaram e refazem a varredura. A interface chama a cada intervalo e para de
+/// chamar na pausa. Só abre caminho concedido (ver `autorizado`).
+#[tauri::command]
+async fn seguir<R: Runtime>(
+    caminho: String,
+    id: u32,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Seguido, String> {
+    let caminho = autorizado(&app, &caminho)?;
+    let doc = estado.doc(id)?;
+    let mut vivo = doc.vivo.lock().map_err(|e| e.to_string())?;
+    let erro = |e: std::io::Error| format!("{caminho}: {e}");
+    let (arquivo, reescrito) = match vivo.as_mut().map(nucleo::Vivo::atualizar) {
+        Some(Ok(nucleo::Mudanca::Nada)) => {
+            let (total, registros) = doc.com(|a| (a.total(), a.registros()))?;
+            return Ok(Seguido {
+                total,
+                registros,
+                novas: 0,
+                reescrito: false,
+            });
+        }
+        Some(Ok(nucleo::Mudanca::Cresceu(a))) => (a, false),
+        Some(Err(e)) => return Err(erro(e)),
+        Some(Ok(nucleo::Mudanca::Reescrito)) => {
+            let (v, a) = nucleo::Vivo::abrir(&caminho, &Opcoes::default()).map_err(erro)?;
+            *vivo = Some(v);
+            (a, true)
+        }
+        // 1º seguir: o documento mostra o arquivo do `abrir`; só acrescenta se ainda é ele.
+        None => {
+            let marca = doc.marca.lock().map_err(|e| e.to_string())?.take();
+            let (v, a, mesmo) =
+                nucleo::Vivo::continuar(&caminho, &Opcoes::default(), marca.as_ref())
+                    .map_err(erro)?;
+            *vivo = Some(v);
+            (a, !mesmo)
+        }
+    };
+    let novas = doc.com(|a| {
+        let antes = a.registros();
+        let novas = if reescrito {
+            0
+        } else {
+            arquivo.linhas().saturating_sub(antes)
+        };
+        // A 1ª cópia pode ter uma linha a menos (a última, sem `\n`): árvore nova.
+        if reescrito || arquivo.linhas() < antes {
+            *a = Arvore::new(arquivo);
+        } else {
+            a.crescer(arquivo);
+        }
+        novas
+    })?;
+    drop(vivo);
+    let Aberto { total, .. } = instalar(None, Some(id), &app, &estado)?;
+    let registros = doc.com(|a| a.registros())?;
+    Ok(Seguido {
+        total,
+        registros,
+        novas,
+        reescrito,
+    })
 }
 
 /// Fecha o documento: some do mapa (a árvore e o mapeamento do arquivo saem com ele), as
@@ -768,6 +881,7 @@ struct CaminhoUi {
     presenca: u64,
     de: u64,
     tipos: Vec<TipoVisto>,
+    avisos: Vec<&'static str>,
 }
 
 #[derive(Clone, Serialize)]
@@ -805,6 +919,7 @@ impl Estrutura {
                     .filter(|(_, x)| x.n > 0)
                     .map(|(nome, x)| (nome, x.n, x.primeira()))
                     .collect(),
+                avisos: c.avisos.iter().map(|a| a.nome()).collect(),
                 caminho: c.caminho,
                 profundidade: c.profundidade,
                 presenca: c.presenca,
@@ -857,6 +972,39 @@ fn estrutura(id: u32, estado: State<'_, Estado>) -> Result<Option<Estrutura>, St
     Ok(e.map(|e| (*e).clone()))
 }
 
+/// Estatísticas e registros com e sem o caminho `indice` (a posição em `estrutura().caminhos`),
+/// numa varredura do arquivo inteiro fora da thread da interface. Pedido novo cancela o
+/// anterior; `None` se a inferência não acabou ou o pedido foi substituído.
+#[tauri::command]
+async fn perfil(
+    id: u32,
+    indice: usize,
+    estado: State<'_, Estado>,
+) -> Result<Option<nucleo::perfil::Perfil>, String> {
+    let Some((inf, arquivo)) = inferencia(&estado, id)? else {
+        return Ok(None);
+    };
+    let c = inf
+        .resumo
+        .caminhos()
+        .into_iter()
+        .nth(indice)
+        .ok_or_else(|| format!("caminho {indice} não existe"))?;
+    let cancelar = Arc::new(AtomicBool::new(false));
+    {
+        let doc = estado.doc(id)?;
+        let mut atual = doc.perfil.lock().map_err(|e| e.to_string())?;
+        atual.store(true, Relaxed);
+        *atual = Arc::clone(&cancelar);
+    }
+    let p = tauri::async_runtime::spawn_blocking(move || {
+        nucleo::perfil::perfil(&inf, arquivo.bytes(), &c, &cancelar)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok((!p.cancelado).then_some(p))
+}
+
 /// Inferência crua e o arquivo de onde veio (Exportar gera e valida a partir dela).
 type InfArquivo = (Arc<nucleo::estrutura::Inferencia>, Arc<ArquivoLinhas>);
 
@@ -870,8 +1018,16 @@ struct EstadoExportar {
 }
 
 #[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Formato {
+    Zod,
+    Schema,
+    Ts,
+}
+
+#[derive(Clone, Copy, Deserialize)]
 struct PedidoExportar {
-    zod: bool,
+    formato: Formato,
     literal: bool,
     numero: bool,
 }
@@ -880,14 +1036,22 @@ impl PedidoExportar {
     fn opcoes(self) -> nucleo::exportar::Opcoes {
         nucleo::exportar::Opcoes {
             literal: self.literal,
-            numero: self.numero,
+            // Tipos descrevem o JSON como está: "tratar como número" não se aplica.
+            numero: self.numero && !matches!(self.formato, Formato::Ts),
         }
     }
     fn codigo(self, r: &nucleo::estrutura::Resumo) -> String {
-        if self.zod {
-            nucleo::exportar::zod(r, self.opcoes())
-        } else {
-            nucleo::exportar::schema(r, self.opcoes())
+        match self.formato {
+            Formato::Zod => nucleo::exportar::zod(r, self.opcoes()),
+            Formato::Schema => nucleo::exportar::schema(r, self.opcoes()),
+            Formato::Ts => nucleo::exportar::tipos(r, self.opcoes()),
+        }
+    }
+    /// O JSON Schema que valida o arquivo: o próprio, ou o da entrada que o Zod/tipo aceita.
+    fn schema(self, r: &nucleo::estrutura::Resumo) -> String {
+        match self.formato {
+            Formato::Schema => nucleo::exportar::schema(r, self.opcoes()),
+            Formato::Zod | Formato::Ts => nucleo::exportar::schema_da_entrada_zod(r, self.opcoes()),
         }
     }
 }
@@ -934,12 +1098,29 @@ fn exportar<R: Runtime>(
         return Ok(None);
     };
     let codigo = pedido.codigo(&inf.resumo);
-    let schema = if pedido.zod {
-        nucleo::exportar::schema_da_entrada_zod(&inf.resumo, pedido.opcoes())
-    } else {
-        codigo.clone()
-    };
-    let doc = estado.doc(id)?;
+    let schema = pedido.schema(&inf.resumo);
+    let geracao = validar_em_fundo(
+        app,
+        &estado.doc(id)?,
+        id,
+        arquivo,
+        Some(inf.entrada),
+        schema,
+    )?;
+    Ok(Some(Exportado { geracao, codigo }))
+}
+
+/// Valida `arquivo` contra `schema` numa thread própria, que emite `validacao` (no máximo a
+/// cada `INTERVALO`, e no fim) com a geração devolvida; a validação anterior do documento é
+/// cancelada. Sem `entrada`, a thread infere antes (arquivo de fora, ainda não varrido).
+fn validar_em_fundo<R: Runtime>(
+    app: AppHandle<R>,
+    doc: &Arc<Doc>,
+    id: u32,
+    arquivo: Arc<ArquivoLinhas>,
+    entrada: Option<nucleo::estrutura::Entrada>,
+    schema: String,
+) -> Result<u64, String> {
     let (geracao, cancelar) = {
         let mut e = doc.exportar.lock().map_err(|e| e.to_string())?;
         e.cancelar.store(true, Relaxed);
@@ -947,7 +1128,7 @@ fn exportar<R: Runtime>(
         e.geracao += 1;
         (e.geracao, Arc::clone(&e.cancelar))
     };
-    let doc = Arc::downgrade(&doc);
+    let doc = Arc::downgrade(doc);
     std::thread::spawn(move || {
         let avisar = |a: AndamentoValidacao| {
             let vale = doc
@@ -967,8 +1148,13 @@ fn exportar<R: Runtime>(
             invalidas: 0,
             falhas: Vec::new(),
         };
+        // shortcut: a inferência inteira só para saber se é JSONL ou JSON único; trocar por um
+        // detector leve se validar arquivo grande de fora demorar a começar.
+        let entrada = entrada.unwrap_or_else(|| {
+            nucleo::estrutura::inferir(arquivo.bytes(), &cancelar, |_| {}).entrada
+        });
         let mut aviso = Instant::now();
-        let r = nucleo::validar::validar(arquivo.bytes(), inf.entrada, &schema, &cancelar, |p| {
+        let r = nucleo::validar::validar(arquivo.bytes(), entrada, &schema, &cancelar, |p| {
             if aviso.elapsed() >= INTERVALO {
                 aviso = Instant::now();
                 avisar(vazio(p.varridas, p.total, false));
@@ -990,7 +1176,111 @@ fn exportar<R: Runtime>(
             }),
         }
     });
-    Ok(Some(Exportado { geracao, codigo }))
+    Ok(geracao)
+}
+
+/// Validação de outro arquivo (ou contra outro schema) em curso: a geração dos eventos
+/// `validacao` e o nome do que foi escolhido, para a interface mostrar.
+#[derive(Serialize)]
+struct Validando {
+    geracao: u64,
+    nome: String,
+}
+
+fn nome_de(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Valida outro arquivo, escolhido no diálogo do backend, contra a estrutura do documento
+/// (o mesmo schema do Exportar com `pedido`). `None` se o usuário cancelou.
+#[tauri::command]
+async fn validar_outro<R: Runtime>(
+    id: u32,
+    pedido: PedidoExportar,
+    extensoes: Vec<String>,
+    janela: tauri::WebviewWindow<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<Validando>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let ext: Vec<&str> = extensoes.iter().map(String::as_str).collect();
+    let escolhido = janela
+        .dialog()
+        .file()
+        .set_parent(&janela)
+        .add_filter("JSON, JSON Lines", &ext)
+        .blocking_pick_file();
+    let Some(p) = escolhido.and_then(|f| f.into_path().ok()) else {
+        return Ok(None);
+    };
+    validar_outro_em(janela.app_handle().clone(), &estado, id, pedido, &p).map(Some)
+}
+
+fn validar_outro_em<R: Runtime>(
+    app: AppHandle<R>,
+    estado: &Estado,
+    id: u32,
+    pedido: PedidoExportar,
+    caminho: &Path,
+) -> Result<Validando, String> {
+    let Some((inf, _)) = inferencia(estado, id)? else {
+        return Err("a estrutura ainda está sendo inferida".into());
+    };
+    let schema = pedido.schema(&inf.resumo);
+    let outro = Arc::new(abrir_linhas(&caminho.to_string_lossy())?);
+    let geracao = validar_em_fundo(app, &estado.doc(id)?, id, outro, None, schema)?;
+    Ok(Validando {
+        geracao,
+        nome: nome_de(caminho),
+    })
+}
+
+/// Valida o documento contra um JSON Schema de fora, escolhido no diálogo do backend. O schema
+/// é entrada não confiável: `nucleo::validar::compilar` limita tamanho, profundidade e `$ref`
+/// (nada é buscado). Schema recusado volta como erro. `None` se o usuário cancelou.
+#[tauri::command]
+async fn validar_com_schema<R: Runtime>(
+    id: u32,
+    janela: tauri::WebviewWindow<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<Validando>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let escolhido = janela
+        .dialog()
+        .file()
+        .set_parent(&janela)
+        .add_filter("JSON Schema", &["json"])
+        .blocking_pick_file();
+    let Some(p) = escolhido.and_then(|f| f.into_path().ok()) else {
+        return Ok(None);
+    };
+    validar_com_schema_em(janela.app_handle().clone(), &estado, id, &p).map(Some)
+}
+
+fn validar_com_schema_em<R: Runtime>(
+    app: AppHandle<R>,
+    estado: &Estado,
+    id: u32,
+    caminho: &Path,
+) -> Result<Validando, String> {
+    let schema = nucleo::validar::ler_schema(caminho)?;
+    nucleo::validar::compilar(&schema).map_err(|e| format!("schema recusado: {e}"))?;
+    let Some((inf, arquivo)) = inferencia(estado, id)? else {
+        return Err("a estrutura ainda está sendo inferida".into());
+    };
+    let geracao = validar_em_fundo(
+        app,
+        &estado.doc(id)?,
+        id,
+        arquivo,
+        Some(inf.entrada),
+        schema,
+    )?;
+    Ok(Validando {
+        geracao,
+        nome: nome_de(caminho),
+    })
 }
 
 /// Para a validação em curso (Esc, trocar de vista ou de aba).
@@ -1167,10 +1457,9 @@ async fn salvar_exportado<R: Runtime>(
         return Err("a estrutura ainda está sendo inferida".into());
     };
     let codigo = pedido.codigo(&inf.resumo);
-    let (filtro, ext) = if pedido.zod {
-        ("TypeScript", "ts")
-    } else {
-        ("JSON Schema", "json")
+    let (filtro, ext) = match pedido.formato {
+        Formato::Zod | Formato::Ts => ("TypeScript", "ts"),
+        Formato::Schema => ("JSON Schema", "json"),
     };
     // Só o nome do arquivo: a sugestão não escolhe pasta.
     let nome = Path::new(&nome)
@@ -1549,6 +1838,38 @@ fn valor(id: u32, v: usize, estado: State<'_, Estado>) -> Result<Option<String>,
     }
 }
 
+/// Abre `url` no navegador do sistema, nunca dentro do app. A interface só chama no clique ou no
+/// Enter do link e manda o `href` normalizado; aqui se recusa o que não for http(s) em ASCII
+/// visível, então nada vira argumento de outro programa nem de outro esquema (`file:`, `javascript:`).
+#[tauri::command]
+fn abrir_link(url: String) -> Result<(), String> {
+    if !link_valido(&url) {
+        return Err("link recusado: só http:// ou https://".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut c = std::process::Command::new("open");
+    #[cfg(windows)]
+    let mut c = std::process::Command::new("rundll32");
+    #[cfg(windows)]
+    c.arg("url.dll,FileProtocolHandler");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut c = std::process::Command::new("xdg-open");
+    let mut filho = c.arg(&url).spawn().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || filho.wait()); // recolhe o processo, sem zumbi
+    Ok(())
+}
+
+fn link_valido(url: &str) -> bool {
+    let resto = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    url.len() <= 2048
+        && resto.is_some_and(|r| !r.is_empty() && !r.starts_with('/'))
+        && url
+            .bytes()
+            .all(|b| (0x21..0x7f).contains(&b) && !b"\"<>\\^`{|}".contains(&b))
+}
+
 /// Roda o filtro jq `filtro` sobre `caminho` num processo filho (ver `filho`) e grava os
 /// resultados (JSON compacto, um por linha) num JSONL temporário, avisado no evento `consulta`.
 /// JSON único ou em várias linhas vira um documento; o resto, JSONL linha a linha. Assíncrono e
@@ -1760,6 +2081,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             limpar_recentes,
             recente_ausente,
             abrir,
+            seguir,
             nova_abertura,
             cancelar_abertura,
             fechar,
@@ -1776,6 +2098,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             regua,
             marcas,
             estrutura,
+            perfil,
             tabela,
             tabela_linhas,
             ordenar,
@@ -1786,10 +2109,13 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             regua_busca,
             caminhos,
             valor,
+            abrir_link,
             consultar,
             fechar_consulta,
             exportar,
             cancelar_validacao,
+            validar_outro,
+            validar_com_schema,
             salvar_exportado,
             diff_estrutura,
             diff_valores,
@@ -1964,6 +2290,30 @@ pub fn run() {
 
 #[cfg(test)]
 mod testes {
+    #[test]
+    fn link_so_http_em_ascii() {
+        use super::link_valido;
+        assert!(link_valido("https://exemplo.test/a?b=1#c"));
+        assert!(link_valido("http://xn--exmplo-4of.test/%E2%80%AE"));
+        for u in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://",
+            "https:///x",
+            "https://a b.test",
+            "https://a.test/\"x",
+            "https://á.test",
+            "-a https://x.test",
+            "https://x.test\n",
+        ] {
+            assert!(!link_valido(u), "{u}");
+        }
+        assert!(!link_valido(&format!(
+            "https://x.test/{}",
+            "a".repeat(2048)
+        )));
+    }
+
     use super::*;
     use serde_json::{Value, json};
     use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
@@ -2015,7 +2365,93 @@ mod testes {
         assert!(!a.registrar(y).load(Relaxed));
     }
 
+    /// Modo seguir pelo IPC: cresce sem reabrir, espera a linha parcial e reabre ao truncar.
+    #[test]
+    fn seguir_pelo_ipc() {
+        let pasta = tempfile::tempdir().unwrap();
+        let log = pasta.path().join("log.jsonl");
+        std::fs::write(&log, "{\"i\":0}\n{\"i\":1}\n").unwrap();
+        let app = comandos(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let chamar = |cmd: &str, args: Value| -> Result<Value, Value> {
+            let pedido = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            };
+            get_ipc_response(&janela, pedido).map(|b| b.deserialize::<Value>().unwrap())
+        };
+        let caminho = log.to_str().unwrap();
+        let seguir = || chamar("seguir", json!({ "caminho": caminho, "id": 1 }));
+        // Sem concessão, nem abre nem segue.
+        assert!(chamar("abrir", json!({ "caminho": caminho })).is_err());
+        app.state::<abertura::Concedidos>().conceder(&log);
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": caminho })),
+            Ok(json!({"id": 1, "total": 2}))
+        );
+        let acrescentar = |b: &[u8]| {
+            std::io::Write::write_all(
+                &mut std::fs::OpenOptions::new().append(true).open(&log).unwrap(),
+                b,
+            )
+            .unwrap()
+        };
+        // 1ª chamada: troca pela cópia (mesmas 2 linhas, nenhuma nova).
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 2, "registros": 2, "novas": 0, "reescrito": false}))
+        );
+        acrescentar(b"{\"i\":2}\n{\"i\":");
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 3, "registros": 3, "novas": 1, "reescrito": false}))
+        );
+        let ultima = chamar("linhas", json!({"id": 1, "inicio": 2, "quantidade": 5})).unwrap();
+        assert_eq!(
+            ultima.as_array().unwrap().len(),
+            1,
+            "a linha parcial não entra"
+        );
+        acrescentar(b"3}\n");
+        assert_eq!(seguir().unwrap()["registros"], 4);
+        std::fs::write(&log, "{\"novo\":true}\n").unwrap();
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 1, "registros": 1, "novas": 0, "reescrito": true}))
+        );
+        // Pausa (a interface só deixa de chamar) e o arquivo é trocado por outro maior:
+        // retomar reabre, não acrescenta à árvore de antes.
+        std::fs::write(&log, "{\"z\":1}\n{\"z\":2}\n{\"z\":3}\n").unwrap();
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 3, "registros": 3, "novas": 0, "reescrito": true}))
+        );
+        acrescentar(b"{}\n");
+        assert_eq!(seguir().unwrap()["novas"], 1);
+        // 1º seguir de arquivo trocado depois do `abrir` (o caso do verificador): reabre.
+        std::fs::write(&log, "{\"a\":[1,2,3]}\n{\"i\":1}\n").unwrap();
+        assert_eq!(
+            chamar("abrir", json!({ "caminho": caminho, "id": 1 })),
+            Ok(json!({"id": 1, "total": 2}))
+        );
+        std::fs::write(&log, "{\"z\":1}\n{\"z\":2}\n{\"z\":3}\n{\"z\":4}\n").unwrap();
+        assert_eq!(
+            seguir(),
+            Ok(json!({"total": 4, "registros": 4, "novas": 0, "reescrito": true}))
+        );
+    }
+
     /// Os nomes de comando e de argumento são os que `src/main.ts` manda.
+
     #[test]
     fn comandos_pelo_ipc() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -2089,11 +2525,11 @@ mod testes {
             Ok(
                 json!({"entrada": "jsonl", "registros": 1, "invalidas": 1, "caminhos": [
                 {"caminho": ".", "relacao": "registro", "profundidade": 0, "presenca": 1,
-                 "de": 1, "tipos": [["objeto", 1, 0]]},
+                 "de": 1, "tipos": [["objeto", 1, 0]], "avisos": []},
                 {"caminho": ".a", "relacao": "campo", "profundidade": 1, "presenca": 1,
-                 "de": 1, "tipos": [["lista", 1, 0]]},
+                 "de": 1, "tipos": [["lista", 1, 0]], "avisos": []},
                 {"caminho": ".a[]", "relacao": "elemento", "profundidade": 2, "presenca": 2,
-                 "de": 1, "tipos": [["inteiro", 2, 0]]}
+                 "de": 1, "tipos": [["inteiro", 2, 0]], "avisos": []}
             ], "discriminadores": []})
             )
         );
@@ -2104,28 +2540,79 @@ mod testes {
             app.listen_any("validacao", move |e| {
                 let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
             });
-            let pedido = |zod| json!({"pedido": {"zod": zod, "literal": false, "numero": false}});
-            for zod in [false, true] {
-                let r = em(1, "exportar", pedido(zod)).unwrap();
+            let pedido = |f| json!({"pedido": {"formato": f, "literal": false, "numero": true}});
+            let fim_de = |geracao: &Value| {
+                std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
+                    .find(|v| v["fim"] == true && &v["geracao"] == geracao)
+                    .expect("validação não terminou")
+            };
+            let contagem = |v: &Value| {
+                (
+                    v["id"].clone(),
+                    v["passam"].clone(),
+                    v["falham"].clone(),
+                    v["invalidas"].clone(),
+                )
+            };
+            for (formato, marca) in [
+                ("schema", "2020-12"),
+                ("zod", "z.object"),
+                ("ts", "export type Registro = {"),
+            ] {
+                let r = em(1, "exportar", pedido(formato)).unwrap();
                 let codigo = r["codigo"].as_str().unwrap();
-                assert!(
-                    codigo.contains(if zod { "z.object" } else { "2020-12" }),
-                    "{codigo}"
-                );
-                let fim =
-                    std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
-                        .find(|v| v["fim"] == true && v["geracao"] == r["geracao"])
-                        .expect("validação não terminou");
+                assert!(codigo.contains(marca), "{codigo}");
+                let fim = fim_de(&r["geracao"]);
                 assert_eq!(
-                    (
-                        &fim["id"],
-                        &fim["passam"],
-                        &fim["falham"],
-                        &fim["invalidas"]
-                    ),
-                    (&json!(1), &json!(1), &json!(0), &json!(1)),
+                    contagem(&fim),
+                    (json!(1), json!(1), json!(0), json!(1)),
                     "{fim}"
                 );
+            }
+            // Outro arquivo contra a estrutura deste: nenhum registro de `tipos` tem `.a`.
+            let ts = serde_json::from_value::<PedidoExportar>(pedido("ts")["pedido"].clone());
+            let v = validar_outro_em(
+                app.handle().clone(),
+                &app.state::<Estado>(),
+                1,
+                ts.unwrap(),
+                tipos.path(),
+            )
+            .unwrap();
+            let fim = fim_de(&json!(v.geracao));
+            assert_eq!(
+                contagem(&fim),
+                (json!(1), json!(0), json!(3), json!(1)),
+                "{fim}"
+            );
+            assert!(
+                fim["falhas"][0][1].as_str().unwrap().contains("\"a\""),
+                "{fim}"
+            );
+            // Este arquivo contra um schema de fora: `.a` precisa ser texto, e é lista.
+            let schema = |conteudo: &str| {
+                let mut s = tempfile::NamedTempFile::new().unwrap();
+                std::io::Write::write_all(&mut s, conteudo.as_bytes()).unwrap();
+                s
+            };
+            let fora = schema(r#"{"properties":{"a":{"type":"string"}}}"#);
+            let com_schema = |s: &tempfile::NamedTempFile| {
+                validar_com_schema_em(app.handle().clone(), &app.state::<Estado>(), 1, s.path())
+            };
+            let v = com_schema(&fora).unwrap();
+            let fim = fim_de(&json!(v.geracao));
+            assert_eq!(
+                contagem(&fim),
+                (json!(1), json!(0), json!(1), json!(1)),
+                "{fim}"
+            );
+            // Schema hostil volta como erro, antes de validar qualquer coisa.
+            for hostil in [
+                r#"{"$ref":"https://exemplo.invalid/s.json"}"#,
+                "{\"items\":",
+            ] {
+                let e = com_schema(&schema(hostil)).err().unwrap();
+                assert!(e.starts_with("schema recusado: "), "{e}");
             }
             assert_eq!(em(1, "cancelar_validacao", json!({})), Ok(Value::Null));
         }
@@ -2271,6 +2758,18 @@ mod testes {
             ),
             (json!(2), json!(3))
         );
+        assert_eq!(e["caminhos"][2]["avisos"], json!([]));
+        // Perfil de `.x`: varre o arquivo; linhas com e sem o campo.
+        let p = em(2, "perfil", json!({"indice": 2})).unwrap();
+        assert_eq!(
+            (
+                p["com"].clone(),
+                p["linhas_sem"].clone(),
+                p["oculto"].clone()
+            ),
+            (json!(2), json!([1]), json!(false))
+        );
+        assert!(em(2, "perfil", json!({"indice": 99})).is_err());
 
         // Copiar: caminho nos três formatos e valor (texto decodificado).
         assert_eq!(em(2, "alternar", json!({"v": 0})), Ok(json!(6)));

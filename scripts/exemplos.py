@@ -11,6 +11,7 @@
 Tudo fictício. Os testes em app/src-tauri/src/exemplos.rs conferem os dois pelo `nucleo`.
 """
 
+import base64
 import json
 from pathlib import Path
 
@@ -265,6 +266,17 @@ TEXTOS = ["Olá! Meu abacaxi de plástico chegou amassado 🦜", "A escada só s
           "Recebi dois bules. Devolvo um?", "Quando chega a corda de 7 metros e meio?"]
 
 
+# Valores inteligentes: PNG 16×16 gerado por código (xadrez em degradê) e JWT fictício, sem
+# segredo; a assinatura é texto qualquer, o Jasão nunca a confere.
+PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABK0lEQVR42l3PoW6GMBSG4f+OdgGViEoEEjGJQCIqmzeViEkEEoFEVCImEUhEZUVl/bpMDbXskBz15jzie319//zdO6WnGIqj/O+flJMSKInykiD3ZEN2ZAnySQ7kRH6A2BMN0REliCcxEBPxAa6ey3A5LgmukytwJa7XG4fi0BwNx/+nD46ZY+Xwst9gV+yavWGXYJ/ZV3Yv+w02xabZGjYJtpltZfOy32BRLJqlYZFgmVlWFi/7Y/TUMxkmxyRHTydTYEpMDzD2jIbRMUownoyBMTE+gO2xBuuwEtgTG7AJ+wBDz2AYHIMEw8kQGBLDPbpTdJquoZOju5lupfOy36BVtJq2oZWgnWlXWi/7DWpFrakbagnqmXql9rLfoFJUmqqhkqCaqVYqL/sv4fhHn5VuItAAAAAASUVORK5CYII="
+)
+_b64 = lambda o: base64.urlsafe_b64encode(json.dumps(o, separators=(",", ":"), ensure_ascii=False).encode()).decode().rstrip("=")
+JWT = ".".join([_b64({"alg": "HS256", "typ": "JWT"}),
+                _b64({"sub": "cliente-ficticio-42", "nome": "Ganimedes Lua", "iat": 1700000000, "exp": 1900000000}),
+                "assinatura-ficticia-nao-conferida"])
+
+
 def aninhado(n: int):
     no = {"fundo": "você chegou ao fim: 12 níveis abaixo da raiz"}
     for i in range(n - 1, 0, -1):
@@ -298,6 +310,14 @@ AMOSTRAS = [
     {"tipo": "amostra", "nome": "chaves difíceis", "valor": {
         "chave com espaço": 1, "": "chave vazia", "a/b~c": "barra e til", "123": "chave que parece número",
         "ação": "chave com acento", "aspas\"dentro": True}},
+    {"tipo": "amostra", "nome": "valores inteligentes", "valor": {
+        "criado_em": 1700000000, "id": 1700000000, "atualizado_ms": 1763900000000,
+        "ultima_visita": "2026-11-20T09:30:00-03:00",
+        "cor_marca": "#2f81f7", "cor_fundo": "rgb(246, 248, 250)", "cor_alerta": "rgba(207, 34, 46, 0.5)",
+        "site": "https://exemplo.test/produtos?id=42",
+        "logo": f"data:image/png;base64,{PNG}", "miniatura": PNG, "token": JWT,
+        "payload_texto": json.dumps({"evento": "compra", "itens": [{"sku": "PED-0042", "qtd": 2}],
+                                     "total": 12345678901234567890}, separators=(",", ":"))}},
 ]
 
 

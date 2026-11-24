@@ -51,6 +51,8 @@ pub struct Opcoes<'a> {
     pub cancelar: Option<&'a AtomicBool>,
     /// Chamado com (bytes lidos do compactado, total do compactado), no máximo a cada 1 MiB.
     pub progresso: Option<&'a dyn Fn(u64, u64)>,
+    /// Tetos da conversão de MessagePack, CBOR, BSON, YAML e TOML (ver `formatos`).
+    pub formatos: crate::formatos::Limites,
 }
 
 impl Default for Opcoes<'_> {
@@ -66,6 +68,7 @@ impl Default for Opcoes<'_> {
             max_razao: 100,
             cancelar: None,
             progresso: None,
+            formatos: crate::formatos::Limites::default(),
         }
     }
 }
@@ -83,7 +86,7 @@ impl std::fmt::Display for Cancelada {
 
 impl std::error::Error for Cancelada {}
 
-fn cancelado() -> io::Error {
+pub(crate) fn cancelado() -> io::Error {
     io::Error::other(Cancelada)
 }
 
@@ -123,7 +126,7 @@ pub fn razao_estourada(e: &io::Error) -> bool {
 }
 
 /// Saída máxima aceita para um compactado de `total` bytes.
-fn limite(op: &Opcoes, total: u64) -> u64 {
+pub(crate) fn limite(op: &Opcoes, total: u64) -> u64 {
     op.max_saida
         .min(total.saturating_mul(op.max_razao).max(SAIDA_LIVRE))
 }
@@ -304,17 +307,8 @@ fn tamanho_declarado(arquivo: &mut File, formato: Formato, total: u64) -> io::Re
     Ok(declarado)
 }
 
-/// Descompacta `caminho` para o cache (ou reaproveita o que já está lá) e devolve o caminho do
-/// arquivo descompactado.
-pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<PathBuf> {
-    let mut arquivo = File::open(caminho)?;
-    let meta = arquivo.metadata()?;
-    let total = meta.len();
-    let mtime = meta
-        .modified()?
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+/// Pasta do cache de `op` (ou a do sistema), criada e só do dono.
+pub(crate) fn pasta_cache(op: &Opcoes) -> io::Result<PathBuf> {
     let dir = match &op.dir_cache {
         Some(d) => d.clone(),
         None => dir_cache_sistema()?,
@@ -331,12 +325,57 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
         ));
     }
     privado(&dir, 0o700)?;
+    Ok(dir)
+}
+
+/// Descompacta `caminho` para o cache (ou reaproveita o que já está lá) e devolve o caminho do
+/// arquivo descompactado.
+pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<PathBuf> {
+    em_cache(
+        caminho,
+        op,
+        b"",
+        |arquivo, total| {
+            // O declarado vem do arquivo (pode mentir): só uma dica, nunca acima do que o limite
+            // deixa sair. Daí em diante a reserva cresce com o que de fato sai (ver `Reserva`).
+            let limite = limite(op, total);
+            let estimativa = tamanho_declarado(arquivo, formato, total)?
+                .max(total)
+                .min(limite);
+            Ok((estimativa, limite))
+        },
+        |arquivo, total, saida| descompactar(arquivo, formato, total, saida, op),
+    )
+}
+
+/// Gera no cache, uma vez por versão do original, o JSON/JSONL derivado de `caminho`.
+/// `etiqueta` entra na chave (separa conversões diferentes do mesmo arquivo); `estimar` devolve
+/// (reserva inicial, saída máxima); `gerar` escreve a saída e devolve quantos bytes escreveu.
+pub(crate) fn em_cache(
+    caminho: &Path,
+    op: &Opcoes,
+    etiqueta: &[u8],
+    estimar: impl FnOnce(&mut File, u64) -> io::Result<(u64, u64)>,
+    gerar: impl FnOnce(&mut File, u64, &mut dyn Write) -> io::Result<u64>,
+) -> io::Result<PathBuf> {
+    let mut arquivo = File::open(caminho)?;
+    let meta = arquivo.metadata()?;
+    let total = meta.len();
+    let mtime = meta
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let dir = pasta_cache(op)?;
     let canonico = fs::canonicalize(caminho)?;
-    let chave = fnv(&[
+    let partes: [&[u8]; 4] = [
         canonico.as_os_str().as_encoded_bytes(),
         &total.to_le_bytes(),
         &mtime.to_le_bytes(),
-    ]);
+        etiqueta,
+    ];
+    // Sem etiqueta (compactado), a chave é a de antes: o cache que já existe continua valendo.
+    let chave = fnv(&partes[..if etiqueta.is_empty() { 3 } else { 4 }]);
     let destino = dir.join(format!("{chave:016x}.{EXT_CACHE}"));
 
     if destino.is_file() {
@@ -352,12 +391,7 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
         return Ok(destino);
     }
 
-    // O declarado vem do arquivo (pode mentir): só uma dica, nunca acima do que o limite deixa
-    // sair. Daí em diante a reserva cresce com o que de fato sai (ver `Reserva`).
-    let limite = limite(op, total);
-    let estimativa = tamanho_declarado(&mut arquivo, formato, total)?
-        .max(total)
-        .min(limite);
+    let (estimativa, limite) = estimar(&mut arquivo, total)?;
     reservar(&dir, op.teto_cache, estimativa, 0)?;
 
     let tmp = dir.join(format!(
@@ -371,7 +405,7 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
     let mut guarda = Parcial(Some(tmp.clone()));
     let saida = BufWriter::with_capacity(MIB as usize, File::create(&tmp)?);
     privado(&tmp, 0o600)?;
-    let saida = Reserva {
+    let mut saida = Reserva {
         dentro: saida,
         dir: &dir,
         teto: op.teto_cache,
@@ -379,13 +413,13 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
         reservado: estimativa,
         escritos: 0,
     };
-    descompactar(&mut arquivo, formato, total, saida, op).map_err(|e| {
+    gerar(&mut arquivo, total, &mut saida).map_err(|e| {
         // Só o disco cheio do sistema; o nosso (`reservar`) já tem mensagem.
         if e.kind() == ErrorKind::StorageFull && e.get_ref().is_none() {
             io::Error::new(
                 ErrorKind::StorageFull,
                 format!(
-                    "disco cheio ao descompactar em {}; libere espaço",
+                    "disco cheio ao gravar o cache em {}; libere espaço",
                     dir.display()
                 ),
             )
@@ -402,13 +436,13 @@ pub fn para_cache(caminho: &Path, formato: Formato, op: &Opcoes) -> io::Result<P
 
 /// Permissão só do dono (o cache guarda o conteúdo de arquivos do usuário).
 #[cfg(unix)]
-fn privado(p: &Path, modo: u32) -> io::Result<()> {
+pub(crate) fn privado(p: &Path, modo: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(p, fs::Permissions::from_mode(modo))
 }
 
 #[cfg(not(unix))]
-fn privado(_: &Path, _: u32) -> io::Result<()> {
+pub(crate) fn privado(_: &Path, _: u32) -> io::Result<()> {
     Ok(())
 }
 

@@ -6,12 +6,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { aposFechar, ciclo, EXTENSOES, nomes, porAtalho, posicaoNova, triar } from "./abas";
+import { aposFechar, ciclo, EXTENSOES, naoVistas, nomes, porAtalho, posicaoNova, triar } from "./abas";
 import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
+import { abrirLinkDe, criarDetalhe, selo } from "./detalhe";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
-import { type Estrutura, type ItemE, itens as itensEstrutura } from "./estrutura";
-import { erroDoRust, type Motivo, t } from "./i18n";
+import { detalhe as detalheE, type Estrutura, type ItemE, itens as itensEstrutura, type Perfil } from "./estrutura";
+import { erroDoRust, type Motivo, t, tamanho } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { criarConsulta } from "./consulta";
@@ -57,6 +58,8 @@ const arvore = $("arvore");
 const alto = $("alto");
 const linhasEl = $("linhas");
 const status = $("status");
+const avisar = (m: string) => void (status.textContent = m);
+const detalhe = criarDetalhe($("detalhe"), avisar, () => requestAnimationFrame(() => mostrarLinha(sel)));
 const migalhas = $("migalhas");
 const copiar = $<HTMLButtonElement>("copiar");
 const textoEl = $("texto");
@@ -88,6 +91,9 @@ const estruturaLinhas = $("estrutura-linhas");
 let estr: ItemE[] | null = null; // null: ainda não pedida (ou a inferência não acabou)
 let selE = 0;
 let registrosE = 0;
+const perfilEl = $("estrutura-perfil");
+let perfilDe = ""; // documento, geração e caminho do perfil mostrado (ou pedido)
+let esperaPerfil: number | undefined;
 const tabelaEl = $("tabela");
 const grade = criarGrade(tabelaEl, {
   geracao: () => resumo?.geracao,
@@ -225,7 +231,7 @@ function linhaHtml(v: number, l: Linha | undefined): string {
   return `<div class="row" id="l${v}" data-v="${v}" role="treeitem" aria-level="${l.prof + 1}"
     aria-selected="${v === sel}"${l.expansivel ? ` aria-expanded="${l.aberto}"` : ""}
     ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}" aria-setsize="${l.irmaos}"`}
-    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${visivel(chave(l))}</span>${valor(l)}
+    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${visivel(chave(l))}</span>${valor(l)}${selo(l)}
     <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(chave(l))}">${icone("copy")}</button></div>`;
 }
 
@@ -270,6 +276,7 @@ function rodape(): void {
     verFormatado.disabled = true;
     migalhas.innerHTML = it ? `<li>${visivel(it.caminho)}</li>` : "";
     migalhasDe = "";
+    void detalhe.mostrar("", undefined, 0);
     return;
   }
   if (modo === "tabela") {
@@ -283,6 +290,7 @@ function rodape(): void {
   copiar.disabled = !atual;
   verFormatado.disabled = !atual || atual.erro !== null;
   const de = atual ? `${docAtivo()}:${versao}:${sel}` : "";
+  void detalhe.mostrar(de, atual, sel);
   if (de === migalhasDe) return;
   migalhasDe = de;
   if (!atual) {
@@ -457,7 +465,27 @@ function desenharEstrutura(): void {
     estruturaEl.setAttribute("aria-activedescendant", el.id);
     el.scrollIntoView({ block: "nearest" });
   } else estruturaEl.removeAttribute("aria-activedescendant");
+  pedirPerfil();
   rodape();
+}
+
+/** Estatísticas do caminho selecionado, pedidas depois de uma pausa (o núcleo varre o arquivo). */
+function pedirPerfil(): void {
+  const it = estr?.[selE];
+  const indice = it?.indice ?? null;
+  perfilEl.hidden = modo !== "estrutura" || indice === null || !registrosE;
+  const de = `${docAtivo()}:${resumo?.geracao}:${indice}`;
+  if (perfilEl.hidden || de === perfilDe) return;
+  perfilDe = de;
+  clearTimeout(esperaPerfil);
+  perfilEl.innerHTML = `<p class="pm">${esc(t.estrutura.calculando)}</p>`;
+  esperaPerfil = window.setTimeout(() => {
+    chamar<Perfil | null>("perfil", { indice })
+      .then((p) => {
+        if (p && de === perfilDe) perfilEl.innerHTML = detalheE(it!.caminho, p, t, fmt);
+      })
+      .catch((erro) => de === perfilDe && (status.textContent = `${t.erro}: ${erro}`));
+  }, 200);
 }
 
 function moverE(i: number): void {
@@ -511,6 +539,8 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
   arvore.hidden = m !== "arvore";
   textoEl.hidden = m !== "texto";
   estruturaEl.hidden = m !== "estrutura";
+  perfilEl.hidden = true; // Estrutura mostra de novo em `pedirPerfil`
+  perfilDe = "";
   $("tabela-vista").hidden = m !== "tabela";
   exportarEl.hidden = m !== "exportar";
   diffEl.hidden = m !== "diff";
@@ -658,7 +688,7 @@ interface Aba {
   arquivo: string | null; // arquivo do usuário (dá o nome da aba)
   caminho: string | null; // o aberto agora: o arquivo ou o resultado de uma consulta
   ms: string; // tempo de abertura, para o painel
-  visao?: Modo; // visão pedida ao abrir; vale quando a aba for preparada
+  visao?: Modo | "painel"; // visão pedida ao abrir; vale quando a aba for preparada
   total: number;
   registros: number;
   sel: number;
@@ -672,6 +702,8 @@ interface Aba {
   estr: ItemE[] | null; // Estrutura já formatada (null: ainda não pedida)
   selE: number;
   registrosE: number;
+  seguindo: boolean; // modo seguir ligado: o arquivo é relido a cada SEGUIR_MS
+  novas: number; // registros que chegaram e o usuário ainda não viu
 }
 const listaEl = $("arquivos-lista");
 const semArquivo = $("sem-arquivo");
@@ -684,7 +716,7 @@ const abaAtiva = (): Aba | undefined => lista[ativa];
 const abaVazia = (): Aba => ({
   chave: ++chaves, doc: null, arquivo: null, caminho: null, ms: "", total: 0, registros: 0, sel: 0, modo: "arvore",
   noPainel: false, resumo: null, atual: undefined, alvo: 0, rolagem: [0, 0], status: "",
-  estr: null, selE: 0, registrosE: 0,
+  estr: null, selE: 0, registrosE: 0, seguindo: false, novas: 0,
 });
 /** Acima desta soma de registros nas abas, abrir mais um avisa (o Rust guarda índice e árvore de cada). */
 const AVISO_REGISTROS = 50_000_000;
@@ -735,6 +767,7 @@ function ativar(i: number, foco = false): void {
   ({ total, registros, sel, modo, noPainel, resumo, atual, alvo, estr, selE, registrosE } = a);
   status.textContent = a.status;
   mostrarCancelar();
+  mostrarSeguir();
   // Respostas em voo eram da aba que saiu.
   versao++;
   selecao++;
@@ -751,7 +784,7 @@ function ativar(i: number, foco = false): void {
   inicioBtn.disabled = vazia;
   faixa.textContent = "";
   if (vazia) regua.abrir(0, false);
-  else if (!resumo) void preparar(a, a.visao);
+  else if (!resumo) preparando = preparar(a, a.visao);
   else {
     prepararRegua();
     $("painel-nome").textContent = semInvisiveis(nomesDasAbas()[i]);
@@ -792,6 +825,102 @@ void listen<{ abertura: number; lidos: number; total: number }>("descompactando"
   }
 });
 
+// ---- Modo seguir: arquivo que cresce (como `tail -f`). O Rust lê só o que chegou (`nucleo::vivo`). ----
+
+const SEGUIR_MS = 1000;
+const seguirBtn = $<HTMLButtonElement>("seguir");
+const novasBtn = $<HTMLButtonElement>("novas");
+/** Abas com leitura em voo: um intervalo lento não empilha chamadas. */
+const lendo = new Set<Aba>();
+/** Preparo em curso da aba ativa (o modo seguir rola até o fim depois dele). */
+let preparando: Promise<void> = Promise.resolve();
+seguirBtn.title = t.seguir.dica;
+novasBtn.title = t.seguir.irAoFim;
+
+/** Seguir vale para o arquivo do usuário aberto como está (não exemplo nem resultado de consulta). */
+const podeSeguir = (a: Aba) => a.doc !== null && !!a.arquivo && a.caminho === a.arquivo && !nomeExemplo(a.arquivo);
+
+function mostrarSeguir(): void {
+  const a = abaAtiva();
+  seguirBtn.hidden = !a || !podeSeguir(a);
+  novasBtn.hidden = seguirBtn.hidden || !a?.novas;
+  if (!a) return;
+  seguirBtn.setAttribute("aria-pressed", String(a.seguindo));
+  seguirBtn.textContent = a.seguindo ? t.seguir.pausar : t.seguir.seguir;
+  novasBtn.textContent = t.seguir.novas(fmt(a.novas));
+}
+
+/** Elemento que rola no modo atual (sem rolagem própria: Painel, Estrutura, Exportar). */
+const rolavel = (): HTMLElement | null =>
+  noPainel ? null : modo === "arvore" ? arvore : modo === "texto" ? textoEl : modo === "tabela" ? tabelaEl : null;
+const noFim = (): boolean => {
+  const el = rolavel();
+  return !!el && el.scrollTop + el.clientHeight >= el.scrollHeight - 2 * ALTURA;
+};
+const irAoFim = () => void rolavel()?.scrollTo({ top: rolavel()!.scrollHeight });
+
+async function lerSeguido(a: Aba): Promise<void> {
+  lendo.add(a);
+  try {
+    const r = await invoke<{ total: number; registros: number; novas: number; reescrito: boolean }>("seguir", {
+      caminho: a.arquivo,
+      id: a.doc,
+    });
+    // Pausada no meio: o Rust já instalou a leitura, então a aba a aplica do mesmo jeito.
+    if (!lista.includes(a)) return; // fechada no meio
+    const ativaAgora = a === abaAtiva();
+    const fim = ativaAgora && noFim();
+    if (fim) a.novas = 0;
+    if (r.novas || r.reescrito) {
+      if (ativaAgora) guardar(a);
+      a.novas = naoVistas(a.novas, r, fim);
+      Object.assign(a, {
+        total: r.total, registros: r.registros, resumo: null, estr: null, visao: a.noPainel ? "painel" : a.modo,
+        status: r.reescrito ? t.seguir.reescrito : t.seguir.seguindo(plural(r.registros, t.registros)),
+      });
+      if (r.reescrito) Object.assign(a, { sel: 0, atual: undefined, alvo: 0, rolagem: [0, 0] });
+      if (ativaAgora) {
+        ativar(ativa);
+        await preparando;
+        if (fim && a === abaAtiva()) irAoFim();
+      }
+    }
+    if (a === abaAtiva()) mostrarSeguir();
+  } catch (erro) {
+    // Sem o arquivo (no meio de uma rotação, apagado) ou compactado: pausa e diz por quê.
+    if (!lista.includes(a)) return;
+    a.seguindo = false;
+    a.status = `${t.erro}: ${erroDoRust(String(erro))}`;
+    if (a === abaAtiva()) {
+      status.textContent = a.status;
+      mostrarSeguir();
+    }
+  } finally {
+    lendo.delete(a);
+  }
+}
+
+setInterval(() => {
+  for (const a of lista) if (a.seguindo && !lendo.has(a)) void lerSeguido(a);
+}, SEGUIR_MS);
+
+seguirBtn.addEventListener("click", () => {
+  const a = abaAtiva();
+  if (!a || !podeSeguir(a)) return;
+  // Pausar só para de chamar: a cópia fica no Rust e, ao retomar, confere o original contra a
+  // última leitura (trocado no meio da pausa: reabre).
+  a.seguindo = !a.seguindo;
+  if (a.seguindo && !lendo.has(a)) void lerSeguido(a);
+  mostrarSeguir();
+});
+novasBtn.addEventListener("click", () => {
+  const a = abaAtiva();
+  if (!a) return;
+  a.novas = 0;
+  irAoFim();
+  mostrarSeguir();
+});
+
 /** Erro do `abrir` no idioma da interface (os da descompactação vêm como código do Rust). */
 function erroAoAbrir(erro: unknown): string {
   const e = String(erro);
@@ -824,6 +953,7 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo, forcar = false): P
     Object.assign(a, {
       doc: r.id, caminho, ms, visao, total: r.total, registros: r.total, sel: 0, atual: undefined, alvo: 0,
       resumo: null, rolagem: [0, 0], status: t.aberto(plural(r.total, t.registros), ms), estr: null, selE: 0,
+      seguindo: false, novas: 0, // `abrir` no Rust sai do modo seguir
     });
     const soma = lista.reduce((n, x) => n + x.registros, 0);
     if (soma > AVISO_REGISTROS) a.status += ` · ${t.abasArquivos.memoria(fmt(soma))}`;
@@ -853,7 +983,7 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo, forcar = false): P
 }
 
 /** Primeira vez na tela de um documento já aberto no Rust: resumo, régua e visão inicial. */
-async function preparar(a: Aba, visao?: Modo): Promise<void> {
+async function preparar(a: Aba, visao?: Modo | "painel"): Promise<void> {
   const v = versao;
   try {
     const r = await chamar<Resumo>("resumo");
@@ -1019,10 +1149,6 @@ function destinoAoAbrir(): Modo | "painel" {
   return p === "painel" ? "painel" : p === "sugerido" ? sugerido() : (p as Modo);
 }
 
-const tamanho = (b: number) => {
-  const [unit, base] = b >= 1e9 ? ["gigabyte", 1e9] : b >= 1e6 ? ["megabyte", 1e6] : b >= 1e3 ? ["kilobyte", 1e3] : ["byte", 1];
-  return new Intl.NumberFormat(t.lang, { style: "unit", unit, unitDisplay: "short", maximumFractionDigits: 1 }).format(b / (base as number));
-};
 
 /** Selo e indicadores: refeitos a cada aviso de progresso da varredura. */
 function desenharAndamento(): void {
@@ -1076,6 +1202,7 @@ linhasEl.addEventListener("click", (e) => {
   const v = Number(row.dataset.v);
   const l = linhaEm(v);
   sel = v;
+  if (alvo.closest("[data-link]") && l) void abrirLinkDe(l, v, avisar);
   if (alvo.closest("[data-cp]") && l) copiarComo(v, "jq", alvo.closest<HTMLElement>("[data-cp]")!);
   else if (alvo.closest("[data-tg]")) void alternar(v);
   else desenhar();
@@ -1083,7 +1210,7 @@ linhasEl.addEventListener("click", (e) => {
 });
 linhasEl.addEventListener("dblclick", (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>(".row[data-v]");
-  if (row && !(e.target as HTMLElement).closest("[data-tg],[data-cp]") && linhaEm(Number(row.dataset.v))?.expansivel)
+  if (row && !(e.target as HTMLElement).closest("[data-tg],[data-cp],[data-link]") && linhaEm(Number(row.dataset.v))?.expansivel)
     void alternar(Number(row.dataset.v));
 });
 linhasEl.addEventListener("contextmenu", (e) => {
@@ -1109,6 +1236,10 @@ estruturaLinhas.addEventListener("click", (e) => {
 });
 estruturaLinhas.addEventListener("dblclick", (e) => {
   if ((e.target as HTMLElement).closest("[data-i]")) void abrirOcorrencia();
+});
+perfilEl.addEventListener("click", (e) => {
+  const l = (e.target as HTMLElement).closest<HTMLElement>("[data-l]");
+  if (l) void focarRegistro(Number(l.dataset.l));
 });
 verFormatado.addEventListener("click", () => void abrirFormatado());
 $("formatado-fechar").addEventListener("click", () => $<HTMLDialogElement>("formatado").close());
@@ -1286,6 +1417,7 @@ exportarEl.setAttribute("aria-label", t.exportar.rotulo);
 abas.diff.firstChild!.textContent = t.diff.aba;
 diffEl.setAttribute("aria-label", t.diff.rotulo);
 estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);
+perfilEl.setAttribute("aria-label", t.estrutura.perfil);
 $("abas").setAttribute("aria-label", t.valores);
 listaEl.setAttribute("aria-label", t.abasArquivos.rotulo);
 $("nova-aba").setAttribute("aria-label", t.abasArquivos.nova);

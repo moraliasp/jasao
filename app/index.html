@@ -107,6 +107,23 @@
       .row:hover .cp { opacity: 1; }
       @media (hover: none) { .row .cp { opacity: 1; } }
       .views kbd { margin-left: 6px; font: 11px var(--mono); color: var(--bar-muted); font-weight: 400; }
+      /* Valores inteligentes: selo na linha e painel do valor selecionado. */
+      .smart { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 0 6px; height: 18px; border-radius: 9px; font: 11px var(--mono); color: var(--bar-muted); background: var(--hover); }
+      .smart .i { width: 12px; height: 12px; }
+      .sw { width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--border); }
+      .lk { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; font: inherit; color: var(--accent); cursor: pointer; }
+      .lk:hover span, .lk:focus-visible span { text-decoration: underline; }
+      .lk .i { width: 12px; height: 12px; flex: none; }
+      .detalhe { flex: none; max-height: 40%; overflow: auto; margin-top: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.5 var(--mono); }
+      .detalhe .rot { font: 600 11px var(--mono); color: var(--bar-muted); text-transform: uppercase; letter-spacing: .04em; margin: 4px 0; }
+      .detalhe pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
+      .detalhe .lk { word-break: break-all; text-align: left; }
+      .detalhe .smart { height: 22px; font-size: 12.5px; color: inherit; }
+      .detalhe .smart .sw { width: 16px; height: 16px; }
+      .detalhe figure { margin: 0; }
+      .detalhe img { display: block; min-width: 64px; max-width: 100%; max-height: 240px; object-fit: contain; image-rendering: pixelated; background: repeating-conic-gradient(var(--hover) 0 25%, transparent 0 50%) 0 0/12px 12px; }
+      .detalhe figcaption { color: var(--bar-muted); font-size: 11px; }
+      .detalhe .par { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
       [hidden] { display: none !important; }
 
       /* Texto: uma linha crua por registro, também virtualizada. */
@@ -127,6 +144,16 @@
       .estr .et { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--change); }
       .estr .ep { flex: none; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
       .estr .ep.op { color: var(--bar-fg); }
+      .estr .ea { margin-left: 6px; padding: 0 5px; border-radius: 3px; background: color-mix(in srgb, var(--change) 14%, transparent); color: var(--bar-fg); font: 11px/1.6 system-ui, sans-serif; }
+      .eperf { flex: none; width: min(320px, 34%); max-height: none; margin-top: 0; }
+      .eperf p { margin: 2px 0 6px; }
+      .eperf .pm { color: var(--bar-muted); font-family: system-ui, sans-serif; text-transform: none; letter-spacing: 0; }
+      .eperf .fx { display: grid; grid-template-columns: 9em 1fr auto; gap: 6px; align-items: center; font-variant-numeric: tabular-nums; }
+      .eperf .fx i { height: 8px; border-radius: 2px; background: var(--accent); }
+      .eperf .cm { margin: 0 0 6px; padding-left: 20px; }
+      .eperf .cm li span:last-child { float: right; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
+      .eperf .pl { display: flex; flex-wrap: wrap; gap: 4px; max-height: 8em; overflow: auto; }
+      .eperf .lk { padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; background: none; color: inherit; font: inherit; cursor: pointer; }
       .vista:has(.estr:not([hidden]), .exp:not([hidden])) .regua { display: none; }
       /* Tabela: grade virtual; cabeçalho e colunas fixadas grudam, o resto rola. */
       .tabw { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
@@ -298,10 +325,14 @@
       <symbol id="pin" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
       <symbol id="table" viewBox="0 0 24 24"><path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5z"/><path d="M3 10h18"/><path d="M10 3v18"/></symbol>
       <symbol id="down" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
+      <symbol id="cal" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></symbol>
+      <symbol id="link" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+      <symbol id="key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></symbol>
+      <symbol id="image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></symbol>
       <symbol id="alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
     </svg>
     <header class="top">
-      <div class="side"><button class="btn" id="inicio" type="button" aria-keyshortcuts="Meta+0 Control+0" disabled><svg class="i"><use href="#home"/></svg><span>Início</span></button><span id="status" class="status" role="status" aria-live="polite"></span><button class="btn" id="cancelar-abertura" type="button" hidden></button></div>
+      <div class="side"><button class="btn" id="inicio" type="button" aria-keyshortcuts="Meta+0 Control+0" disabled><svg class="i"><use href="#home"/></svg><span>Início</span></button><span id="status" class="status" role="status" aria-live="polite"></span><button class="btn" id="cancelar-abertura" type="button" hidden></button><button class="btn" id="seguir" type="button" aria-pressed="false" hidden></button><button class="btn" id="novas" type="button" hidden></button></div>
       <div class="name"><span id="nome"></span><span class="faixa" id="faixa"></span></div>
       <div class="side end">
         <button class="ib" id="tema" type="button" aria-label="Alternar tema claro e escuro"><svg class="i"><use href="#moon"/></svg></button>
@@ -388,6 +419,7 @@
           <p class="eres" id="estrutura-resumo" role="status" aria-live="polite"></p>
           <div id="estrutura-linhas" role="presentation"></div>
         </div>
+        <aside class="detalhe eperf" id="estrutura-perfil" aria-label="Estatísticas do caminho" aria-live="polite" hidden></aside>
         <div class="tabw" id="tabela-vista" hidden>
           <div class="tbar">
             <span id="tabela-resumo" role="status" aria-live="polite"></span>
@@ -403,6 +435,7 @@
         <section class="tree exp dif" id="diff" tabindex="-1" aria-label="Comparar dois arquivos abertos" hidden></section>
         <div class="regua" id="regua" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="1" hidden></div>
         </div>
+        <section class="detalhe" id="detalhe" aria-label="Valor selecionado" aria-live="polite" hidden></section>
       </div>
     </main>
     <div class="menu" id="menu" role="menu" hidden>

@@ -54,7 +54,7 @@ Cada alvo vira benchmark (`criterion`). A meta é rodar no CI e reprovar regress
 - **Fuzzing (`cargo-fuzz`)** em leitura, índice e inferência: nenhuma entrada derruba o processo.
 - **Corpus hostil:** JSONTestSuite, arquivo truncado, UTF-8 inválido, BOM, CRLF, linha de 1 GB, profundidade 10.000, chave duplicada, número de 400 dígitos, arquivo vazio.
 - **Limites explícitos** de profundidade, tamanho de linha e memória, com mensagem que diz o problema e a saída.
-- **Arquivo que muda por baixo:** detecta, reindexa só o acréscimo, avisa se foi reescrito.
+- **Arquivo que muda por baixo:** detecta, reindexa só o acréscimo, avisa se foi reescrito. ✅ no modo seguir (Fase 5); ao abrir sem seguir, o arquivo continua mapeado e encolher por baixo ainda derruba o app (achado 14, ver `decisoes.md`, "Arquivo vivo").
 - **Testes dourados** para o Diff e para cada formato de exportação.
 - **Acessibilidade:** árvore com papéis ARIA e navegação completa por teclado.
 
@@ -72,15 +72,15 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - **Tabela:** JSONL e listas de objetos viram colunas por caminho; ordenar, fixar e esconder colunas.
 - **Busca:** por chave, valor ou expressão regular, no arquivo inteiro, com contagem e navegação.
 - **Copiar:** caminho em jq, JSONPath, JSON Pointer e JavaScript; valor cru ou formatado.
-- **Valores inteligentes:** época vira data, data mostra "há 3 dias", cor mostra amostra, URL vira link, imagem em base64 tem prévia, JWT abre decodificado, JSON dentro de texto expande.
+- **Valores inteligentes:** época vira data, data mostra "há 3 dias", cor mostra amostra, URL vira link, imagem em base64 tem prévia, JWT abre decodificado, JSON dentro de texto expande. Feito (23/11/2026; ver decisoes.md).
 - **Erros:** linha inválida aparece na lista, com posição e motivo, sem impedir o resto.
 - **Entrada compactada:** `.gz` e `.zst`.
 
 ### Fase 2: estrutura
 - Tipo, presença, formato e evidência por caminho; união discriminada; união dentro de objeto; objeto que é mapa.
-- Avisos: número como texto, data fora do ISO, valor único, campo opaco, "parece segredo".
-- **Estatísticas por campo:** mínimo, máximo, distribuição, cardinalidade, valores mais comuns.
-- **Registros que fogem:** da estrutura para a lista de linhas que têm (ou não têm) um campo.
+- Avisos: número como texto, data fora do ISO, valor único, campo opaco, "parece segredo". Feito (24/11/2026; ver decisoes.md).
+- **Estatísticas por campo:** mínimo, máximo, distribuição, cardinalidade, valores mais comuns. Feito, sob pedido por caminho, com aproximação avisada (24/11/2026).
+- **Registros que fogem:** da estrutura para a lista de linhas que têm (ou não têm) um campo. Feito: lista no painel, que abre a Árvore (24/11/2026); falta filtrar a Tabela.
 
 ### Fase 3: diff
 - Diff de estrutura com quebra × compatível, usando a taxonomia do oasdiff/buf. Feito no núcleo e na CLI (`jasao diff a b [--json] [--falha-em quebra|qualquer]`, 23/11/2026) e na interface (visão Diff, ⌥⌘6, 24/11/2026; ver decisoes.md).
@@ -88,15 +88,15 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - Linha do tempo de uma pasta de arquivos datados.
 
 ### Fase 4: exportar e validar
-- Zod 4 e JSON Schema 2020-12, validados contra o arquivo; tipos TypeScript.
-- Validar outro arquivo contra a estrutura salva ou contra um schema de fora.
+- Zod 4 e JSON Schema 2020-12, validados contra o arquivo; tipos TypeScript. ✅ (tipos TS em 24/11/2026)
+- Validar outro arquivo contra a estrutura salva ou contra um schema de fora: núcleo, `jasao validar` e vista Exportar. ✅ (24/11/2026)
 - Depois: Pydantic, serde, Go, SQL.
 
 ### Fase 5: potência
 - **Consulta jq** com resultado ao vivo e filtros salvos; exportar resultado em JSONL, CSV e Parquet.
-- **Acompanhar arquivo vivo** (como `tail -f`) e vigiar pasta.
+- **Acompanhar arquivo vivo** (como `tail -f`) ✅ (24/11: botão Seguir/Pausar, indicador de novas, truncado/rotacionado/reescrito reabre com aviso); vigiar pasta e linha do tempo de pasta ainda não.
 - **Linha de comando:** `inferir`, `diff --falha-em quebra`, `validar`, para CI.
-- **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada.
+- **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada. Feito em 24/11/2026 (somente leitura, convertidos para JSONL no cache; ver `docs/decisoes.md`, "Formatos de entrada").
 - **Máscara de segredos** na tela e na exportação; anonimização.
 
 ### Fora por enquanto

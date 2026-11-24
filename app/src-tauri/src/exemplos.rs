@@ -170,6 +170,26 @@ mod testes {
         // Chave duplicada fica como está (fiel ao byte).
         assert!(String::from_utf8_lossy(a.bytes()).contains(r#"{"a":1,"a":2}"#));
         // Aninhamento: revelar o "fundo" abre 12 níveis abaixo do registro.
+        // Valores inteligentes (detecção em app/src/valores.ts): um de cada tipo.
+        let v = &amostra("valores inteligentes").1["valor"];
+        for k in [
+            "criado_em",
+            "atualizado_ms",
+            "ultima_visita",
+            "cor_marca",
+            "site",
+            "logo",
+            "miniatura",
+            "token",
+            "payload_texto",
+        ] {
+            assert!(v.get(k).is_some(), "falta {k}");
+        }
+        assert!(
+            v["logo"].as_str().unwrap().len() > 200,
+            "imagem acima da prévia: exercita o valor completo"
+        );
+
         let (i, _) = amostra("aninhamento fundo");
         let byte = linha_de(&a, i).find("\"fundo\"").unwrap() + 1;
         let mut arvore = Arvore::new(arquivo("vitrine"));
