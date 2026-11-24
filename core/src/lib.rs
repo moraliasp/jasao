@@ -7,6 +7,7 @@ pub mod compactado;
 pub mod consulta;
 pub mod csv;
 pub mod diff;
+pub mod entrada;
 pub mod erros;
 pub mod estrutura;
 pub mod exportar;

@@ -655,12 +655,46 @@ fn conceder_escolhidos<R: Runtime>(
 }
 
 /// Arquivos do argv da 1ª instância: o pedido é a concessão; entram na fila da abertura.
+/// `-` abre stdin (ver `stdin_argv`).
 fn conceder_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String], cwd: &Path) {
     let abertura = app.state::<abertura::Abertura>();
     let concedidos = app.state::<abertura::Concedidos>();
-    for c in abertura::caminhos_argv(argv, cwd) {
+    let stdin = stdin_argv(app, argv);
+    for c in stdin.into_iter().chain(abertura::caminhos_argv(argv, cwd)) {
         concedidos.conceder(Path::new(&c));
         abertura.enfileirar(c);
+    }
+}
+
+/// Temporário de stdin da 1ª instância; sai no `RunEvent::Exit`.
+#[derive(Default)]
+struct Stdin(Mutex<Option<nucleo::entrada::Temporario>>);
+
+/// `app -`: grava stdin no temporário do núcleo (o mesmo da CLI) e devolve o caminho dele. Só
+/// na 1ª instância: com o app já aberto, quem tem o stdin é a 2ª, que repassa o argv e sai.
+/// Erro (stdin terminal, vazio, acima do teto) vai para o stderr e o app abre sem ele.
+fn stdin_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String]) -> Option<String> {
+    use std::io::IsTerminal;
+    if !argv.iter().skip(1).any(|a| a == "-") {
+        return None;
+    }
+    let r = if std::io::stdin().is_terminal() {
+        Err(std::io::Error::other(
+            "`-` lê stdin, mas stdin é o terminal",
+        ))
+    } else {
+        nucleo::entrada::gravar(std::io::stdin().lock(), "stdin", &nucleo::Opcoes::default())
+    };
+    match r {
+        Ok(t) => {
+            let c = t.caminho().to_string_lossy().into_owned();
+            *app.state::<Stdin>().0.lock().ok()? = Some(t);
+            Some(c)
+        }
+        Err(e) => {
+            eprintln!("erro: {e}");
+            None
+        }
     }
 }
 
@@ -2887,6 +2921,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
     b.manage(Estado::default())
         .manage(abertura::Abertura::default())
         .manage(abertura::Concedidos::default())
+        .manage(Stdin::default())
         .invoke_handler(tauri::generate_handler![
             escolher,
             salvar_como,
@@ -3108,6 +3143,9 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 if let Ok(docs) = app.state::<Estado>().docs.lock() {
                     docs.values().for_each(|d| d.encerrar());
+                }
+                if let Ok(mut t) = app.state::<Stdin>().0.lock() {
+                    t.take();
                 }
             }
             _ => {}

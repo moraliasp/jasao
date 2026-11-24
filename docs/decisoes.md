@@ -762,3 +762,23 @@ O mapa mascarado é uma cópia privada do `mmap` (`map_copy`, copy-on-write): s�
 **Fora desta fatia.** Edição no lugar e desfazer; Parquet; transformar campos aninhados (só o topo de cada registro); combinar fontes (jq sobre o filtro da Tabela); CSV no "Salvar como" (continua no exportar da consulta); progresso e cancelar no CLI; anonimizar em fluxo. A fonte filtro fica desligada com resultado de consulta aberto na aba (o filtro é do arquivo na tela, não do original).
 
 **Não conferido.** O diálogo não foi aberto no app à mão nesta fatia. O comando, o evento e o cancelar foram testados pelo IPC; a interface passou só por `tsc` e pelos testes do `app`. A mensagem de descartados no diálogo também não foi vista na tela.
+
+## stdin por temporário (24/11/2026)
+
+**O que faz:** `-` no lugar de um arquivo lê stdin em todo comando do CLI que abre arquivo (`cat x.jsonl | jasao laudo -`); nos comandos de um arquivo só (`linhas`, `inferir`, `laudo`, `erros`, `exportar`, `jq`), pipe sem arquivo também vale. Um `-` por execução (stdin se lê uma vez): em `diff - -` o segundo não abre. Em `buscar`, só o primeiro argumento é arquivo; `-` no lugar do padrão é o padrão. `linha-do-tempo` recebe pasta e não lê stdin. No app, `-` no argv da 1ª instância abre stdin numa aba.
+
+**Por que temporário e não streaming:** o núcleo todo trabalha sobre `mmap` e índice de linhas de um arquivo (janela, busca, consulta, máscara por blocos, arquivo vivo). Ler em fluxo pediria um segundo caminho em cada um. `nucleo::entrada::gravar` copia o fluxo para um arquivo e o resto abre esse caminho como qualquer outro, inclusive gzip/zstd (detectados pelos bytes). O custo é o disco: stdin de N bytes ocupa N bytes até o comando acabar, e a primeira saída só vem depois de stdin fechar (não serve para `tail -f | jasao`). A fatia de abrir de URL usa o mesmo `gravar`.
+
+**Onde e com que permissão:** na pasta do cache do app (`…/jasao/descompactados`, a mesma dos descompactados, 0700 e recusada se for link), arquivo criado com `create_new` e modo 0600 (sem janela em que outro usuário leia), nome `entrada.<pid>.<nanos>.parcial`.
+
+**Teto:** `Opcoes::max_saida`, o mesmo do descompactado (10 GiB). Passou, erro com o teto na mensagem e o temporário apagado.
+
+**Limpeza:** o `Temporario` apaga o arquivo no `Drop`. No CLI ele vive até o fim do `main`, então sai em sucesso, em erro e em pipe fechado; o filho da consulta (`supervisionar`) recebe o caminho do temporário e stdin nulo, e o pai só solta o temporário depois que o filho acaba. No app ele fica no estado `Stdin` e sai no `RunEvent::Exit`. Processo morto por sinal (`kill -9`, Ctrl-C) não roda o `Drop`: a extensão `.parcial` faz a limpeza do cache (`compactado::limpar`, que roda a cada descompactação) apagá-lo depois de um dia.
+
+**Erros:** stdin vazio ("stdin vazio: nada para abrir"), stdin no terminal com `-` explícito, ou acima do teto: mensagem no stderr e código 1 (3 em `diff` e `validar`, o "não deu para abrir" deles). O pipe implícito só liga com stdin pipe ou arquivo; `/dev/null` e terminal mantêm o uso errado (2) de antes. Nas mensagens e no laudo, o temporário aparece como `-`.
+
+**App, o mínimo:** `-` só vale na 1ª instância. Com o app já aberto, o single-instance repassa o argv da 2ª, que é quem tem o stdin e sai em seguida; a 1ª não tem como lê-lo, então o `-` é ignorado (fica para uma fatia que grave o temporário antes de repassar). A leitura de stdin acontece no `setup`, antes da janela: stdin grande atrasa a abertura. A aba mostra o nome do temporário e ele entra nos recentes, onde fica apontando para um arquivo que some ao fechar.
+
+**Testado:** núcleo (`entrada::testes`): 0600, apagado no `Drop`, vazio e teto dão erro sem sobra. CLI pelo binário (`cli/tests/stdin.rs`, com `HOME`/`XDG_CACHE_HOME` numa pasta própria): pipe de JSONL (`laudo -`, `jq` e `linhas` sem arquivo, `buscar -`), JSON em várias linhas (`jq --documento`, `inferir`, `diff - -`), stdin vazio (1, e 3 em `validar`), conteúdo inválido e binário; em todos, nenhum arquivo sobra no cache. **Mutação:** tirar o `remove_file` do `Drop` derruba os quatro testes do CLI.
+
+**Não testado:** o app com `-` por teste automático (lê o stdin real do processo); Windows (fora do escopo).
