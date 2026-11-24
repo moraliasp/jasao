@@ -280,7 +280,9 @@ impl Tabela {
         let texto = match arvore::validar(bytes) {
             Ok(t) => t,
             Err(e) => {
-                l.erro = Some(e);
+                l.erro = arvore::validar(self.arquivo.cru_de(bytes))
+                    .err()
+                    .or(Some(e));
                 l.previa = Some(
                     String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_PREVIA)]).into_owned(),
                 );

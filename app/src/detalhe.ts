@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { chamar } from "./doc";
 import { daPrevia, html, type No } from "./apresenta";
 import { t } from "./i18n";
+import { visivel, visivelTexto } from "./texto";
 import { detectar, type Inteligente, MAX_BASE64 } from "./valores";
 
 export { type No, selo } from "./apresenta";
@@ -33,11 +34,30 @@ export async function abrirLinkDe(l: No, v: number, avisar: (m: string) => void)
  */
 export function criarDetalhe(el: HTMLElement, avisar: (m: string) => void, aoRedimensionar: () => void) {
   let de = ""; // doc:versão:linha mostrada; descarta resposta de seleção antiga
+  let oculto = -1; // linha mascarada mostrada agora (o "Mostrar valor" revela esta)
   el.setAttribute("aria-label", t.inteligente.rotulo);
   el.addEventListener("click", (e) => {
-    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-link]");
+    const alvo = e.target as HTMLElement;
+    if (alvo.closest("[data-revelar]")) return void revelar(de, oculto);
+    const b = alvo.closest<HTMLElement>("[data-link]");
     if (b?.dataset.link) void abrir(b.dataset.link).catch((err) => avisar(t.inteligente.erroLink(String(err))));
   });
+
+  /** Segredo mascarado: aviso e botão; o valor original só vem no clique, campo a campo. */
+  function mascarado(v: number): void {
+    oculto = v;
+    el.hidden = false;
+    el.innerHTML = `<div class="rot">${visivel(t.mascara.rotulo)}</div><p>${visivel(t.mascara.explica)}</p>` +
+      `<button class="btn" type="button" data-revelar>${visivel(t.mascara.mostrar)}</button>`;
+  }
+  /** Busca o valor cru e mostra como texto (nunca HTML); nada guarda: outra seleção mascara de novo. */
+  async function revelar(chave: string, v: number): Promise<void> {
+    const s = await chamar<string | null>("valor_cru", { v }).catch((e) => (avisar(`${t.erro}: ${String(e)}`), null));
+    if (s === null || chave !== de) return;
+    const pre = document.createElement("pre");
+    pre.textContent = visivelTexto(s);
+    el.querySelector("[data-revelar]")?.replaceWith(pre);
+  }
 
   function desenhar(d: Inteligente | null): void {
     el.hidden = !d;
@@ -53,6 +73,8 @@ export function criarDetalhe(el: HTMLElement, avisar: (m: string) => void, aoRed
     async mostrar(chave: string, l: No | undefined, v: number): Promise<void> {
       if (chave === de) return;
       de = chave;
+      oculto = -1;
+      if (l?.mascarado) return mascarado(v);
       const d = l ? daPrevia(l) : null;
       if (typeof d !== "string") return desenhar(d);
       desenhar(null);

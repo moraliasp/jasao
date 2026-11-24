@@ -12,6 +12,7 @@ pub mod exportar;
 pub mod formatos;
 pub mod gerador;
 pub mod linhas;
+pub mod mascara;
 pub mod perfil;
 pub mod regua;
 pub mod resumo;

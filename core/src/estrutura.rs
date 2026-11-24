@@ -178,7 +178,10 @@ impl Valores {
         }
         self.data_fora_iso = self.data_fora_iso || data_fora_iso(v);
         self.opaco = self.opaco || opaco(v);
-        self.segredo = self.segredo || parece_segredo(v);
+        // Valor já mascarado (`***`, ver `mascara`) também é segredo: o aviso não some na máscara.
+        self.segredo = self.segredo
+            || crate::mascara::sensivel(v)
+            || (!v.is_empty() && v.iter().all(|&c| c == b'*'));
     }
 
     fn combinar(&mut self, o: Valores) {
@@ -277,7 +280,7 @@ fn opaco(v: &[u8]) -> bool {
 
 /// Credencial pelo formato do valor: JWT, chave privada PEM, chave da AWS, tokens do GitHub, do
 /// Slack, chaves `sk-` (OpenAI, Anthropic, Stripe) e cabeçalho `Bearer …`/`Basic …`.
-fn parece_segredo(v: &[u8]) -> bool {
+pub(crate) fn parece_segredo(v: &[u8]) -> bool {
     let pontos = || memchr_iter(b'.', v).count() == 2;
     (v.starts_with(b"eyJ") && v.len() >= 20 && pontos())
         || (v.len() >= 20
@@ -745,7 +748,8 @@ fn avisos(no: &No, segs: &[Seg]) -> Vec<Aviso> {
 
 /// Nome de chave de credencial: a última palavra é `senha`, `password`, `secret`, `token`, `pin`…
 /// (e plurais, menos `tokens`, que em `max_tokens` é contagem) ou as duas últimas são `api key`,
-/// `private key`, `chave privada`. Palavras separadas por `_`, `-`, `.`, espaço ou caixa
+/// `private key`, `chave privada`, `card number`, `otp code`. Documentos e dados de cartão
+/// também: `cpf`, `cnpj`, `rg`, `cvv`, `cvc`, `otp`, `cartao`. Palavras separadas por `_`, `-`, `.`, espaço ou caixa
 /// (`accessToken`). Só a última: `token_type` e `password_hash` não são.
 pub fn chave_de_segredo(k: &[u8]) -> bool {
     let mut palavras: Vec<String> = Vec::new();
@@ -792,6 +796,14 @@ pub fn chave_de_segredo(k: &[u8]) -> bool {
                 | "authorization"
                 | "privatekey"
                 | "privatekeys"
+                | "cvv"
+                | "cvc"
+                | "otp"
+                | "cpf"
+                | "cnpj"
+                | "rg"
+                | "cartao"
+                | "cartoes"
         )
     ) || matches!(
         (ult(2), ult(1)),
@@ -801,7 +813,8 @@ pub fn chave_de_segredo(k: &[u8]) -> bool {
         ) | (
             Some("chave" | "chaves"),
             Some("privada" | "privadas" | "api")
-        )
+        ) | (Some("card" | "cartao"), Some("number" | "numero" | "num"))
+            | (Some("otp"), Some("code" | "codigo"))
     )
 }
 
@@ -2004,6 +2017,16 @@ mod testes {
             "pass",
             "pin",
             "api_keys",
+            "cvv",
+            "otp",
+            "otpCode",
+            "cpf",
+            "numero_cpf",
+            "cnpj",
+            "rg",
+            "cartao",
+            "card_number",
+            "cartao_numero",
         ] {
             assert!(chave_de_segredo(sim.as_bytes()), "{sim}");
         }
@@ -2019,6 +2042,11 @@ mod testes {
             "tokenizer",
             "monkey",
             "keys",
+            "org",
+            "organizacao",
+            "rg_emissor",
+            "cartao_tipo",
+            "cpf_valido",
         ] {
             assert!(!chave_de_segredo(nao.as_bytes()), "{nao}");
         }

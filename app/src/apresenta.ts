@@ -15,6 +15,8 @@ export interface No {
   chave: string | null;
   faixa: [number, number];
   erro: unknown;
+  /** Tem trecho mascarado (segredo): o valor só aparece pelo "Mostrar valor". */
+  mascarado?: boolean;
 }
 
 const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;

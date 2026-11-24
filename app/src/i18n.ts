@@ -224,6 +224,12 @@ const pt = {
     cancelada: "Consulta cancelada",
     cortada: "resultado parcial: a saída passou do teto de tamanho e a consulta parou",
     sintaxe: (l: number, c: number, m: string) => `Erro no filtro, linha ${l}, coluna ${c}: ${m}`,
+    anonimizar: "Anonimizar segredos no resultado: cada valor vira um código estável nesta sessão (não é criptografia)",
+  },
+  mascara: {
+    rotulo: "Valor mascarado",
+    explica: "Parece segredo (senha, token, CPF, cartão…): aparece mascarado na tela, na busca, na cópia e no que sai do app.",
+    mostrar: "Mostrar valor",
   },
   regua: {
     rotulo: "Posição no arquivo",
@@ -511,6 +517,12 @@ const en: Textos = {
     cancelada: "Query canceled",
     cortada: "partial result: the output hit the size cap and the query stopped",
     sintaxe: (l: number, c: number, m: string) => `Filter error, line ${l}, column ${c}: ${m}`,
+    anonimizar: "Anonymize secrets in the result: each value becomes a code that is stable for this session (not cryptography)",
+  },
+  mascara: {
+    rotulo: "Masked value",
+    explica: "Looks like a secret (password, token, CPF, card…): it is masked on screen, in search, when copying and in anything that leaves the app.",
+    mostrar: "Show value",
   },
   regua: {
     rotulo: "Position in file",

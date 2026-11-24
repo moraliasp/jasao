@@ -103,6 +103,8 @@ pub struct Linha {
     /// Bytes `[início, fim)` do valor na linha do arquivo, para a visão Texto realçar o trecho.
     /// No registro inválido, a linha inteira.
     pub faixa: [usize; 2],
+    /// O valor tem segredo mascarado (ver `mascara`): a interface oferece "Mostrar valor".
+    pub mascarado: bool,
 }
 
 const SEM_PAI: usize = usize::MAX;
@@ -245,6 +247,11 @@ impl Arvore {
                 }
             }
         }
+        for l in &mut saida {
+            let f = l.faixa[0]..l.faixa[1];
+            l.mascarado =
+                self.bytes(l.registro).get(f.clone()) != self.arquivo.linha_crua(l.registro).get(f);
+        }
         saida
     }
 
@@ -267,10 +274,12 @@ impl Arvore {
             aberto: false,
             omitidos: 0,
             faixa: [0, bytes.len()],
+            mascarado: false,
         };
         match validar(bytes) {
             Err(e) => {
-                linha.erro = Some(e);
+                // Byte e motivo do arquivo cru: o trecho mascarado daria outro erro (ver `cru_de`).
+                linha.erro = validar(self.arquivo.cru_de(bytes)).err().or(Some(e));
                 linha.previa = previa(String::from_utf8_lossy(bytes).trim_matches(ESPACO));
             }
             Ok(texto) => {
@@ -444,8 +453,17 @@ impl Arvore {
     /// Texto do valor da linha visível `v`, para copiar: texto JSON sai decodificado (sem aspas
     /// nem escapes); o resto, cru como no arquivo. Registro inválido: a linha inteira.
     pub fn valor(&self, v: usize) -> Option<String> {
+        self.valor_de(v, self.bytes(self.localizar(v)?.0))
+    }
+
+    /// Como `valor`, sem a máscara de segredos: só o valor da linha `v`, que o usuário pediu para
+    /// ver ("Mostrar valor"). Nada mais sai cru.
+    pub fn valor_cru(&self, v: usize) -> Option<String> {
+        self.valor_de(v, self.arquivo.linha_crua(self.localizar(v)?.0))
+    }
+
+    fn valor_de(&self, v: usize, bytes: &[u8]) -> Option<String> {
         let (r, p) = self.localizar(v)?;
-        let bytes = self.bytes(r);
         let faixa = match p {
             Some(p) => {
                 let a = &self.abertos[&r];
@@ -781,6 +799,7 @@ fn linha_no(registro: usize, bytes: &[u8], nos: &[No], id: usize) -> Linha {
             0
         },
         faixa: [no.faixa.start, no.faixa.end],
+        mascarado: false,
     }
 }
 

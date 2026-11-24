@@ -46,6 +46,7 @@ interface Linha {
   aberto: boolean;
   omitidos: number; // filhos fora da árvore pelo teto de nós do registro
   faixa: [number, number];
+  mascarado: boolean; // valor (ou parte) com cara de segredo: sai mascarado
 }
 
 const ALTURA = 26; // px por linha; igual ao CSS de .row

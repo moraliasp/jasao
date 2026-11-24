@@ -37,6 +37,8 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   const info = form.querySelector<HTMLElement>(".info")!;
   const cancelarBtn = form.querySelector<HTMLButtonElement>("[data-cancelar]")!;
   const voltarBtn = form.querySelector<HTMLButtonElement>("[data-voltar]")!;
+  const anonBtn = form.querySelector<HTMLButtonElement>("[data-anonimizar]")!;
+  const anonimizar = () => anonBtn.getAttribute("aria-pressed") === "true";
 
   /** Consulta de um documento. */
   interface Estado {
@@ -75,7 +77,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     Object.assign(e, { filtro: campo.value, fonte: caminho, rodando: true, esperando: true });
     mostrar(e, t.consulta.rodando);
     try {
-      const g = await chamar<number>("consultar", { id: e.id, filtro: e.filtro, caminho });
+      const g = await chamar<number>("consultar", { id: e.id, filtro: e.filtro, caminho, anonimizar: anonimizar() });
       if (g > e.geracao) e.geracao = g;
     } catch (x) {
       e.rodando = false;
@@ -142,6 +144,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   });
   cancelarBtn.addEventListener("click", () => s && void cancelar(s));
   voltarBtn.addEventListener("click", () => s && void voltar(s));
+  anonBtn.addEventListener("click", () => anonBtn.setAttribute("aria-pressed", String(!anonimizar())));
 
   void listen<Andamento>("consulta", ({ payload: p }) => {
     const e = estados.get(p.id);
@@ -157,6 +160,8 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   campo.setAttribute("aria-label", t.consulta.rotulo);
   cancelarBtn.textContent = t.consulta.cancelar;
   voltarBtn.textContent = t.consulta.voltar;
+  anonBtn.title = t.consulta.anonimizar;
+  anonBtn.setAttribute("aria-label", t.consulta.anonimizar);
   mostrar(null, "");
 
   return {

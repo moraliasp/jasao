@@ -203,7 +203,7 @@ impl Vivo {
     /// Mapeia a cópia inteira e estende o índice com o que ainda não estava nele.
     fn mapear(&mut self) -> io::Result<ArquivoLinhas> {
         if self.copiados == 0 {
-            return Ok(ArquivoLinhas::de_mapa(None, IndiceLinhas::default()));
+            return ArquivoLinhas::de_mapa(&self.copia, None, IndiceLinhas::default());
         }
         // SAFETY: a cópia é só do app (criada com `create_new`, apagada do diretório no Unix) e
         // só cresce; nenhum outro processo a encolhe por baixo do mapa.
@@ -217,7 +217,7 @@ impl Vivo {
         self.indexados = mapa.len();
         // shortcut: cada crescimento clona o vetor de inícios (8 bytes por linha); dividir em
         // blocos compartilhados se seguir arquivo de dezenas de milhões de linhas ficar lento.
-        Ok(ArquivoLinhas::de_mapa(Some(mapa), self.indice.clone()))
+        ArquivoLinhas::de_mapa(&self.copia, Some(mapa), self.indice.clone())
     }
 }
 

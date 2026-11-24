@@ -97,7 +97,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - **Acompanhar arquivo vivo** (como `tail -f`) ✅ (24/11: botão Seguir/Pausar, indicador de novas, truncado/rotacionado/reescrito reabre com aviso); vigiar pasta e linha do tempo de pasta ainda não.
 - **Linha de comando:** `inferir`, `diff --falha-em quebra`, `validar`, para CI.
 - **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada. Feito em 24/11/2026 (somente leitura, convertidos para JSONL no cache; ver `docs/decisoes.md`, "Formatos de entrada").
-- **Máscara de segredos** na tela e na exportação; anonimização.
+- **Máscara de segredos** na tela e na exportação; anonimização. ✅ (24/11/2026: ligada por padrão em todo caminho de saída, "Mostrar valor" campo a campo, anonimizar no jq; ver `docs/decisoes.md`, "Máscara de segredos")
 
 ### Fora por enquanto
 Edição, decriptar age/gpg, colaboração, nuvem.
