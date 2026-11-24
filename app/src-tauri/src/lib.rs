@@ -85,6 +85,7 @@ struct Doc {
     varredura: Mutex<Varredura>,
     busca: Mutex<EstadoBusca>,
     consulta: Mutex<EstadoConsulta>,
+    exportar: Mutex<EstadoExportar>,
 }
 
 /// Evento com o id do documento de onde veio.
@@ -221,6 +222,8 @@ struct Varredura {
     coloriu: bool,
     /// Estrutura inferida (modo Estrutura); chega junto com `campos`.
     estrutura: Option<Arc<Estrutura>>,
+    /// A inferência crua e o arquivo dela, para Exportar (gerar e validar); chega com `estrutura`.
+    inferencia: Option<InfArquivo>,
 }
 
 /// Evento `varredura` e parte do `resumo`.
@@ -565,6 +568,7 @@ async fn abrir<R: Runtime>(
                 varredura: Default::default(),
                 busca: Default::default(),
                 consulta: Default::default(),
+                exportar: Default::default(),
             });
             let mut docs = estado.docs.lock().map_err(|e| e.to_string())?;
             docs.insert(id, Arc::clone(&doc));
@@ -589,6 +593,7 @@ async fn abrir<R: Runtime>(
         v.legenda = None;
         v.coloriu = false;
         v.estrutura = None;
+        v.inferencia = None;
         v.geracao
     };
     doc.busca.lock().map_err(|e| e.to_string())?.reiniciar();
@@ -626,11 +631,13 @@ async fn abrir<R: Runtime>(
         }
         let campos = resumo::campos(&inf.resumo);
         let estrutura = Arc::new(Estrutura::de(&inf));
+        let ds = inf.resumo.discriminadores();
+        let inf = Arc::new(inf);
         avisar(&|v| {
             v.campos = campos;
             v.estrutura = Some(Arc::clone(&estrutura));
+            v.inferencia = Some((Arc::clone(&inf), Arc::clone(&arquivo)));
         });
-        let ds = inf.resumo.discriminadores();
         let escolhido = nucleo::regua::escolher(&ds).filter(|_| colorir);
         if let Some(d) = escolhido
             && !nucleo::regua::colorir(&arquivo, d, &marcas, &cancelar)
@@ -794,6 +801,192 @@ fn estrutura(id: u32, estado: State<'_, Estado>) -> Result<Option<Estrutura>, St
         .clone();
     // Clona fora da trava: são centenas de caminhos, não o arquivo.
     Ok(e.map(|e| (*e).clone()))
+}
+
+/// Inferência crua e o arquivo de onde veio (Exportar gera e valida a partir dela).
+type InfArquivo = (Arc<nucleo::estrutura::Inferencia>, Arc<ArquivoLinhas>);
+
+// ---- Exportar: Zod e JSON Schema da estrutura inferida, validados contra o arquivo inteiro. ----
+
+/// Validação em curso (ver `exportar`): `geracao` descarta evento de pedido anterior.
+#[derive(Default)]
+struct EstadoExportar {
+    geracao: u64,
+    cancelar: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+struct PedidoExportar {
+    zod: bool,
+    literal: bool,
+    numero: bool,
+}
+
+impl PedidoExportar {
+    fn opcoes(self) -> nucleo::exportar::Opcoes {
+        nucleo::exportar::Opcoes {
+            literal: self.literal,
+            numero: self.numero,
+        }
+    }
+    fn codigo(self, r: &nucleo::estrutura::Resumo) -> String {
+        if self.zod {
+            nucleo::exportar::zod(r, self.opcoes())
+        } else {
+            nucleo::exportar::schema(r, self.opcoes())
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct Exportado {
+    geracao: u64,
+    codigo: String,
+}
+
+/// Evento `validacao`: progresso e, com `fim`, o resultado ("N de M registros passam").
+#[derive(Clone, Serialize)]
+struct AndamentoValidacao {
+    geracao: u64,
+    varridas: u64,
+    total: u64,
+    fim: bool,
+    passam: u64,
+    falham: u64,
+    invalidas: u64,
+    /// `[linha base 0, motivo]`, as primeiras por linha.
+    falhas: Vec<(u64, String)>,
+}
+
+/// A inferência do documento, ou `None` se ainda não acabou.
+fn inferencia(estado: &Estado, id: u32) -> Result<Option<InfArquivo>, String> {
+    let doc = estado.doc(id)?;
+    let v = doc.varredura.lock().map_err(|e| e.to_string())?;
+    Ok(v.inferencia.clone())
+}
+
+/// Gera o código pedido e valida o arquivo inteiro contra ele numa thread própria, que emite
+/// `validacao` (no máximo a cada `INTERVALO`, e no fim); a validação anterior é cancelada.
+/// `None` enquanto a inferência não acabou (o evento `varredura` traz `inferiu`).
+/// O Zod é validado pelo Schema da entrada que ele aceita (`schema_da_entrada_zod`).
+#[tauri::command]
+fn exportar<R: Runtime>(
+    id: u32,
+    pedido: PedidoExportar,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<Exportado>, String> {
+    let Some((inf, arquivo)) = inferencia(&estado, id)? else {
+        return Ok(None);
+    };
+    let codigo = pedido.codigo(&inf.resumo);
+    let schema = if pedido.zod {
+        nucleo::exportar::schema_da_entrada_zod(&inf.resumo, pedido.opcoes())
+    } else {
+        codigo.clone()
+    };
+    let doc = estado.doc(id)?;
+    let (geracao, cancelar) = {
+        let mut e = doc.exportar.lock().map_err(|e| e.to_string())?;
+        e.cancelar.store(true, Relaxed);
+        e.cancelar = Arc::new(AtomicBool::new(false));
+        e.geracao += 1;
+        (e.geracao, Arc::clone(&e.cancelar))
+    };
+    let doc = Arc::downgrade(&doc);
+    std::thread::spawn(move || {
+        let avisar = |a: AndamentoValidacao| {
+            let vale = doc
+                .upgrade()
+                .and_then(|d| d.exportar.lock().ok().map(|e| e.geracao == geracao));
+            if vale == Some(true) {
+                emitir(&app, "validacao", id, a);
+            }
+        };
+        let vazio = |varridas, total, fim| AndamentoValidacao {
+            geracao,
+            varridas,
+            total,
+            fim,
+            passam: 0,
+            falham: 0,
+            invalidas: 0,
+            falhas: Vec::new(),
+        };
+        let mut aviso = Instant::now();
+        let r = nucleo::validar::validar(arquivo.bytes(), inf.entrada, &schema, &cancelar, |p| {
+            if aviso.elapsed() >= INTERVALO {
+                aviso = Instant::now();
+                avisar(vazio(p.varridas, p.total, false));
+            }
+        });
+        match r {
+            Ok(v) if !v.cancelado => avisar(AndamentoValidacao {
+                passam: v.passam,
+                falham: v.falham,
+                invalidas: v.invalidas,
+                falhas: v.falhas.into_iter().map(|f| (f.linha, f.motivo)).collect(),
+                ..vazio(v.varridas, v.total, true)
+            }),
+            Ok(_) => {}
+            // Schema gerado que não compila é bug do gerador: aparece como falha, não some.
+            Err(e) => avisar(AndamentoValidacao {
+                falhas: vec![(0, e)],
+                ..vazio(0, 0, true)
+            }),
+        }
+    });
+    Ok(Some(Exportado { geracao, codigo }))
+}
+
+/// Para a validação em curso (Esc, trocar de vista ou de aba).
+#[tauri::command]
+fn cancelar_validacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
+    let doc = estado.doc(id)?;
+    let mut e = doc.exportar.lock().map_err(|e| e.to_string())?;
+    e.cancelar.store(true, Relaxed);
+    e.geracao += 1;
+    Ok(())
+}
+
+/// Diálogo de salvar no backend (como `escolher`): a webview não escolhe caminho nem manda
+/// conteúdo; o código é gerado de novo aqui. `nome` é só a sugestão do diálogo.
+/// Devolve o caminho salvo, ou `None` se o usuário cancelou.
+#[tauri::command]
+async fn salvar_exportado<R: Runtime>(
+    id: u32,
+    pedido: PedidoExportar,
+    nome: String,
+    janela: tauri::WebviewWindow<R>,
+    estado: State<'_, Estado>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some((inf, _)) = inferencia(&estado, id)? else {
+        return Err("a estrutura ainda está sendo inferida".into());
+    };
+    let codigo = pedido.codigo(&inf.resumo);
+    let (filtro, ext) = if pedido.zod {
+        ("TypeScript", "ts")
+    } else {
+        ("JSON Schema", "json")
+    };
+    // Só o nome do arquivo: a sugestão não escolhe pasta.
+    let nome = Path::new(&nome)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let destino = janela
+        .dialog()
+        .file()
+        .set_parent(&janela)
+        .set_file_name(nome)
+        .add_filter(filtro, &[ext])
+        .blocking_save_file();
+    let Some(p) = destino.and_then(|f| f.into_path().ok()) else {
+        return Ok(None);
+    };
+    std::fs::write(&p, codigo).map_err(|e| format!("{}: {e}", p.display()))?;
+    Ok(Some(p.to_string_lossy().into_owned()))
 }
 
 fn marcas_atuais(estado: &Estado, id: u32) -> Result<Arc<[AtomicU8]>, String> {
@@ -1184,7 +1377,10 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             caminhos,
             valor,
             consultar,
-            fechar_consulta
+            fechar_consulta,
+            exportar,
+            cancelar_validacao,
+            salvar_exportado
         ])
 }
 
@@ -1464,6 +1660,38 @@ mod testes {
             ], "discriminadores": []})
             )
         );
+        // Exportar: devolve o código e valida numa thread, que avisa o fim pelo evento `validacao`.
+        {
+            use tauri::Listener;
+            let (tx, rx) = std::sync::mpsc::channel::<Value>();
+            app.listen_any("validacao", move |e| {
+                let _ = tx.send(serde_json::from_str(e.payload()).unwrap());
+            });
+            let pedido = |zod| json!({"pedido": {"zod": zod, "literal": false, "numero": false}});
+            for zod in [false, true] {
+                let r = em(1, "exportar", pedido(zod)).unwrap();
+                let codigo = r["codigo"].as_str().unwrap();
+                assert!(
+                    codigo.contains(if zod { "z.object" } else { "2020-12" }),
+                    "{codigo}"
+                );
+                let fim =
+                    std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::from_secs(5)).ok())
+                        .find(|v| v["fim"] == true && v["geracao"] == r["geracao"])
+                        .expect("validação não terminou");
+                assert_eq!(
+                    (
+                        &fim["id"],
+                        &fim["passam"],
+                        &fim["falham"],
+                        &fim["invalidas"]
+                    ),
+                    (&json!(1), &json!(1), &json!(0), &json!(1)),
+                    "{fim}"
+                );
+            }
+            assert_eq!(em(1, "cancelar_validacao", json!({})), Ok(Value::Null));
+        }
         assert_eq!(
             em(1, "marcas", json!({"inicio": 0, "quantidade": 9})),
             Ok(json!([0, 255]))

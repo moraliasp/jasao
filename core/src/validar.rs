@@ -53,6 +53,7 @@ impl Validacao {
     }
 
     fn conferir(&mut self, v: &jsonschema::Validator, linha: u64, b: &[u8]) {
+        let cheio = self.falhas.len() >= MAX_FALHAS;
         let mut falha = |motivo: String| {
             if self.falhas.len() < MAX_FALHAS {
                 let mut motivo = motivo;
@@ -72,6 +73,11 @@ impl Validacao {
                 falha(format!("não é JSON válido para o validador: {e}"));
                 self.invalidas += 1;
             }
+            // Com as falhas já guardadas, `is_valid` evita montar o erro (13× mais rápido em 1 GB que reprova).
+            Ok(j) if cheio => match v.is_valid(&j) {
+                true => self.passam += 1,
+                false => self.falham += 1,
+            },
             Ok(j) => match v.validate(&j) {
                 Ok(()) => self.passam += 1,
                 Err(e) => {
@@ -84,13 +90,16 @@ impl Validacao {
 }
 
 /// Caminho e mensagem (sem o valor do arquivo). Em `anyOf` (união), o erro do ramo que chegou
-/// mais perto: o de menos erros.
+/// mais perto: o do discriminador que bateu (sem erro de `const`), depois o de menos erros.
 fn motivo(e: &jsonschema::ValidationError) -> String {
-    if let jsonschema::error::ValidationErrorKind::AnyOf { context } = e.kind()
-        && let Some(ramo) = context
-            .iter()
-            .filter(|r| !r.is_empty())
-            .min_by_key(|r| r.len())
+    use jsonschema::error::ValidationErrorKind::{AnyOf, Constant};
+    if let AnyOf { context } = e.kind()
+        && let Some(ramo) = context.iter().filter(|r| !r.is_empty()).min_by_key(|r| {
+            (
+                r.iter().any(|e| matches!(e.kind(), Constant { .. })),
+                r.len(),
+            )
+        })
     {
         return motivo(&ramo[0]);
     }
