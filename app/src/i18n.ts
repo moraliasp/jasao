@@ -61,7 +61,7 @@ const pt = {
   },
   exportar: {
     aba: "Exportar",
-    rotulo: "Exportar a estrutura como Zod ou JSON Schema",
+    rotulo: "Exportar a estrutura como Zod, JSON Schema ou tipos TypeScript",
     saida: "Saída",
     unico: "Campo com um valor só",
     generico: "Tipo genérico",
@@ -84,6 +84,9 @@ const pt = {
     cancelada: "Validação cancelada.",
     copiado: "Código copiado.",
     salvo: (c: string) => `Salvo em ${c}`,
+    validarOutro: "Validar outro arquivo…",
+    validarDeFora: "Validar com schema de fora…",
+    contraSchema: (nome: string) => `Contra ${nome}`,
   },
   tabela: {
     aba: "Tabela",
@@ -336,7 +339,7 @@ const en: Textos = {
   },
   exportar: {
     aba: "Export",
-    rotulo: "Export the structure as Zod or JSON Schema",
+    rotulo: "Export the structure as Zod, JSON Schema or TypeScript types",
     saida: "Output",
     unico: "Field with a single value",
     generico: "Generic type",
@@ -359,6 +362,9 @@ const en: Textos = {
     cancelada: "Validation cancelled.",
     copiado: "Code copied.",
     salvo: (c: string) => `Saved to ${c}`,
+    validarOutro: "Validate another file…",
+    validarDeFora: "Validate with an outside schema…",
+    contraSchema: (nome: string) => `Against ${nome}`,
   },
   tabela: {
     aba: "Table",

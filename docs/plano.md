@@ -88,8 +88,8 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - Linha do tempo de uma pasta de arquivos datados.
 
 ### Fase 4: exportar e validar
-- Zod 4 e JSON Schema 2020-12, validados contra o arquivo; tipos TypeScript.
-- Validar outro arquivo contra a estrutura salva ou contra um schema de fora.
+- Zod 4 e JSON Schema 2020-12, validados contra o arquivo; tipos TypeScript. ✅ (tipos TS em 24/11/2026)
+- Validar outro arquivo contra a estrutura salva ou contra um schema de fora: núcleo, `jasao validar` e vista Exportar. ✅ (24/11/2026)
 - Depois: Pydantic, serde, Go, SQL.
 
 ### Fase 5: potência
