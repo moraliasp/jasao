@@ -1,8 +1,11 @@
 // Consulta jq. O Rust roda o filtro sobre o arquivo original em 2º plano (`consultar`) e grava
 // os resultados num JSONL temporário, que abre no lugar do arquivo; "Voltar ao arquivo" reabre
 // o original e apaga o temporário (`fechar_consulta`). Cada documento (aba) tem a sua consulta.
+// Ao vivo: digitar roda o filtro depois de uma pausa (`ESPERA`); o Rust cancela a anterior. O
+// resultado aberto sai em JSONL ou CSV (`salvar_consulta`).
 import { listen } from "@tauri-apps/api/event";
 import { chamar } from "./doc";
+import { alternarFiltro, CHAVE_FILTROS, lerFiltros } from "./filtros";
 import { erroDoRust, t } from "./i18n";
 import { indiceDe } from "./texto";
 
@@ -32,6 +35,9 @@ export interface Opcoes {
   fmt(n: number): string;
 }
 
+/** Pausa na digitação antes de rodar ao vivo. */
+const ESPERA = 400;
+
 export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   const campo = form.querySelector<HTMLInputElement>("input")!;
   const info = form.querySelector<HTMLElement>(".info")!;
@@ -39,11 +45,15 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   const voltarBtn = form.querySelector<HTMLButtonElement>("[data-voltar]")!;
   const anonBtn = form.querySelector<HTMLButtonElement>("[data-anonimizar]")!;
   const anonimizar = () => anonBtn.getAttribute("aria-pressed") === "true";
+  const salvarBtn = form.querySelector<HTMLButtonElement>("[data-salvar]")!;
+  const sugestoes = form.querySelector<HTMLDataListElement>("datalist")!;
+  const exportarBtns = form.querySelectorAll<HTMLButtonElement>("[data-exportar]");
 
   /** Consulta de um documento. */
   interface Estado {
     id: number;
-    filtro: string;
+    filtro: string; // o do campo (guardado ao trocar de aba)
+    rodado: string; // o último que foi ao Rust
     geracao: number;
     esperando: boolean; // `consultar` em voo: só vale evento de geração nova
     rodando: boolean;
@@ -54,7 +64,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     erro: boolean;
   }
   const novo = (id: number): Estado => ({
-    id, filtro: "", geracao: 0, esperando: false, rodando: false, fonte: null, original: null, resultado: null, msg: "", erro: false,
+    id, filtro: "", rodado: "", geracao: 0, esperando: false, rodando: false, fonte: null, original: null, resultado: null, msg: "", erro: false,
   });
   const estados = new Map<number, Estado>();
   let s: Estado | null = null; // o da aba ativa (null: aba vazia)
@@ -68,13 +78,42 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     campo.setAttribute("aria-invalid", String(erro));
     cancelarBtn.hidden = !s?.rodando;
     voltarBtn.hidden = !s || s.rodando || s.original === null;
+    for (const b of exportarBtns) b.hidden = !s || s.rodando || s.resultado === null;
   }
 
-  async function rodar(): Promise<void> {
+  // Filtros salvos. Armazenamento bloqueado: a lista fica só nesta execução.
+  let filtros: string[] = [];
+  try {
+    filtros = lerFiltros(localStorage.getItem(CHAVE_FILTROS));
+  } catch {}
+  function desenharFiltros(): void {
+    sugestoes.replaceChildren(
+      ...filtros.map((f) => {
+        const op = document.createElement("option");
+        op.value = f; // texto do usuário: nunca como HTML
+        return op;
+      }),
+    );
+    marcarSalvo();
+  }
+  function marcarSalvo(): void {
+    const salvo = filtros.includes(campo.value);
+    salvarBtn.setAttribute("aria-pressed", String(salvo));
+    salvarBtn.disabled = !campo.value.trim();
+    salvarBtn.title = salvo ? t.consulta.esquecer : t.consulta.salvar;
+    salvarBtn.setAttribute("aria-label", salvarBtn.title);
+  }
+
+  let espera: ReturnType<typeof setTimeout> | undefined;
+
+  /** `aoVivo`: veio da digitação; erro de sintaxe aparece, mas o cursor fica onde está. */
+  async function rodar(aoVivo = false): Promise<void> {
+    clearTimeout(espera);
     const e = s;
     const caminho = e?.original ?? o.aberto();
     if (!e || !campo.value.trim() || !caminho) return;
-    Object.assign(e, { filtro: campo.value, fonte: caminho, rodando: true, esperando: true });
+    if (aoVivo && campo.value === e.rodado && (e.rodando || e.resultado)) return;
+    Object.assign(e, { filtro: campo.value, rodado: campo.value, fonte: caminho, rodando: true, esperando: true });
     mostrar(e, t.consulta.rodando);
     try {
       const g = await chamar<number>("consultar", { id: e.id, filtro: e.filtro, caminho, anonimizar: anonimizar() });
@@ -84,7 +123,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
       const f = (x as { falhas?: Falha[]; mensagem?: string }).falhas?.[0];
       if (!f) return mostrar(e, `${t.erro}: ${erroDoRust((x as { mensagem?: string }).mensagem ?? x)}`, true);
       mostrar(e, t.consulta.sintaxe(f.linha, f.coluna, f.mensagem), true);
-      if (e !== s) return;
+      if (e !== s || aoVivo) return;
       const i = indiceDe(campo.value, f.linha, f.coluna);
       campo.focus();
       campo.setSelectionRange(i, i + Math.max(1, f.fim - f.inicio));
@@ -121,6 +160,17 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     if (e === s) o.voltar();
   }
 
+  async function exportar(e: Estado, csv: boolean): Promise<void> {
+    if (!e.resultado || e.rodando) return;
+    const nome = (e.original ?? "").split(/[\\/]/).pop()!.replace(/\.(jsonl?|ndjson)(\.(gz|zst))?$/i, "") || "consulta";
+    try {
+      const salvo = await chamar<string | null>("salvar_consulta", { id: e.id, arquivo: e.resultado, csv, nome });
+      if (salvo) mostrar(e, t.consulta.salvo(salvo));
+    } catch (x) {
+      mostrar(e, `${t.erro}: ${erroDoRust((x as { mensagem?: string }).mensagem ?? x)}`, true);
+    }
+  }
+
   /** Cancelar não recebe `fim` (a geração já mudou); o resultado anterior, se aberto, foi apagado. */
   async function cancelar(e: Estado): Promise<void> {
     e.rodando = false;
@@ -133,6 +183,14 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     e.preventDefault();
     void rodar();
   });
+  salvarBtn.addEventListener("click", () => {
+    filtros = alternarFiltro(filtros, campo.value);
+    try {
+      localStorage.setItem(CHAVE_FILTROS, JSON.stringify(filtros));
+    } catch {}
+    desenharFiltros();
+  });
+  for (const b of exportarBtns) b.addEventListener("click", () => s && void exportar(s, b.dataset.exportar === "csv"));
   campo.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -141,10 +199,16 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   });
   campo.addEventListener("input", () => {
     if (campo.getAttribute("aria-invalid") === "true") mostrar(s, "");
+    marcarSalvo();
+    clearTimeout(espera);
+    if (campo.value.trim()) espera = setTimeout(() => void rodar(true), ESPERA);
   });
   cancelarBtn.addEventListener("click", () => s && void cancelar(s));
   voltarBtn.addEventListener("click", () => s && void voltar(s));
-  anonBtn.addEventListener("click", () => anonBtn.setAttribute("aria-pressed", String(!anonimizar())));
+  anonBtn.addEventListener("click", () => {
+    anonBtn.setAttribute("aria-pressed", String(!anonimizar()));
+    if (campo.value.trim()) void rodar(); // o resultado na tela era do outro modo
+  });
 
   void listen<Andamento>("consulta", ({ payload: p }) => {
     const e = estados.get(p.id);
@@ -162,6 +226,8 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   voltarBtn.textContent = t.consulta.voltar;
   anonBtn.title = t.consulta.anonimizar;
   anonBtn.setAttribute("aria-label", t.consulta.anonimizar);
+  for (const b of exportarBtns) b.textContent = b.dataset.exportar === "csv" ? t.consulta.csv : t.consulta.jsonl;
+  desenharFiltros();
   mostrar(null, "");
 
   return {
@@ -179,6 +245,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     },
     /** Troca de aba: mostra a consulta do documento `id` (nova, se ainda não houver). */
     usar(id: number | null): void {
+      clearTimeout(espera); // a pausa era da aba que sai
       if (s) s.filtro = campo.value;
       if (id === null) s = null;
       else {
@@ -186,6 +253,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
         s = estados.get(id)!;
       }
       campo.value = s?.filtro ?? "";
+      marcarSalvo();
       mostrar(s, s?.msg ?? "", s?.erro);
     },
     /** Aba fechada: esquece a consulta dela (o Rust apaga o temporário ao fechar o documento). */

@@ -69,6 +69,9 @@ fn nenhum_comando_imprime_segredo() {
         vec!["consultar", ".", f, "--anonimizar"],
         vec!["consultar", ".", f, "--documento"],
         vec!["consultar", "error(.senha)", f],
+        vec!["jq", ".", f, "--saida", "csv"],
+        vec!["jq", ".", f, "--saida", "csv", "--anonimizar"],
+        vec!["jq", ".pagamento", f, "--saida", "jsonl"],
         vec!["erros", f],
         vec!["erros", f, "--json"],
         vec!["inferir", f, "--json"],
@@ -91,6 +94,13 @@ fn nenhum_comando_imprime_segredo() {
         Some("S3NT1N3LA")
     );
     assert!(jasao(&["buscar", "--sem-mascara", f, "4111"]).contains("4111"));
+    // jq exportando CSV (processo filho): mascarado sai com as colunas; `--sem-mascara` chega ao filho.
+    let csv = jasao(&["jq", ".", f, "--saida", "csv"]);
+    assert!(csv.contains("senha") && csv.contains("ana"), "{csv}");
+    assert_eq!(
+        vaza(&jasao(&["jq", ".", f, "--saida", "csv", "--sem-mascara"])),
+        Some("S3NT1N3LA")
+    );
     // Mascarado: mesmo comprimento, ainda JSON.
     let jan = jasao(&["janela", f, "0", "1"]);
     assert!(jan.contains(r#""senha":"***********","cvv":9999"#), "{jan}");

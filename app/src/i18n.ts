@@ -285,6 +285,11 @@ const pt = {
     cortada: "resultado parcial: a saída passou do teto de tamanho e a consulta parou",
     sintaxe: (l: number, c: number, m: string) => `Erro no filtro, linha ${l}, coluna ${c}: ${m}`,
     anonimizar: "Anonimizar segredos no resultado: cada valor vira um código estável nesta sessão (não é criptografia)",
+    salvar: "Salvar filtro",
+    esquecer: "Tirar dos filtros salvos",
+    jsonl: "Salvar JSONL…",
+    csv: "Salvar CSV…",
+    salvo: (c: string) => `Salvo em ${c}`,
   },
   mascara: {
     rotulo: "Valor mascarado",
@@ -638,6 +643,11 @@ const en: Textos = {
     cortada: "partial result: the output hit the size cap and the query stopped",
     sintaxe: (l: number, c: number, m: string) => `Filter error, line ${l}, column ${c}: ${m}`,
     anonimizar: "Anonymize secrets in the result: each value becomes a code that is stable for this session (not cryptography)",
+    salvar: "Save filter",
+    esquecer: "Remove from saved filters",
+    jsonl: "Save JSONL…",
+    csv: "Save CSV…",
+    salvo: (c: string) => `Saved to ${c}`,
   },
   mascara: {
     rotulo: "Masked value",
