@@ -1,21 +1,22 @@
 # Jasão
 
-Visualizador de JSON e JSONL para arquivos de qualquer tamanho. Gratuito, somente leitura, para macOS, Windows e Linux (Tauri 2 + Rust), em português e inglês.
+Visualizador de JSON e JSONL para arquivos de qualquer tamanho. Gratuito, somente leitura, em português e inglês (Tauri 2 + Rust). Roda no macOS; Windows e Linux estão previstos, mas ainda não foram compilados nem testados.
 
 Abrir e navegar é o básico, e nisso ele concorre com os pagos. O que só ele faz é explicar o arquivo: a estrutura que os registros realmente têm, o que mudou entre duas versões e se a mudança quebra quem consome, e o schema pronto (Zod, JSON Schema, TypeScript) já conferido contra cada registro.
 
 ## Em números
 
-JSONL de 1 GB com 6,46 milhões de registros, Apple M5 Pro, arquivo no cache do sistema (detalhes em [docs/decisoes.md](docs/decisoes.md)):
+JSONL de 1 GB com 6,46 milhões de registros, Apple M5 Pro, arquivo no cache do sistema. Cada linha diz onde foi medida:
 
-| O quê | Medido |
-|---|---|
-| Abrir no app | 221 ms, com 99 MB de memória própria |
-| Índice de linhas | 85 ms por GB |
-| Buscar texto no arquivo inteiro | 15 ms literal, 17 ms regex |
-| Validar o arquivo contra o schema gerado | 1 a 3 s |
+| O quê | Medido | Onde |
+|---|---|---|
+| Abrir | 221 ms, com 99 MB de memória própria | app release |
+| Primeira tela | 0,26 s | CLI ponta a ponta, [`scripts/medir.sh`](scripts/medir.sh) |
+| Índice de linhas | 0,23 s | CLI ponta a ponta, `scripts/medir.sh` |
+| Buscar no arquivo inteiro (até o fim) | 0,28 s literal, 0,27 s regex | CLI ponta a ponta, `scripts/medir.sh` |
+| Validar contra o schema gerado | 1 a 3 s | app release |
 
-Leitura a frio do disco não foi medida. O alvo do plano é abrir e navegar até 10 GB.
+Mediana de 5 rodadas do `medir.sh`, numa máquina com outras cargas. Detalhes, metas e o que não foi medido em [docs/decisoes.md](docs/decisoes.md), "Medidas de desempenho". Leitura a frio do disco não foi medida. O alvo do plano é abrir e navegar até 10 GB.
 
 ## O que ele faz
 
@@ -71,7 +72,7 @@ Leitura a frio do disco não foi medida. O alvo do plano é abrir e navegar até
 
 ## Comparativo
 
-Placar do radar em 24/11/2026: 13 eixos, de 0 a 2 pontos cada. As fontes de cada célula estão em [docs/radar.md](docs/radar.md) e [docs/concorrencia.md](docs/concorrencia.md). Sem fonte, a célula não pontua.
+Placar do radar ([docs/radar.md](docs/radar.md)), conforme a última rodada registrada lá; pode estar atrás da main. São 13 eixos, de 0 a 2 pontos cada. As fontes de cada célula estão no radar e em [docs/concorrencia.md](docs/concorrencia.md). Sem fonte, a célula não pontua.
 
 | | Jasão | Dadroit | OK JSON | JSON Hero | quicktype | MongoDB Compass |
 |---|---|---|---|---|---|---|
