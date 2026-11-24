@@ -1,0 +1,12 @@
+{"tipo": "evento", "id": 1, "moeda": "BRL", "msg": "evento 1", "nivel": "info", "duracao": 1.5}
+{"tipo": "pagamento", "id": 2, "moeda": "BRL", "valor": "200", "parcelas": 3, "aprovado": true, "protocolo": 9007199254740993}
+{"tipo": "pedido", "id": 3, "moeda": "BRL", "cliente": {"nome": "Cliente Exemplo 3", "cidade": null}, "itens": [{"sku": "SKU-3", "qtd": 3, "preco": "19.90"}], "cupom": null}
+{"tipo": "evento", "id": 4, "moeda": "BRL", "msg": "evento 4", "nivel": "aviso", "duracao": 6.0}
+{"tipo": "pagamento", "id": 5, "moeda": "BRL", "valor": "500", "parcelas": 3, "aprovado": false, "protocolo": 5}
+{"tipo": "pedido", "id": 6, "moeda": "BRL", "cliente": {"nome": "Cliente Exemplo 6", "cidade": "Cidade Fictícia"}, "itens": [{"sku": "SKU-6", "qtd": 6, "preco": "19.90"}], "cupom": null, "obs": "entregar à tarde"}
+{"tipo": "evento", "id": 7, "moeda": "BRL", "msg": "evento 7", "nivel": "info", "duracao": 10.5}
+{"tipo": "pagamento", "id": 8, "moeda": "BRL", "valor": "800", "parcelas": 3, "aprovado": true, "protocolo": 8}
+{"tipo": "pedido", "id": 9, "moeda": "BRL", "cliente": {"nome": "Cliente Exemplo 9", "cidade": null}, "itens": [{"sku": "SKU-9", "qtd": 9, "preco": "19.90"}], "cupom": null}
+{"tipo": "evento", "id": 10, "moeda": "BRL", "msg": "evento 10", "nivel": "aviso", "duracao": 15.0}
+{"tipo": "pagamento", "id": 11, "moeda": "BRL", "valor": "1100", "parcelas": 3, "aprovado": false, "protocolo": 11}
+{"tipo": "pedido", "id": 12, "moeda": "BRL", "cliente": {"nome": "Cliente Exemplo 12", "cidade": "Cidade Fictícia"}, "itens": [{"sku": "SKU-12", "qtd": 12, "preco": "5"}], "cupom": null, "obs": "entregar à tarde"}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Registro",
+  "type": "object",
+  "properties": {
+    "a\"b": {
+      "const": "a\"b"
+    },
+    "c\\d": {
+      "const": 1
+    },
+    "\u003c/script\u003e\u003cscript\u003ealert(1)\u003c/script\u003e": {
+      "const": "\u003c/script\u003e\u003cscript\u003ealert(1)\u003c/script\u003e"
+    },
+    "\u0007sino": {
+      "const": 3
+    },
+    "\u202etxt.exe": {
+      "const": "\u202etxt.exe"
+    },
+    "linha\u2028separada": {
+      "const": 5
+    },
+    "__proto__": {
+      "const": "__proto__"
+    },
+    "constructor": {
+      "const": 7
+    },
+    "${x}": {
+      "const": "${x}"
+    },
+    "`crase`": {
+      "const": 9
+    },
+    "\u200bzero": {
+      "const": "\u200bzero"
+    },
+    "\u0085c1": {
+      "const": 11
+    },
+    "ok": {
+      "const": "ok"
+    }
+  },
+  "required": ["a\"b", "c\\d", "\u003c/script\u003e\u003cscript\u003ealert(1)\u003c/script\u003e", "\u0007sino", "\u202etxt.exe", "linha\u2028separada", "__proto__", "constructor", "${x}", "`crase`", "\u200bzero", "\u0085c1", "ok"]
+}

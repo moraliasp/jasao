@@ -71,7 +71,7 @@ jobs:
       # Versões fixas: nightly por data e cargo-fuzz exato (atualizar os dois juntos, aqui e em
       # scripts/gates.sh). Orçamento: ~300 s de fuzz no total, repartidos entre os alvos.
       NIGHTLY: nightly-2026-11-20
-      FUZZ_SEG: 27
+      FUZZ_SEG: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install "$NIGHTLY" --profile minimal
@@ -109,3 +109,6 @@ jobs:
       - name: Fuzz curto da visão Texto
         working-directory: core/fuzz
         run: cargo +"$NIGHTLY" fuzz run texto --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto do export Zod/Schema
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run exportar --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
