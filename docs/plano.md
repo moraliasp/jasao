@@ -96,7 +96,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - **Consulta jq** com resultado ao vivo e filtros salvos; exportar resultado em JSONL, CSV e Parquet.
 - **Acompanhar arquivo vivo** (como `tail -f`) ✅ (24/11: botão Seguir/Pausar, indicador de novas, truncado/rotacionado/reescrito reabre com aviso); vigiar pasta e linha do tempo de pasta ainda não.
 - **Linha de comando:** `inferir`, `diff --falha-em quebra`, `validar`, para CI.
-- **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada.
+- **Formatos binários:** MessagePack, CBOR, BSON; YAML e TOML como entrada. Feito em 24/11/2026 (somente leitura, convertidos para JSONL no cache; ver `docs/decisoes.md`, "Formatos de entrada").
 - **Máscara de segredos** na tela e na exportação; anonimização.
 
 ### Fora por enquanto

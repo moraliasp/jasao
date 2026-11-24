@@ -71,7 +71,7 @@ jobs:
       # Versões fixas: nightly por data e cargo-fuzz exato (atualizar os dois juntos, aqui e em
       # scripts/gates.sh). Orçamento: ~300 s de fuzz no total, repartidos entre os alvos.
       NIGHTLY: nightly-2026-11-20
-      FUZZ_SEG: 23
+      FUZZ_SEG: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install "$NIGHTLY" --profile minimal
@@ -115,3 +115,18 @@ jobs:
       - name: Fuzz curto do diff de estrutura
         working-directory: core/fuzz
         run: cargo +"$NIGHTLY" fuzz run diff --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da conversão de MessagePack
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run formato_msgpack --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da conversão de CBOR
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run formato_cbor --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da conversão de BSON
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run formato_bson --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da conversão de YAML
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run formato_yaml --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096
+      - name: Fuzz curto da conversão de TOML
+        working-directory: core/fuzz
+        run: cargo +"$NIGHTLY" fuzz run formato_toml --fuzz-dir . -- -max_total_time="$FUZZ_SEG" -max_len=4096

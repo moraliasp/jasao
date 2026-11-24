@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 nucleo = { path = ".." }
 flate2 = "1.1"
 zstd = "0.14"
+serde_json = "1.0.154"
 
 # Workspace próprio: o fuzz roda no nightly e fica fora do workspace principal.
 [workspace]
@@ -104,6 +105,41 @@ bench = false
 [[bin]]
 name = "diff"
 path = "fuzz_targets/diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formato_msgpack"
+path = "fuzz_targets/formato_msgpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formato_cbor"
+path = "fuzz_targets/formato_cbor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formato_bson"
+path = "fuzz_targets/formato_bson.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formato_yaml"
+path = "fuzz_targets/formato_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formato_toml"
+path = "fuzz_targets/formato_toml.rs"
 test = false
 doc = false
 bench = false
