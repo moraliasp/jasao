@@ -72,7 +72,7 @@ Repositório, três crates, CI com testes, fuzz curto e benchmarks, corpus, gera
 - **Tabela:** JSONL e listas de objetos viram colunas por caminho; ordenar, fixar e esconder colunas.
 - **Busca:** por chave, valor ou expressão regular, no arquivo inteiro, com contagem e navegação.
 - **Copiar:** caminho em jq, JSONPath, JSON Pointer e JavaScript; valor cru ou formatado.
-- **Valores inteligentes:** época vira data, data mostra "há 3 dias", cor mostra amostra, URL vira link, imagem em base64 tem prévia, JWT abre decodificado, JSON dentro de texto expande.
+- **Valores inteligentes:** época vira data, data mostra "há 3 dias", cor mostra amostra, URL vira link, imagem em base64 tem prévia, JWT abre decodificado, JSON dentro de texto expande. Feito (23/11/2026; ver decisoes.md).
 - **Erros:** linha inválida aparece na lista, com posição e motivo, sem impedir o resto.
 - **Entrada compactada:** `.gz` e `.zst`.
 

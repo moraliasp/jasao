@@ -9,9 +9,10 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { aposFechar, ciclo, EXTENSOES, nomes, porAtalho, posicaoNova, triar } from "./abas";
 import { chamar, docAtivo, usarDoc } from "./doc";
 import { criarBusca } from "./busca";
+import { abrirLinkDe, criarDetalhe, selo } from "./detalhe";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
 import { type Estrutura, type ItemE, itens as itensEstrutura } from "./estrutura";
-import { erroDoRust, type Motivo, t } from "./i18n";
+import { erroDoRust, type Motivo, t, tamanho } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
 import { criarConsulta } from "./consulta";
@@ -56,6 +57,8 @@ const arvore = $("arvore");
 const alto = $("alto");
 const linhasEl = $("linhas");
 const status = $("status");
+const avisar = (m: string) => void (status.textContent = m);
+const detalhe = criarDetalhe($("detalhe"), avisar, () => requestAnimationFrame(() => mostrarLinha(sel)));
 const migalhas = $("migalhas");
 const copiar = $<HTMLButtonElement>("copiar");
 const textoEl = $("texto");
@@ -213,7 +216,7 @@ function linhaHtml(v: number, l: Linha | undefined): string {
   return `<div class="row" id="l${v}" data-v="${v}" role="treeitem" aria-level="${l.prof + 1}"
     aria-selected="${v === sel}"${l.expansivel ? ` aria-expanded="${l.aberto}"` : ""}
     ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}" aria-setsize="${l.irmaos}"`}
-    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${visivel(chave(l))}</span>${valor(l)}
+    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${visivel(chave(l))}</span>${valor(l)}${selo(l)}
     <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(chave(l))}">${icone("copy")}</button></div>`;
 }
 
@@ -258,6 +261,7 @@ function rodape(): void {
     verFormatado.disabled = true;
     migalhas.innerHTML = it ? `<li>${visivel(it.caminho)}</li>` : "";
     migalhasDe = "";
+    void detalhe.mostrar("", undefined, 0);
     return;
   }
   if (modo === "tabela") {
@@ -271,6 +275,7 @@ function rodape(): void {
   copiar.disabled = !atual;
   verFormatado.disabled = !atual || atual.erro !== null;
   const de = atual ? `${docAtivo()}:${versao}:${sel}` : "";
+  void detalhe.mostrar(de, atual, sel);
   if (de === migalhasDe) return;
   migalhasDe = de;
   if (!atual) {
@@ -999,10 +1004,6 @@ function destinoAoAbrir(): Modo | "painel" {
   return p === "painel" ? "painel" : p === "sugerido" ? sugerido() : (p as Modo);
 }
 
-const tamanho = (b: number) => {
-  const [unit, base] = b >= 1e9 ? ["gigabyte", 1e9] : b >= 1e6 ? ["megabyte", 1e6] : b >= 1e3 ? ["kilobyte", 1e3] : ["byte", 1];
-  return new Intl.NumberFormat(t.lang, { style: "unit", unit, unitDisplay: "short", maximumFractionDigits: 1 }).format(b / (base as number));
-};
 
 /** Selo e indicadores: refeitos a cada aviso de progresso da varredura. */
 function desenharAndamento(): void {
@@ -1055,6 +1056,7 @@ linhasEl.addEventListener("click", (e) => {
   const v = Number(row.dataset.v);
   const l = linhaEm(v);
   sel = v;
+  if (alvo.closest("[data-link]") && l) void abrirLinkDe(l, v, avisar);
   if (alvo.closest("[data-cp]") && l) copiarComo(v, "jq", alvo.closest<HTMLElement>("[data-cp]")!);
   else if (alvo.closest("[data-tg]")) void alternar(v);
   else desenhar();
@@ -1062,7 +1064,7 @@ linhasEl.addEventListener("click", (e) => {
 });
 linhasEl.addEventListener("dblclick", (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>(".row[data-v]");
-  if (row && !(e.target as HTMLElement).closest("[data-tg],[data-cp]") && linhaEm(Number(row.dataset.v))?.expansivel)
+  if (row && !(e.target as HTMLElement).closest("[data-tg],[data-cp],[data-link]") && linhaEm(Number(row.dataset.v))?.expansivel)
     void alternar(Number(row.dataset.v));
 });
 linhasEl.addEventListener("contextmenu", (e) => {
