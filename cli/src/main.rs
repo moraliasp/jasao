@@ -17,6 +17,16 @@
 //!                                         passar de um deles, ou recursão sem fundo, sai com 3
 //!                                         `--anonimizar` troca cada segredo por um código estável
 //!                                         nesta execução (`anon:…`), não criptográfico
+//!   transformar <arquivo> -o <novo> [--jq F] [--manter a,b] [--tirar a,b] [--renomear x=y,…]
+//!               [--saida jsonl|json|json-compacto] [--anonimizar]
+//!                                         grava um arquivo NOVO com os registros (ou o resultado
+//!                                         do `--jq`) transformados: só os campos de `--manter`,
+//!                                         sem os de `--tirar`, com os de `--renomear` trocados
+//!                                         (nessa ordem, campos do topo do registro). Segredos
+//!                                         mascarados (`--anonimizar`: código; `--sem-mascara`:
+//!                                         como estão). Recusa gravar sobre o próprio arquivo;
+//!                                         grava num temporário na pasta do destino e só troca no
+//!                                         fim (erro não deixa meio arquivo no destino)
 //!   erros <arquivo> [--json] [--max N]    lista as linhas que não são JSON; sai com 1 se houver
 //!   inferir <arquivo> [--json]            estrutura por caminho (linhas a partir de 1)
 //!   exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>
@@ -61,12 +71,15 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use nucleo::caminho::texto_json;
 use nucleo::consulta::Consulta;
 use nucleo::erros::{self, OpcoesErros};
+use nucleo::transformar::{Fonte, Mascara, Saida, Transformacao};
 use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
 const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]\n\
                    \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N] [--anonimizar]\n  \
+                   transformar <arquivo> -o <novo> [--jq F] [--manter a,b] [--tirar a,b] [--renomear x=y,…]\n\
+                   \x20     [--saida jsonl|json|json-compacto] [--anonimizar]\n  \
                    erros <arquivo> [--json] [--max N]\n  \
                    inferir <arquivo> [--json]\n  \
                    exportar --zod|--schema|--ts [--literal] [--numero-texto manter|numero] <arquivo>\n  \
@@ -115,6 +128,13 @@ fn main() -> ExitCode {
         },
         ["consultar" | "jq", resto @ ..] => match opcoes_consulta(resto) {
             Some(op) => consultar(op, &mut tela(), &mut erro()),
+            None => {
+                eprintln!("{USO}");
+                return ExitCode::from(2);
+            }
+        },
+        ["transformar", resto @ ..] => match opcoes_transformar(resto) {
+            Some(op) => transformar(op),
             None => {
                 eprintln!("{USO}");
                 return ExitCode::from(2);
@@ -604,6 +624,111 @@ fn consultar(
         )
         .into());
     }
+    Ok(())
+}
+
+struct OpcoesTransformar<'a> {
+    arquivo: &'a str,
+    destino: &'a str,
+    jq: Option<&'a str>,
+    t: Transformacao,
+    saida: Saida,
+    anonimizar: bool,
+}
+
+/// `transformar <arquivo> -o <novo> [...]`, opções em qualquer ordem.
+fn opcoes_transformar<'a>(args: &[&'a str]) -> Option<OpcoesTransformar<'a>> {
+    let lista = |s: &str| {
+        s.split(',')
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let (mut arquivo, mut destino, mut jq) = (None, None, None);
+    let (mut t, mut saida, mut anonimizar) = (Transformacao::default(), Saida::Jsonl, false);
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "-o" | "--destino" => destino = Some(*it.next()?),
+            "--jq" => jq = Some(*it.next()?),
+            "--manter" => t.manter.extend(lista(it.next()?)),
+            "--tirar" => t.tirar.extend(lista(it.next()?)),
+            "--renomear" => {
+                for par in lista(it.next()?) {
+                    let (de, para) = par.split_once('=')?;
+                    t.renomear.push((de.to_owned(), para.to_owned()));
+                }
+            }
+            "--saida" => {
+                saida = match *it.next()? {
+                    "jsonl" => Saida::Jsonl,
+                    "json" => Saida::Json,
+                    "json-compacto" => Saida::JsonCompacto,
+                    _ => return None,
+                }
+            }
+            "--anonimizar" => anonimizar = true,
+            _ if arquivo.is_none() && !a.starts_with('-') => arquivo = Some(a),
+            _ => return None,
+        }
+    }
+    Some(OpcoesTransformar {
+        arquivo: arquivo?,
+        destino: destino?,
+        jq,
+        t,
+        saida,
+        anonimizar,
+    })
+}
+
+/// Roda no próprio processo (o `jq` tem supervisor; aqui o resultado vai para um temporário que
+/// só vira o destino no fim). Morto no meio (Ctrl-C), sobra o `.jasao-salvar-*` oculto na pasta,
+/// nunca o destino pela metade.
+fn transformar(op: OpcoesTransformar) -> Resultado {
+    use nucleo::resumo::{self, Conteudo};
+    let a = abrir(op.arquivo)?;
+    let mascara = if SEM_MASCARA.load(Relaxed) {
+        Mascara::SemMascara
+    } else if op.anonimizar {
+        Mascara::Anonimizar
+    } else {
+        Mascara::Mascarar
+    };
+    let documento = matches!(
+        resumo::conteudo(&a),
+        Conteudo::JsonUnico | Conteudo::JsonVariasLinhas
+    );
+    let fonte = op.jq.map_or(Fonte::Tudo, |f| Fonte::Jq(f.to_owned()));
+    let filtro = nucleo::transformar::compor(&fonte, &op.t, documento);
+    let entrada = nucleo::transformar::entrada(&a, mascara, nucleo::mascara::sal_novo());
+    let destino = std::path::Path::new(op.destino);
+    let protegidos = [std::path::PathBuf::from(op.arquivo)];
+    let t = Instant::now();
+    let resumo = nucleo::transformar::gravar_atomico(destino, &protegidos, |f| {
+        nucleo::transformar::escrever(
+            &entrada,
+            documento,
+            &filtro,
+            op.saida,
+            &AtomicBool::new(false),
+            f,
+            |_, _, _| {},
+        )
+    })?;
+    let mut err = erro();
+    for e in &resumo.primeiros_erros {
+        writeln!(err, "linha {}: {}", e.linha + 1, e.motivo)?;
+    }
+    writeln!(
+        err,
+        "{} resultados · {} erros · {} linhas · em {:.2?} → {}",
+        resumo.resultados,
+        resumo.erros,
+        resumo.total_linhas,
+        t.elapsed(),
+        op.destino
+    )?;
     Ok(())
 }
 

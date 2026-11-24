@@ -231,6 +231,14 @@
       dialog header { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--border); }
       dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
       dialog pre { margin: 0; padding: 12px 16px; overflow: auto; font: 12.5px/1.5 var(--mono); }
+      #salvar-como { width: min(520px, calc(100vw - 32px)); }
+      .salvar-como { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; overflow: auto; }
+      .salvar-como fieldset { display: flex; flex-direction: column; gap: 4px; margin: 0; border: 0; padding: 0; }
+      .salvar-como legend { font-weight: 600; margin-bottom: 4px; }
+      .salvar-como label:has(> input:not([type=radio])) { display: grid; grid-template-columns: 6em 1fr; align-items: center; gap: 8px; }
+      .salvar-como code { font: 12px var(--mono); opacity: .8; }
+      .salvar-como .aviso { margin: 4px 0 0; color: var(--del); }
+      .salvar-como footer { display: flex; justify-content: flex-end; gap: 8px; }
       .vazio { margin: 24px; color: var(--bar-muted); }
 
       /* Micronavegador: régua do arquivo inteiro ao lado das visões. */
@@ -412,6 +420,7 @@
             <button class="btn" type="button" data-voltar hidden></button>
             <button class="btn" type="button" data-exportar="jsonl" hidden></button>
             <button class="btn" type="button" data-exportar="csv" hidden></button>
+            <button class="btn" type="button" id="salvar-como-abrir"></button>
           </form>
         </div>
         <div class="tools">
@@ -465,6 +474,7 @@
       <button type="button" role="menuitem" tabindex="-1" data-formato="pointer"><span></span></button>
       <button type="button" role="menuitem" tabindex="-1" data-formato="valor"><span></span><kbd>⌘C</kbd></button>
     </div>
+    <dialog id="salvar-como"></dialog>
     <dialog id="formatado" aria-labelledby="formatado-titulo">
       <header><h2 id="formatado-titulo"></h2><button class="ib" id="formatado-fechar" type="button" aria-label="Fechar"><svg class="i"><use href="#x"/></svg></button></header>
       <pre id="formatado-texto" tabindex="0"></pre>
