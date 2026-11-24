@@ -27,7 +27,12 @@ export interface TabelaUi {
   omitidas: number;
   indisponivel: Indisponivel | null;
   ordem: Ordem | null;
+  /** Filtro pronto: a grade só tem os `achados`. */
+  filtro: FiltroUi | null;
 }
+export interface FiltroUi { achados: number; caminho: string; tem: boolean | null; valor: string | null }
+/** O que filtrar (posições em `estrutura().caminhos` / `discriminadores`). */
+export type Alvo = { caminho: number; tem: boolean } | { discriminador: number; variante: number };
 
 type Fmt = (n: number) => string;
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
@@ -131,3 +136,59 @@ export function detalhe(c: Coluna, objetos: number, t: Textos, fmt: Fmt): string
   const pr = c.presenca === objetos ? t.estrutura.todos : t.estrutura.deN(fmt(c.presenca), fmt(objetos));
   return `${tipos} · ${pr}`;
 }
+
+/** Evento `filtragem` do Rust. */
+export interface Filtragem { id: number; geracao: number; lidos: number; total: number; fim: boolean; achados: number; falha: string | null }
+/** Filtro em curso e o último fim recebido (pode chegar antes da resposta de `filtrar`). */
+export interface EstadoFiltro {
+  filtrando: { geracao: number; rotulo: string; lidos: number; total: number } | null;
+  fimF: Filtragem | null;
+}
+
+/** Evento `filtragem`: progresso do pedido, ou o fim dele (devolvido). */
+export function filtroChegou(e: EstadoFiltro, p: Filtragem): Filtragem | null {
+  if (p.fim) e.fimF = p;
+  if (e.filtrando?.geracao !== p.geracao) return null;
+  if (!p.fim) {
+    e.filtrando.lidos = p.lidos;
+    e.filtrando.total = p.total;
+    return null;
+  }
+  e.filtrando = null;
+  e.fimF = null;
+  return p;
+}
+
+/** Resposta de `filtrar` (a geração). Se o fim dela já chegou, conclui agora. */
+export function filtroRespondeu(e: EstadoFiltro, geracao: number, rotulo: string): Filtragem | null {
+  e.filtrando = { geracao, rotulo, lidos: 0, total: 0 };
+  return e.fimF?.geracao === geracao ? filtroChegou(e, e.fimF) : null;
+}
+
+/** `.tipo = "x"`, `com .a.b`, `sem .a.b`: texto puro (vai para `textContent` ou por `esc`). */
+export function rotuloFiltro(f: { caminho: string; tem: boolean | null; valor: string | null }, t: Textos): string {
+  const tf = t.tabela.filtro;
+  const c = visivelTexto(f.caminho);
+  if (f.valor !== null) return tf.igual(c, visivelTexto(f.valor));
+  return f.tem === false ? tf.sem(c) : tf.com(c);
+}
+
+/** Chip do filtro pronto (com o botão de tirar) ou o progresso do que roda, como HTML. */
+export function chipFiltro(e: EstadoFiltro, info: TabelaUi | null, t: Textos, fmt: Fmt): string {
+  const tf = t.tabela.filtro;
+  const p = e.filtrando;
+  if (p) {
+    const pct = p.total ? Math.floor((p.lidos * 100) / p.total) : 0;
+    return `<progress max="100" value="${pct}"></progress><span>${esc(tf.filtrando(p.rotulo, String(pct)))}</span>` +
+      `<button class="btn" type="button" data-cancelar-filtro>${esc(t.tabela.cancelar)}</button>`;
+  }
+  const f = info?.filtro;
+  if (!f) return "";
+  const rot = rotuloFiltro(f, t);
+  return `<span class="chip on" title="${esc(rot)}">${esc(rot)} · ${esc(tf.achados(fmt(f.achados), fmt(info.registros)))}` +
+    `<button class="ib" type="button" data-limpar-filtro aria-label="${esc(tf.limpar)}" title="${esc(tf.limpar)}">` +
+    `<svg class="i" aria-hidden="true"><use href="#x"/></svg></button></span>`;
+}
+
+/** Registros na grade: os filtrados, ou todos. */
+export const linhasNaGrade = (i: TabelaUi) => i.filtro?.achados ?? i.registros;
