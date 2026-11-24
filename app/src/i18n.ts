@@ -88,6 +88,28 @@ const pt = {
   caminhoSelecionado: "Caminho do nó selecionado",
   tema: "Alternar tema claro e escuro",
   copiarCaminho: "Copiar caminho",
+  inteligente: {
+    rotulo: "Valor selecionado",
+    epoca: (u: "s" | "ms") => `Época em ${u === "s" ? "segundos" : "milissegundos"} vira data`,
+    data: "Data ISO 8601",
+    utc: "UTC",
+    local: "local",
+    cor: "Cor",
+    amostra: (c: string) => `Amostra da cor ${c}`,
+    url: "Link: abre no navegador do sistema, nunca dentro do app",
+    abrir: (u: string) => `Abrir no navegador do sistema: ${u}`,
+    abrirCurto: "abrir",
+    imagem: "Imagem em base64 do próprio arquivo (nada é baixado)",
+    imagemCurta: "imagem",
+    previaImagem: (f: string, b: string) => `Prévia da imagem ${f}, ${b}`,
+    jwt: "JWT decodificado: a assinatura não é verificada nem sai do app",
+    cabecalho: "Cabeçalho",
+    carga: "Carga",
+    json: (n: string) => `JSON dentro do texto, expandido (${n})`,
+    jsonCurto: "JSON no texto",
+    itens: (n: number) => `${n} ${n === 1 ? "item" : "itens"}`,
+    erroLink: (m: string) => `Não deu para abrir o link: ${m}`,
+  },
   copiado: "Copiado",
   copiar: {
     menu: "Copiar",
@@ -289,6 +311,28 @@ const en: Textos = {
   caminhoSelecionado: "Path of the selected node",
   tema: "Toggle light and dark theme",
   copiarCaminho: "Copy path",
+  inteligente: {
+    rotulo: "Selected value",
+    epoca: (u: "s" | "ms") => `Epoch in ${u === "s" ? "seconds" : "milliseconds"} as a date`,
+    data: "ISO 8601 date",
+    utc: "UTC",
+    local: "local",
+    cor: "Color",
+    amostra: (c: string) => `Swatch of color ${c}`,
+    url: "Link: opens in the system browser, never inside the app",
+    abrir: (u: string) => `Open in the system browser: ${u}`,
+    abrirCurto: "open",
+    imagem: "Base64 image from the file itself (nothing is downloaded)",
+    imagemCurta: "image",
+    previaImagem: (f: string, b: string) => `Preview of the ${f} image, ${b}`,
+    jwt: "Decoded JWT: the signature is not verified and never leaves the app",
+    cabecalho: "Header",
+    carga: "Payload",
+    json: (n: string) => `JSON inside the text, expanded (${n})`,
+    jsonCurto: "JSON in text",
+    itens: (n: number) => `${n} ${n === 1 ? "item" : "items"}`,
+    erroLink: (m: string) => `Could not open the link: ${m}`,
+  },
   copiado: "Copied",
   copiar: {
     menu: "Copy",
@@ -399,6 +443,12 @@ const en: Textos = {
 };
 
 export type Motivo = keyof Textos["motivos"];
+
+/** Bytes legíveis no idioma da interface ("1,2 MB"). */
+export const tamanho = (b: number) => {
+  const [unit, base] = b >= 1e9 ? ["gigabyte", 1e9] : b >= 1e6 ? ["megabyte", 1e6] : b >= 1e3 ? ["kilobyte", 1e3] : ["byte", 1];
+  return new Intl.NumberFormat(t.lang, { style: "unit", unit, unitDisplay: "short", maximumFractionDigits: 1 }).format(b / (base as number));
+};
 export const t: Textos = navigator.language.toLowerCase().startsWith("pt") ? pt : en;
 
 /** Texto dos códigos de erro que o Rust devolve (`jasao:…`), ao abrir e na consulta (o filho

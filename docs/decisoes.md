@@ -260,7 +260,7 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 ## Exemplos embutidos (Fase 1, 22/11/2026)
 
-**O que é:** o app aberto sem arquivo mostra dois exemplos que vêm dentro do binário, como o Leve faz com o `sample:`. O primeiro é a história e a gramática do JSON (`historia.json`, em pt-BR, conferido contra RFC 4627, RFC 7159, RFC 8259, ECMA-404, RFC 6901 e RFC 9535, sem fato não verificado). O segundo é uma vitrine de tudo o que o app faz (`vitrine.jsonl`, 1.416 linhas). O registro-guia da vitrine sugere buscas, regex, jq e caminhos para testar. Com arquivo na linha de comando, os exemplos nunca aparecem.
+**O que é:** o app aberto sem arquivo mostra dois exemplos que vêm dentro do binário, como o Leve faz com o `sample:`. O primeiro é a história e a gramática do JSON (`historia.json`, em pt-BR, conferido contra RFC 4627, RFC 7159, RFC 8259, ECMA-404, RFC 6901 e RFC 9535, sem fato não verificado). O segundo é uma vitrine de tudo o que o app faz (`vitrine.jsonl`, 1.417 linhas). O registro-guia da vitrine sugere buscas, regex, jq e caminhos para testar. Com arquivo na linha de comando, os exemplos nunca aparecem.
 
 **Como abre:** o Rust decide (`exemplos::inicial`): sem argumento, `arquivo_inicial` devolve `exemplo:historia`. `abrir` reconhece o caminho sintético (`exemplos::embutido`) e monta um `ArquivoLinhas::estatico` sobre os bytes do `include_bytes!`. Daí em diante o caminho é o de qualquer arquivo: índice, varredura, régua, árvore, texto, busca, jq. Não se usa arquivo temporário porque nada vai para o disco e o app continua só leitura. Atalho conhecido: um arquivo de verdade chamado literalmente `exemplo:historia`, passado por caminho relativo na linha de comando, abre o exemplo.
 
@@ -268,7 +268,7 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 
 **Por que a história é uma linha só:** JSON em várias linhas abre como texto linha a linha, e JSON em uma linha abre como `JsonUnico` (árvore de um registro). Para ler a história na Árvore, ela precisa ser `JsonUnico`.
 
-**Vitrine:** tem todos os tipos e os vazios, 12 níveis de aninhamento, um array de 1.000 itens, unicode e escapes (incluindo U+2028), uma string acima do teto de colunas do Texto, números extremos como texto cru (`-0`, `5e-324`, `1e400`), inteiros grandes que o jq devolve exatos, chave duplicada e chaves com `/` e `~`. São 1.400 registros de 4 tipos para colorir a régua e 6 linhas inválidas de propósito, 5 com motivos diferentes e 1 vazia. Os arquivos são gerados de forma determinística por `scripts/exemplos.py`, e os testes em `app/src-tauri/src/exemplos.rs` conferem cada capacidade e cada sugestão do guia pelo `nucleo`.
+**Vitrine:** tem todos os tipos e os vazios, 12 níveis de aninhamento, um array de 1.000 itens, unicode e escapes (incluindo U+2028), uma string acima do teto de colunas do Texto, números extremos como texto cru (`-0`, `5e-324`, `1e400`), inteiros grandes que o jq devolve exatos, chave duplicada, chaves com `/` e `~`, e um registro de valores inteligentes (época, data, cores, URL, imagem em base64, JWT fictício e JSON dentro de texto). São 1.400 registros de 4 tipos para colorir a régua e 6 linhas inválidas de propósito, 5 com motivos diferentes e 1 vazia. Os arquivos são gerados de forma determinística por `scripts/exemplos.py`, e os testes em `app/src-tauri/src/exemplos.rs` conferem cada capacidade e cada sugestão do guia pelo `nucleo`.
 
 **Achado:** o `jaq` aceita `NaN` como literal (vira `null`), mas o `nucleo` o trata como inválido. A linha inválida de "NaN" virou "vírgula decimal" para a contagem bater nos dois. A divergência fica como pendência.
 
@@ -374,3 +374,19 @@ O mesmo `select` no `jq` 1.7 (uma thread) levou 1,67 s. Em `.gz` (31 MB), descom
 **Conferido no app (ponte HTTP + navegador, dados fictícios gerados na hora):** união discriminada, número como texto, campo opcional, `null` e linha quebrada (3.000 registros: 2.999 passam, 1 linha inválida à parte); chaves hostis escapadas na tela, com "Travar no valor"; pt-BR, inglês e tema escuro; Copiar (texto igual ao mostrado); Esc. Arquivo de 1 GB (6.306.549 registros, build release, arquivo em cache, 18 núcleos): validação de 1,0 a 2,9 s quando tudo passa (Zod, Schema e literal) e 2,8 a 3,3 s quando reprova; CLI 1,3 a 2,7 s.
 
 **Pendências:** formatos (`date-time`, `email`, `uuid`) não são inferidos; uniões discriminadas só no topo (objetos aninhados com `tipo` saem como objeto com campos opcionais); `enum` para campo de poucos valores; tipos TS puros, Pydantic e afins ficam fora desta fase.
+
+## Valores inteligentes (Fase 1, 23/11/2026)
+
+**Escolha:** a detecção mora em TypeScript (`app/src/valores.ts`, pura, sem DOM, rede nem relógio), não no núcleo: é apresentação, e o núcleo continua entregando o texto cru. Época (ms sempre; segundos só se o nome do campo parece data, porque 10 dígitos são comuns em id; 2001 a 2100), data ISO 8601, cor (hex e `rgb()`/`rgba()` com canais conferidos), URL http(s), imagem em base64 (data URI ou base64 cru com assinatura de PNG, JPEG ou GIF), JWT e JSON dentro de texto. Na Árvore, um selo ao lado do valor; abaixo dela, o painel do valor selecionado (`app/src/detalhe.ts`).
+
+**Prévia cortada:** o selo sai da prévia da linha (200 bytes). Se o valor não coube, o selo é só uma pista pelo começo (imagem, JWT, JSON, URL) e o painel pede o valor inteiro ao Rust (`valor`), só até 1 MiB.
+
+**Tetos:** 1 MiB para o que passa por base64 (imagem, JWT) e por `JSON.parse` (JSON dentro de texto); 100 níveis ao reindentar (a indentação cresce com o quadrado do nível); URL até 2.048 caracteres. O JSON é reindentado por um tokenizador, sem passar os valores pelo `JSON.parse`, então número grande e chave repetida ficam como no arquivo.
+
+**Segurança:** todo texto do arquivo entra no HTML por `visivel`/`escAtributo`. O `href` da URL é o normalizado pelo `URL` (ASCII, domínio internacional em punycode, bidi e invisíveis percentualmente codificados): o que se vê é o que se abre. Link só abre com clique, pelo comando `abrir_link` do Rust, que de novo recusa o que não for http(s) em ASCII e manda ao navegador do sistema (`open`, `xdg-open`, `rundll32`); a webview nunca navega. JWT: só cabeçalho e carga, a assinatura é descartada na detecção e nunca é conferida nem enviada. Imagem: só data URI base64 do próprio arquivo, `src` posto pela propriedade; a CSP ganhou `img-src 'self' data:` e nada de rede.
+
+**Acessibilidade:** amostra de cor com `role="img"` e rótulo; painel com `aria-live="polite"`; blocos com `tabindex="0"` e rótulo; o link do painel é botão de verdade (Tab e Enter). O selo de link na árvore fica fora da ordem do Tab (`tabindex="-1"`) para não quebrar a navegação por setas. A árvore observa a altura do painel (`ResizeObserver`) e mantém a seleção à vista, porque a imagem só ganha tamanho depois de carregar.
+
+**Limites:** a Árvore não expande o JSON dentro de texto em nós (só o painel mostra reindentado). Base64 cru de WebP, BMP e AVIF só com `data:`. Fuso da data relativa é o da máquina.
+
+**Conferência:** `app/tests/valores.test.ts` (11 testes, incluindo texto hostil, homógrafo, bidi e tetos), `link_so_http_em_ascii` no Rust, o registro "valores inteligentes" da vitrine testado em `exemplos.rs`, e a tela vista no navegador do app por uma ponte HTTP de teste para os comandos do Rust (a janela nativa do Tauri não foi aberta).
