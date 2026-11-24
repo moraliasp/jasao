@@ -6,7 +6,8 @@
 //! Estrutura) e lista por posição. Arquivo inteiro em fluxo: cada lado é lido por uma thread que
 //! entrega lotes por um canal limitado, então a memória não cresce com o arquivo; só os primeiros
 //! `MAX_REGISTROS` registros diferentes ficam guardados, com até `MAX_POR_REGISTRO` diferenças
-//! cada. As contagens são sempre do arquivo inteiro. Critérios: `docs/decisoes.md`.
+//! cada. As contagens são sempre do arquivo inteiro. Registro acima de `MAX_BYTES_REGISTRO`
+//! não é comparado (a análise segura índices dele em memória). Critérios: `docs/decisoes.md`.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -25,6 +26,11 @@ use crate::linhas::BOM;
 pub const MAX_REGISTROS: usize = 500;
 /// Diferenças guardadas por registro (as primeiras na ordem do registro de antes).
 pub const MAX_POR_REGISTRO: usize = 50;
+/// Registro maior que isto (de algum lado) não é comparado: validar e andar custam ~2× o
+/// registro em memória, por lado; 16 MiB deixa o par bem abaixo da meta de 300 MB.
+/// shortcut: um JSON único com objeto no topo é um registro só; acima do teto, comparar em
+/// fluxo sem materializar listas e campos.
+pub const MAX_BYTES_REGISTRO: usize = 16 << 20;
 /// Registros por lote no canal de cada lado; 4 lotes em voo por lado.
 const LOTE: usize = 1024;
 const EM_VOO: usize = 4;
@@ -75,27 +81,31 @@ impl fmt::Display for Diferenca {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Par {
     Iguais,
-    /// `total` conta todas; `diferencas` guarda as primeiras `max`.
+    /// `total` conta todas; `diferencas` guarda as primeiras `MAX_POR_REGISTRO`.
     Diferentes {
         diferencas: Vec<Diferenca>,
         total: u64,
     },
     /// Algum lado não é JSON válido (regra da Árvore): não comparado.
     Invalido,
+    /// Bytes diferentes e algum lado acima de `MAX_BYTES_REGISTRO`: não comparado.
+    Grande,
 }
 
 /// Compara dois registros (bytes crus de uma linha ou de um elemento). Bytes iguais (fora o
-/// espaço nas pontas) são iguais sem ler o JSON, mesmo se inválidos.
-pub fn par(a: &[u8], b: &[u8], max: usize) -> Par {
+/// espaço nas pontas) são iguais sem ler o JSON, mesmo se inválidos ou grandes.
+pub fn par(a: &[u8], b: &[u8]) -> Par {
     let (a, b) = (a.trim_ascii(), b.trim_ascii());
     if a == b {
         return Par::Iguais;
+    }
+    if a.len().max(b.len()) > MAX_BYTES_REGISTRO {
+        return Par::Grande;
     }
     let (Ok(x), Ok(y)) = (validar(a), validar(b)) else {
         return Par::Invalido;
     };
     let mut c = Coleta {
-        max,
         v: Vec::new(),
         total: 0,
     };
@@ -112,7 +122,6 @@ pub fn par(a: &[u8], b: &[u8], max: usize) -> Par {
 }
 
 struct Coleta {
-    max: usize,
     v: Vec<Diferenca>,
     total: u64,
 }
@@ -120,7 +129,7 @@ struct Coleta {
 impl Coleta {
     fn anotar(&mut self, caminho: String, acao: Acao, a: Option<&str>, b: Option<&str>) {
         self.total += 1;
-        if self.v.len() < self.max {
+        if self.v.len() < MAX_POR_REGISTRO {
             self.v.push(Diferenca {
                 caminho,
                 acao,
@@ -226,6 +235,8 @@ pub struct DiffArquivos {
     pub so_depois: u64,
     /// Pares com registro inválido em algum lado (não comparados).
     pub invalidos: u64,
+    /// Pares com registro acima de `MAX_BYTES_REGISTRO` em algum lado (não comparados).
+    pub grandes: u64,
     /// Diferenças somadas nos pares comparados.
     pub diferencas: u64,
     /// Os primeiros `MAX_REGISTROS` diferentes (só antes/só depois entram como `.` removido ou
@@ -295,9 +306,10 @@ pub fn arquivos(
             };
             match (x, y) {
                 (None, None) => break,
-                (Some((_, x)), Some((_, y))) => match par(x, y, MAX_POR_REGISTRO) {
+                (Some((_, x)), Some((_, y))) => match par(x, y) {
                     Par::Iguais => r.iguais += 1,
                     Par::Invalido => r.invalidos += 1,
+                    Par::Grande => r.grandes += 1,
                     Par::Diferentes { diferencas, total } => {
                         r.diferentes += 1;
                         r.diferencas += total;
@@ -426,13 +438,17 @@ pub fn registros(
     let inteiro = |v: &[u8]| Some(previa(&String::from_utf8_lossy(v.trim_ascii())));
     let (total, diferencas) = match (x, y) {
         (None, None) => return r,
-        (Some((_, x)), Some((_, y))) => match par(x, y, usize::MAX) {
+        (Some((_, x)), Some((_, y))) => match par(x, y) {
             Par::Iguais => {
                 r.iguais = 1;
                 return r;
             }
             Par::Invalido => {
                 r.invalidos = 1;
+                return r;
+            }
+            Par::Grande => {
+                r.grandes = 1;
                 return r;
             }
             Par::Diferentes { diferencas, total } => {
@@ -481,9 +497,10 @@ mod testes {
     use super::*;
 
     fn dif(a: &str, b: &str) -> Vec<String> {
-        match par(a.as_bytes(), b.as_bytes(), usize::MAX) {
+        match par(a.as_bytes(), b.as_bytes()) {
             Par::Iguais => vec![],
             Par::Invalido => vec!["inválido".into()],
+            Par::Grande => vec!["grande".into()],
             Par::Diferentes { diferencas, total } => {
                 assert_eq!(total, diferencas.len() as u64);
                 diferencas.iter().map(ToString::to_string).collect()
@@ -532,26 +549,97 @@ mod testes {
         // Chave repetida: vale a primeira.
         assert!(dif("{\"a\":1,\"a\":2}", "{\"a\":1}").is_empty());
         assert_eq!(dif("{\"a\":1}", "{"), ["inválido"]);
-        // Bytes iguais: iguais sem ler o JSON.
+        // Bytes iguais: iguais sem ler o JSON; espaço nas pontas não conta, nem inválido.
         assert!(dif("{", "{").is_empty());
+        assert!(dif(" {\t", "{").is_empty());
+    }
+
+    /// Lista de 60 contra outra: 60 diferenças, só as 50 primeiras guardadas.
+    fn listas_60() -> (String, String) {
+        let l = |x| format!("[{}]", [x; 60].join(","));
+        (l("1"), l("2"))
     }
 
     #[test]
     fn teto_por_registro_conta_tudo() {
-        let a = format!("[{}]", ["1"; 10].join(","));
-        let b = format!("[{}]", ["2"; 10].join(","));
-        let Par::Diferentes { diferencas, total } = par(a.as_bytes(), b.as_bytes(), 3) else {
+        let (a, b) = listas_60();
+        let Par::Diferentes { diferencas, total } = par(a.as_bytes(), b.as_bytes()) else {
             panic!()
         };
-        assert_eq!((diferencas.len(), total), (3, 10));
-        assert_eq!(diferencas[2].caminho, ".[2]");
+        assert_eq!((diferencas.len(), total), (MAX_POR_REGISTRO, 60));
+        assert_eq!(diferencas[49].caminho, ".[49]");
+    }
+
+    /// O teto vale nos dois caminhos públicos (arquivo inteiro e par escolhido).
+    #[test]
+    fn teto_por_registro_nos_dois_caminhos() {
+        let (a, b) = listas_60();
+        let nada = AtomicBool::new(false);
+        let r = arquivos(
+            a.as_bytes(),
+            Entrada::Jsonl,
+            b.as_bytes(),
+            Entrada::Jsonl,
+            &nada,
+            |_| {},
+        );
+        let s = registros(
+            a.as_bytes(),
+            Entrada::Jsonl,
+            0,
+            b.as_bytes(),
+            Entrada::Jsonl,
+            0,
+            &nada,
+        );
+        for r in [r, s] {
+            let g = &r.guardados[0];
+            assert_eq!(
+                (g.diferencas.len(), g.total, r.diferencas),
+                (MAX_POR_REGISTRO, 60, 60)
+            );
+        }
+    }
+
+    /// Registro acima do teto de bytes não é analisado: conta em `grandes`, nos dois caminhos.
+    /// Igual em bytes continua igual, de qualquer tamanho.
+    #[test]
+    fn registro_grande_nao_comparado() {
+        let g = format!("[\"{}\"]", "x".repeat(MAX_BYTES_REGISTRO));
+        let nada = AtomicBool::new(false);
+        assert_eq!(par(g.as_bytes(), b"[1]"), Par::Grande);
+        assert_eq!(par(b"[1]", g.as_bytes()), Par::Grande);
+        assert_eq!(par(g.as_bytes(), g.as_bytes()), Par::Iguais);
+        let (a, b) = (format!("[1]\n{g}\n"), "[1]\n[2]\n");
+        let r = arquivos(
+            a.as_bytes(),
+            Entrada::Jsonl,
+            b.as_bytes(),
+            Entrada::Jsonl,
+            &nada,
+            |_| {},
+        );
+        assert_eq!(
+            (r.iguais, r.grandes, r.diferentes, r.guardados.len()),
+            (1, 1, 0, 0)
+        );
+        let r = registros(
+            a.as_bytes(),
+            Entrada::Jsonl,
+            1,
+            b.as_bytes(),
+            Entrada::Jsonl,
+            1,
+            &nada,
+        );
+        assert_eq!((r.grandes, r.diferentes, r.guardados.len()), (1, 0, 0));
     }
 
     #[test]
     fn previa_cortada() {
         let longo = format!("\"{}\"", "x".repeat(500));
         let Par::Diferentes { diferencas, .. } =
-            par(format!("{{\"s\":{longo}}}").as_bytes(), b"{\"s\":1}", 9)
+            par(format!("{{\"s\":{longo}}}").as_bytes(), b"{\"s\":1}")
         else {
             panic!()
         };

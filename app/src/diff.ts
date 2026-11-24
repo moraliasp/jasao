@@ -39,6 +39,8 @@ export interface DiffArquivos {
   so_antes: number;
   so_depois: number;
   invalidos: number;
+  /** Pares acima do teto por registro (16 MiB), contados e não comparados. */
+  grandes: number;
   diferencas: number;
   guardados: RegistroDiferente[];
   cancelado: boolean;
@@ -86,9 +88,10 @@ export function htmlEstrutura(d: DiffEstrutura, x: X, fmt: Fmt): { resumo: strin
 /** Resumo e HTML do diff de valores: um bloco por registro diferente guardado. */
 export function htmlValores(r: DiffArquivos, x: X, fmt: Fmt): { resumo: string; html: string } {
   const algum = r.diferentes + r.so_antes + r.so_depois;
-  const resumo = algum || r.invalidos
+  const base = algum || r.invalidos || r.grandes
     ? x.resumoValores(fmt(r.iguais), fmt(r.diferentes), fmt(r.so_antes), fmt(r.so_depois), fmt(r.invalidos))
     : x.iguais;
+  const resumo = r.grandes ? `${base} ${x.grandes(fmt(r.grandes))}` : base;
   const linha = (l: number | null) => (l === null ? "—" : fmt(l + 1));
   const valor = (v: string | null) => (v === null ? "" : `<code>${visivel(v)}</code>`);
   const dif = (d: Diferenca) =>

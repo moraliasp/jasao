@@ -822,12 +822,13 @@ fn diff_valores(
             .collect();
         writeln!(
             out,
-            r#"{{"iguais":{},"diferentes":{},"so_antes":{},"so_depois":{},"invalidos":{},"diferencas":{},"registros":[{}]}}"#,
+            r#"{{"iguais":{},"diferentes":{},"so_antes":{},"so_depois":{},"invalidos":{},"grandes":{},"diferencas":{},"registros":[{}]}}"#,
             r.iguais,
             r.diferentes,
             r.so_antes,
             r.so_depois,
             r.invalidos,
+            r.grandes,
             r.diferencas,
             regs.join(",")
         )?;
@@ -861,8 +862,17 @@ fn diff_valores(
         "{} iguais · {} diferentes · {} só antes · {} só depois · {} inválidos",
         r.iguais, r.diferentes, r.so_antes, r.so_depois, r.invalidos
     );
-    if r.invalidos > 0 && op.falha_em != FalhaEm::Nunca {
-        eprintln!("erro: registros inválidos não comparados; `--falha-em` não confia no resultado");
+    if r.grandes > 0 {
+        eprintln!(
+            "aviso: {} registros acima de {} MiB não comparados",
+            r.grandes,
+            valores::MAX_BYTES_REGISTRO >> 20
+        );
+    }
+    if r.invalidos + r.grandes > 0 && op.falha_em != FalhaEm::Nunca {
+        eprintln!(
+            "erro: registros inválidos ou grandes demais não comparados; `--falha-em` não confia no resultado"
+        );
         return Ok(DIFF_SEM_COMPARAR);
     }
     let algum = r.diferentes + r.so_antes + r.so_depois > 0;
@@ -1177,7 +1187,7 @@ mod testes {
         );
         let (json, c) = rodar(pa, pb, true, FalhaEm::Nunca);
         assert_eq!(c, 0);
-        assert!(json.starts_with(r#"{"iguais":1,"diferentes":1,"so_antes":0,"so_depois":1,"invalidos":0,"diferencas":1,"registros":[{"registro":2,"linha_antes":2,"linha_depois":2,"total":1,"diferencas":[{"caminho":".s","acao":"alterado""#), "{json}");
+        assert!(json.starts_with(r#"{"iguais":1,"diferentes":1,"so_antes":0,"so_depois":1,"invalidos":0,"grandes":0,"diferencas":1,"registros":[{"registro":2,"linha_antes":2,"linha_depois":2,"total":1,"diferencas":[{"caminho":".s","acao":"alterado""#), "{json}");
         assert!(
             json.contains(r#"{"registro":3,"linha_antes":null,"linha_depois":3"#),
             "{json}"
@@ -1188,6 +1198,17 @@ mod testes {
             rodar(pa, c.0.to_str().unwrap(), false, FalhaEm::Qualquer).1,
             DIFF_SEM_COMPARAR
         );
+        // Registro grande demais também não deixa o gate confiar no resultado.
+        let g = format!(
+            "{{\"a\":1}}\n[\"{}\"]\n",
+            "x".repeat(nucleo::valores::MAX_BYTES_REGISTRO)
+        );
+        let g = Temporario::novo("dv-g", &g);
+        let pg = g.0.to_str().unwrap();
+        assert_eq!(rodar(pa, pg, false, FalhaEm::Qualquer).1, DIFF_SEM_COMPARAR);
+        let (json, c) = rodar(pa, pg, true, FalhaEm::Nunca);
+        assert!(json.contains(r#""invalidos":0,"grandes":1,"#), "{json}");
+        assert_eq!(c, 0);
     }
 
     /// O erro do jq cita o valor do arquivo: no stderr de terminal, sai neutralizado.

@@ -114,6 +114,7 @@ const pt = {
     resumoValores: (i: string, d: string, a: string, p: string, inv: string) =>
       `${i} ${i === "1" ? "igual" : "iguais"} · ${d} ${d === "1" ? "diferente" : "diferentes"} · ${a} só antes · ${p} só depois · ${inv} ${inv === "1" ? "inválido" : "inválidos"}`,
     iguais: "Os registros comparados são iguais.",
+    grandes: (n: string) => `${n} ${n === "1" ? "registro acima" : "registros acima"} de 16 MiB não ${n === "1" ? "comparado" : "comparados"}.`,
     registro: (n: string, la: string, ld: string) => `Registro ${n} (linha ${la} → ${ld})`,
     maisDiferencas: (n: string) => `… e mais ${n}`,
     maisRegistros: (n: string) => `… e mais ${n} registros diferentes (a lista mostra os primeiros 500)`,
@@ -395,6 +396,7 @@ const en: Textos = {
     resumoValores: (i: string, d: string, a: string, p: string, inv: string) =>
       `${i} equal · ${d} different · ${a} only before · ${p} only after · ${inv} invalid`,
     iguais: "The compared records are equal.",
+    grandes: (n: string) => `${n} ${n === "1" ? "record" : "records"} over 16 MiB not compared.`,
     registro: (n: string, la: string, ld: string) => `Record ${n} (line ${la} → ${ld})`,
     maisDiferencas: (n: string) => `… and ${n} more`,
     maisRegistros: (n: string) => `… and ${n} more different records (the list shows the first 500)`,

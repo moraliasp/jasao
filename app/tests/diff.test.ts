@@ -45,7 +45,7 @@ test("estrutura: sem mudança diz que é igual; grupo vazio some; inválidas no 
 
 const vazio: DiffArquivos = {
   registros_antes: 2, registros_depois: 2, iguais: 2, diferentes: 0, so_antes: 0, so_depois: 0,
-  invalidos: 0, diferencas: 0, guardados: [], cancelado: false,
+  invalidos: 0, grandes: 0, diferencas: 0, guardados: [], cancelado: false,
 };
 
 test("valores: iguais", () => {
@@ -70,7 +70,7 @@ test("valores: registro base 0 vira 1, linha ausente é —, ação por caminho,
   assert.ok(h.html.includes(x.registro("1", "5", "5")));
   assert.ok(h.html.includes(x.registro("2", "—", "8")));
   assert.ok(h.html.includes(`<code>.n</code> <b>${x.acoes.alterado}</b> <code>1</code> → <code>1.0</code>`));
-  assert.ok(h.html.includes(`<b>${x.acoes.removido}</b> <code>"&lt;i>"</code>`));
+  assert.ok(h.html.includes(`<li class="removido"><code>.&lt;i></code> <b>${x.acoes.removido}</b> <code>"&lt;i>"</code></li>`), "caminho escapado; removido sem seta");
   assert.ok(h.html.includes(`<b>${x.acoes.adicionado}</b> <code>{}</code>`));
   assert.ok(h.html.includes(`<li>${x.maisDiferencas("1")}</li>`));
   assert.ok(h.html.includes(x.maisRegistros("1")), "3 diferentes, 2 guardados");
@@ -82,4 +82,16 @@ test("lerRegistros: vazio é arquivo todo, um campo vale para os dois, base 0, l
   assert.deepEqual(lerRegistros("", "2"), [1, 1]);
   assert.deepEqual(lerRegistros(" 4 ", ""), [3, 3]);
   for (const [a, b] of [["0", ""], ["-1", ""], ["1.5", ""], ["1", "x"], ["01", ""], ["1e3", ""]]) assert.equal(lerRegistros(a, b), "ruim", `${a}|${b}`);
+});
+
+test("valores: só inválidos ou só grandes não dizem que é igual", () => {
+  const inv = htmlValores({ ...vazio, iguais: 1, invalidos: 1 }, x, fmt);
+  assert.equal(inv.resumo, x.resumoValores("1", "0", "0", "0", "1"));
+  const gr = htmlValores({ ...vazio, iguais: 1, grandes: 2 }, x, fmt);
+  assert.equal(gr.resumo, `${x.resumoValores("1", "0", "0", "0", "0")} ${x.grandes("2")}`);
+});
+
+test("estrutura: caminho igual hostil sai escapado", () => {
+  const h = htmlEstrutura({ mudancas: [], iguais: [".<x>"], invalidas: [0, 0] }, x, fmt);
+  assert.ok(h.html.includes("<code>.&lt;x></code>") && !h.html.includes(".<x>"));
 });

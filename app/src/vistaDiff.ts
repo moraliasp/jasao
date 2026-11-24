@@ -6,7 +6,7 @@ import { chamar, docAtivo } from "./doc";
 import { porGeracao } from "./geracao";
 import { t } from "./i18n";
 import { htmlEstrutura, htmlValores, lerRegistros, type DiffArquivos, type DiffEstrutura } from "./diff";
-import { escAtributo, visivel } from "./texto";
+import { escAtributo } from "./texto";
 
 interface Andamento {
   id: number;
@@ -56,7 +56,7 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
   /** Refaz as listas de arquivos, mantendo a escolha que ainda existe; padrão: ativa × outra. */
   function opcoes(): boolean {
     const abas = o.abas();
-    const ops = abas.map((a) => `<option value="${a.doc}">${visivel(a.nome)}</option>`).join("");
+    const ops = abas.map((a) => `<option value="${a.doc}">${escAtributo(a.nome)}</option>`).join("");
     const [va, vd] = [antesEl.value, depoisEl.value];
     antesEl.innerHTML = depoisEl.innerHTML = ops;
     const tem = (v: string) => abas.some((a) => String(a.doc) === v);
@@ -77,7 +77,7 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
     if (!v.resultado) return estado(`<span>${x.comparando(o.fmt(v.varridas), o.fmt(v.total))}</span>`);
     eventos.fixar(0);
     const r = htmlValores(v.resultado, x, o.fmt);
-    const algum = v.resultado.diferentes + v.resultado.so_antes + v.resultado.so_depois + v.resultado.invalidos;
+    const algum = v.resultado.diferentes + v.resultado.so_antes + v.resultado.so_depois + v.resultado.invalidos + v.resultado.grandes;
     estado(`${o.icone(algum ? "alert" : "check")}<span>${r.resumo}</span>`, algum ? "bad" : "");
     resEl.innerHTML = r.html;
   };
