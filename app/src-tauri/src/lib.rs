@@ -2015,7 +2015,17 @@ mod testes {
             em(1, "ordenar", json!({"coluna": null, "desc": false})).unwrap()["pronta"],
             true
         );
+        // Cancelar sobe a geração (descarta o resultado em voo) e liga a bandeira do núcleo.
+        let ordem_de = || {
+            let doc = app.state::<Estado>().doc(1).unwrap();
+            let o = doc.ordem.lock().unwrap();
+            (o.geracao, Arc::clone(&o.cancelar))
+        };
+        let (antes, bandeira) = ordem_de();
+        bandeira.store(false, Relaxed);
         assert_eq!(em(1, "cancelar_ordenacao", json!({})), Ok(Value::Null));
+        assert_eq!(ordem_de().0, antes + 1);
+        assert!(bandeira.load(Relaxed));
         assert!(em(1, "ordenar", json!({"coluna": 5, "desc": false})).is_err());
         assert_eq!(em(1, "alternar", json!({"v": 0})), Ok(json!(3)));
         let linhas = em(1, "linhas", json!({"inicio": 0, "quantidade": 10})).unwrap();
