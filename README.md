@@ -17,11 +17,11 @@ cargo run --release -p cli -- janela /tmp/amostra.jsonl 0 5
 cd app && pnpm install && pnpm tauri dev -- -- /tmp/amostra.jsonl          # o caminho é opcional
 ```
 
-`-` no lugar de um arquivo lê stdin (um `-` por execução); nos comandos de um arquivo só (`linhas`, `inferir`, `laudo`, `erros`, `exportar`, `jq`), o pipe sem arquivo também vale. No app, `-` abre stdin numa aba, se o app ainda não estava aberto:
+`-` no lugar de um arquivo lê stdin (um `-` por execução; sem `-`, stdin não é lido; arquivo chamado `-`: `./-`). No app, `-` abre stdin numa aba, se o app ainda não estava aberto:
 
 ```bash
 curl -s https://exemplo.test/eventos.jsonl | jasao laudo -
-cat eventos.jsonl | jasao jq '.tipo'
+cat eventos.jsonl | jasao jq '.tipo' -
 cat eventos.jsonl | caminho/do/binario/do/app -
 ```
 

@@ -565,6 +565,15 @@ fn autorizado<R: Runtime>(app: &AppHandle<R>, caminho: &str) -> Result<String, S
 
 /// Põe um arquivo aberto no topo dos recentes. Falha ao gravar não impede a abertura.
 fn lembrar<R: Runtime>(app: &AppHandle<R>, caminho: &str) {
+    // O temporário de stdin some ao fechar: não vira recente.
+    if app.try_state::<Stdin>().is_some_and(|s| {
+        s.0.lock().is_ok_and(|t| {
+            t.as_ref()
+                .is_some_and(|t| t.caminho() == Path::new(caminho))
+        })
+    }) {
+        return;
+    }
     if let Some(Err(e)) = com_recentes(app, |a| recentes::adicionar(a, caminho)) {
         eprintln!("recentes: {e}");
     }
@@ -659,43 +668,47 @@ fn conceder_escolhidos<R: Runtime>(
 fn conceder_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String], cwd: &Path) {
     let abertura = app.state::<abertura::Abertura>();
     let concedidos = app.state::<abertura::Concedidos>();
-    let stdin = stdin_argv(app, argv);
-    for c in stdin.into_iter().chain(abertura::caminhos_argv(argv, cwd)) {
+    for c in abertura::caminhos_argv(argv, cwd) {
         concedidos.conceder(Path::new(&c));
         abertura.enfileirar(c);
     }
+    stdin_argv(app, argv);
 }
 
 /// Temporário de stdin da 1ª instância; sai no `RunEvent::Exit`.
 #[derive(Default)]
 struct Stdin(Mutex<Option<nucleo::entrada::Temporario>>);
 
-/// `app -`: grava stdin no temporário do núcleo (o mesmo da CLI) e devolve o caminho dele. Só
-/// na 1ª instância: com o app já aberto, quem tem o stdin é a 2ª, que repassa o argv e sai.
-/// Erro (stdin terminal, vazio, acima do teto) vai para o stderr e o app abre sem ele.
-fn stdin_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String]) -> Option<String> {
+/// `app -`: grava stdin no temporário do núcleo (o mesmo da CLI) numa thread, para a janela
+/// abrir sem esperar o EOF, e pede a abertura do caminho quando termina (concessão só desta
+/// execução; não entra nos recentes, ver `lembrar`). Só na 1ª instância: com o app já aberto,
+/// quem tem o stdin é a 2ª, que repassa o argv e sai. Erro (stdin terminal, vazio, acima do
+/// teto, sem espaço) vai para o stderr e o app segue sem ele.
+fn stdin_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String]) {
     use std::io::IsTerminal;
     if !argv.iter().skip(1).any(|a| a == "-") {
-        return None;
+        return;
     }
-    let r = if std::io::stdin().is_terminal() {
-        Err(std::io::Error::other(
-            "`-` lê stdin, mas stdin é o terminal",
-        ))
-    } else {
-        nucleo::entrada::gravar(std::io::stdin().lock(), "stdin", &nucleo::Opcoes::default())
-    };
-    match r {
-        Ok(t) => {
-            let c = t.caminho().to_string_lossy().into_owned();
-            *app.state::<Stdin>().0.lock().ok()? = Some(t);
-            Some(c)
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let r = if std::io::stdin().is_terminal() {
+            Err(std::io::Error::other(
+                "`-` lê stdin, mas stdin é o terminal",
+            ))
+        } else {
+            nucleo::entrada::gravar(std::io::stdin().lock(), "stdin", &nucleo::Opcoes::default())
+        };
+        match r {
+            Ok(t) => {
+                let c = t.caminho().to_string_lossy().into_owned();
+                if let Ok(mut s) = app.state::<Stdin>().0.lock() {
+                    *s = Some(t);
+                }
+                abertura::pedir(&app, vec![c]);
+            }
+            Err(e) => eprintln!("erro: {e}"),
         }
-        Err(e) => {
-            eprintln!("erro: {e}");
-            None
-        }
-    }
+    });
 }
 
 /// Documento aberto: o id e o número de registros (= linhas visíveis).
@@ -3120,6 +3133,8 @@ pub fn run() {
                 app.manage(Recentes(dir.join("recentes.json")));
                 recentes_mudaram(app.handle());
             }
+            // Temporário de stdin de execução morta sem limpar (crash, SIGKILL).
+            let _ = nucleo::entrada::limpar_orfaos(&nucleo::Opcoes::default());
             let cwd = std::env::current_dir().unwrap_or_default();
             let argv: Vec<String> = std::env::args().collect();
             conceder_argv(app.handle(), &argv, &cwd);
@@ -4793,6 +4808,17 @@ mod testes {
         };
         let caminho = arq.to_str().unwrap();
         app.state::<abertura::Concedidos>().conceder(&arq);
+        assert_eq!(chamar("recentes", json!({})), json!([]));
+        // O temporário de stdin abre, mas não vira recente.
+        let op = nucleo::Opcoes {
+            dir_cache: Some(raiz.join("cache")),
+            ..nucleo::Opcoes::default()
+        };
+        let t = nucleo::entrada::gravar(&b"{\"s\":1}\n"[..], "stdin", &op).unwrap();
+        let tmp = t.caminho().to_str().unwrap().to_owned();
+        *app.state::<Stdin>().0.lock().unwrap() = Some(t);
+        abertura::pedir(app.handle(), vec![tmp.clone()]);
+        assert!(chamar("abrir", json!({ "caminho": tmp }))["total"] == json!(1));
         assert_eq!(chamar("recentes", json!({})), json!([]));
         chamar("abrir", json!({ "caminho": caminho }));
         let pasta_txt = raiz.to_str().unwrap();

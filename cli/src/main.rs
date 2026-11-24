@@ -64,11 +64,12 @@
 //!                                         sai, mesmo parcial, com linhas inválidas ou binário (o
 //!                                         texto diz); 1 se o arquivo não abre; 2 em uso errado
 //!
-//! `-` no lugar de um arquivo lê stdin (um `-` por execução; em `buscar`, só o primeiro argumento,
-//! e `linha-do-tempo` não lê). Nos comandos de um arquivo só (`linhas`, `inferir`, `laudo`,
-//! `erros`, `exportar`, `jq`), sem arquivo e com stdin num pipe, o `-` é implícito:
-//! `cat x.jsonl | jasao laudo`. stdin vai para um temporário (`nucleo::entrada`), apagado ao sair;
-//! vazio, terminal ou acima de 10 GiB sai com 1 (3 em `diff` e `validar`).
+//! `-` no lugar de um arquivo lê stdin: `cat x.jsonl | jasao laudo -`. Um `-` por execução (`diff
+//! - -` é erro); em `buscar`, só o primeiro argumento; `linha-do-tempo` não lê. Arquivo chamado
+//! `-`: `./-`. Sem `-`, stdin não é lido (pipe sem arquivo dá o uso, código 2). stdin vai para um
+//! temporário (`nucleo::entrada`), apagado ao sair, em erro e em SIGINT/SIGTERM (sai com 130);
+//! vazio, terminal, acima de 10 GiB ou sem espaço em disco sai com 1 (3 em `diff` e `validar`).
+//! `JASAO_TETO_STDIN_TESTE` (bytes) baixa o teto, só para teste.
 //!
 //! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir`, `diff` e `linha-do-tempo` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
@@ -89,7 +90,7 @@ use nucleo::erros::{self, OpcoesErros};
 use nucleo::transformar::{Fonte, Mascara, Saida, Transformacao};
 use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
-const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra; `-` no lugar do arquivo lê stdin):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
+const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra; `-` no lugar do arquivo lê stdin, uma vez; arquivo chamado `-`: ./-):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]\n\
                    \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N] [--anonimizar]\n  \
@@ -124,7 +125,7 @@ fn main() -> ExitCode {
         SEM_MASCARA.store(true, Relaxed);
     }
     // Vive até o fim do `main`: o `Drop` apaga o temporário, inclusive em erro.
-    let entrada = match ler_stdin(&mut args) {
+    let entrada = match ler_stdin(&args) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("erro: {e}");
@@ -284,61 +285,20 @@ fn posicao_stdin(args: &[&str]) -> Option<usize> {
     }
 }
 
-/// Opções que levam valor (o valor não é o arquivo).
-const COM_VALOR: &[&str] = &[
-    "--teto",
-    "--max",
-    "--tempo-max",
-    "--saida",
-    "--max-resultados",
-    "--max-mb",
-    "--max-memoria-mb",
-    "--numero-texto",
-];
+/// Teto de stdin só para teste (bytes); nunca sobe acima do padrão.
+const VAR_TETO_TESTE: &str = "JASAO_TETO_STDIN_TESTE";
 
-/// Sem arquivo e com stdin num pipe (ou redirecionado de arquivo), os comandos de um arquivo só
-/// leem stdin: `cat x.jsonl | jasao laudo`. Põe o `-` no lugar.
-fn stdin_implicito(args: &mut Vec<&str>) {
-    let antes = match args.first() {
-        Some(&("linhas" | "inferir" | "laudo" | "erros" | "exportar")) => 0,
-        Some(&("jq" | "consultar")) => 1, // o filtro
-        _ => return,
-    };
-    let mut posicionais = 0;
-    let mut it = args[1..].iter();
-    while let Some(a) = it.next() {
-        if COM_VALOR.contains(a) {
-            it.next();
-        } else if !a.starts_with("--") {
-            posicionais += 1;
-        }
-    }
-    if posicionais == antes && stdin_redirecionado() {
-        args.push("-");
-    }
-}
-
-/// stdin é pipe ou arquivo (não terminal, nem `/dev/null` de quem roda sem entrada).
-fn stdin_redirecionado() -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsFd;
-        use std::os::unix::fs::FileTypeExt;
-        io::stdin()
-            .as_fd()
-            .try_clone_to_owned()
-            .and_then(|fd| std::fs::File::from(fd).metadata())
-            .is_ok_and(|m| m.file_type().is_fifo() || m.is_file())
-    }
-    #[cfg(not(unix))]
-    false
-}
-
-/// Se algum argumento pede stdin (`-`, ou o implícito), grava stdin num temporário do núcleo.
-fn ler_stdin(args: &mut Vec<&str>) -> io::Result<Option<nucleo::entrada::Temporario>> {
-    stdin_implicito(args);
-    if posicao_stdin(args).is_none() {
+/// Se algum argumento pede stdin (`-`), grava stdin num temporário do núcleo. Antes de gravar,
+/// liga o tratador de SIGINT/SIGTERM que apaga o temporário (o `Drop` não roda em sinal).
+fn ler_stdin(args: &[&str]) -> io::Result<Option<nucleo::entrada::Temporario>> {
+    let Some(i) = posicao_stdin(args) else {
         return Ok(None);
+    };
+    if args[i + 1..].contains(&"-") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stdin só se lê uma vez: use `-` em um arquivo só (para um arquivo chamado `-`, escreva `./-`)",
+        ));
     }
     if io::stdin().is_terminal() {
         return Err(io::Error::new(
@@ -346,7 +306,20 @@ fn ler_stdin(args: &mut Vec<&str>) -> io::Result<Option<nucleo::entrada::Tempora
             "`-` lê stdin, mas stdin é o terminal; mande os dados por pipe (ex.: cat x.jsonl | jasao laudo -)",
         ));
     }
-    nucleo::entrada::gravar(io::stdin().lock(), "stdin", &Opcoes::default()).map(Some)
+    let _ = ctrlc::set_handler(|| {
+        nucleo::entrada::apagar_vivos();
+        std::process::exit(130);
+    });
+    let padrao = Opcoes::default();
+    let teto = std::env::var(VAR_TETO_TESTE)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(padrao.max_saida, |t: u64| t.min(padrao.max_saida));
+    let op = Opcoes {
+        max_saida: teto,
+        ..padrao
+    };
+    nucleo::entrada::gravar(io::stdin().lock(), "stdin", &op).map(Some)
 }
 
 /// Caminho do temporário de stdin, para as mensagens mostrarem `-` no lugar dele.

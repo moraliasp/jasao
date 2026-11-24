@@ -1,38 +1,104 @@
 //! Entrada que não é arquivo local (stdin; depois, URL): grava o fluxo num temporário e o resto
 //! do núcleo abre esse caminho como qualquer arquivo (ver docs/decisoes.md, "stdin por
-//! temporário"). O temporário fica na pasta do cache (só do dono), com permissão 0600, e sai no
-//! `Drop` de `Temporario`, inclusive em erro. Processo morto por sinal não roda o `Drop`: a
-//! extensão `.parcial` faz a limpeza do cache apagá-lo depois de um dia.
+//! temporário"). O temporário fica na pasta do cache (só do dono), com permissão 0600, e sai:
+//! - no `Drop` de `Temporario` (fim normal e erro);
+//! - em `apagar_vivos`, que o tratador de SIGINT/SIGTERM de quem chama roda antes de sair;
+//! - como órfão (processo morto sem chance de limpar, ex.: SIGKILL): o dono segura uma trava
+//!   exclusiva no arquivo enquanto vive, e `limpar_orfaos` (chamado por todo `gravar` e na
+//!   abertura do app) apaga o que ninguém trava.
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::Opcoes;
 use crate::compactado::{pasta_cache, privado};
 
-/// Arquivo temporário com o conteúdo de um fluxo; apagado quando sai de escopo.
+const MIB: u64 = 1 << 20;
+/// Espaço que precisa sobrar no disco enquanto stdin é gravado, conferido a cada `PASSO`.
+const MARGEM: u64 = 64 * MIB;
+const PASSO: u64 = 64 * MIB;
+/// Órfão mais novo que isso fica: o dono pode ter criado o arquivo e ainda não ter travado.
+const CARENCIA: Duration = Duration::from_secs(60);
+
+/// Temporários vivos deste processo, para o tratador de sinal apagar.
+static VIVOS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Arquivo temporário com o conteúdo de um fluxo; apagado quando sai de escopo. Segura a trava
+/// exclusiva do arquivo enquanto vive (ver `limpar_orfaos`).
 #[derive(Debug)]
-pub struct Temporario(PathBuf);
+pub struct Temporario {
+    caminho: PathBuf,
+    _trava: File,
+}
 
 impl Temporario {
     pub fn caminho(&self) -> &Path {
-        &self.0
+        &self.caminho
     }
 }
 
 impl Drop for Temporario {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = fs::remove_file(&self.caminho);
+        if let Ok(mut v) = VIVOS.lock() {
+            v.retain(|c| *c != self.caminho);
+        }
     }
+}
+
+/// Apaga os temporários vivos deste processo. Para o tratador de SIGINT/SIGTERM, que sai logo
+/// depois (o `Drop` não roda).
+pub fn apagar_vivos() {
+    if let Ok(v) = VIVOS.lock() {
+        for c in v.iter() {
+            let _ = fs::remove_file(c);
+        }
+    }
+}
+
+/// Se `caminho` tem nome de temporário de entrada (não entra nos recentes do app).
+pub fn temporario(caminho: &Path) -> bool {
+    caminho
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("entrada.") && n.ends_with(".parcial"))
+}
+
+/// Apaga da pasta do cache os temporários de entrada órfãos: os que nenhum processo trava (o
+/// dono morreu) e que têm mais de `CARENCIA`. Devolve quantos apagou.
+pub fn limpar_orfaos(op: &Opcoes) -> io::Result<usize> {
+    let dir = pasta_cache(op)?;
+    let agora = SystemTime::now();
+    let mut n = 0;
+    for e in fs::read_dir(&dir)?.flatten() {
+        let c = e.path();
+        let velho = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| agora.duration_since(m).unwrap_or_default() > CARENCIA);
+        // A trava cai com o processo, até em SIGKILL: conseguir travar = ninguém vivo usa.
+        if temporario(&c)
+            && velho
+            && File::open(&c).is_ok_and(|f| f.try_lock().is_ok())
+            && fs::remove_file(&c).is_ok()
+        {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Grava `leitor` inteiro num temporário da pasta do cache de `op`. Teto: `op.max_saida` (o
 /// mesmo do descompactado, 10 GiB no padrão). `origem` nomeia a entrada nas mensagens ("stdin").
+/// Antes, limpa os órfãos; durante, para se o disco ficar com menos de `MARGEM` livre.
 /// Vazio é erro: não há o que abrir.
 pub fn gravar(mut leitor: impl Read, origem: &str, op: &Opcoes) -> io::Result<Temporario> {
     let dir = pasta_cache(op)?;
+    let _ = limpar_orfaos(op);
+    espaco(&dir, origem)?;
     let nome = format!(
         "entrada.{}.{}.parcial",
         std::process::id(),
@@ -47,10 +113,27 @@ pub fn gravar(mut leitor: impl Read, origem: &str, op: &Opcoes) -> io::Result<Te
     std::os::unix::fs::OpenOptionsExt::mode(&mut abrir, 0o600);
     let caminho = dir.join(nome);
     let arquivo = abrir.open(&caminho)?;
-    let tmp = Temporario(caminho);
+    VIVOS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(caminho.clone());
+    let tmp = Temporario {
+        caminho,
+        _trava: arquivo.try_clone()?,
+    };
+    arquivo.lock()?;
     privado(tmp.caminho(), 0o600)?;
-    let mut saida = BufWriter::with_capacity(1 << 20, arquivo);
-    let n = io::copy(&mut (&mut leitor).take(op.max_saida + 1), &mut saida)?;
+    let mut saida = BufWriter::with_capacity(MIB as usize, arquivo);
+    let mut limitado = (&mut leitor).take(op.max_saida + 1);
+    let mut n = 0;
+    loop {
+        let lidos = io::copy(&mut (&mut limitado).take(PASSO), &mut saida)?;
+        n += lidos;
+        if lidos < PASSO {
+            break;
+        }
+        espaco(&dir, origem)?;
+    }
     saida.flush()?;
     if n == 0 {
         return Err(io::Error::new(
@@ -62,12 +145,33 @@ pub fn gravar(mut leitor: impl Read, origem: &str, op: &Opcoes) -> io::Result<Te
         return Err(io::Error::new(
             ErrorKind::FileTooLarge,
             format!(
-                "{origem} passou do teto de {} MiB; grave num arquivo e abra o arquivo",
-                op.max_saida >> 20
+                "{origem} passou do teto de {}; grave num arquivo e abra o arquivo",
+                if op.max_saida >= MIB {
+                    format!("{} MiB", op.max_saida / MIB)
+                } else {
+                    format!("{} bytes", op.max_saida)
+                }
             ),
         ));
     }
     Ok(tmp)
+}
+
+/// Erro se o disco de `dir` tem menos de `MARGEM` livre.
+fn espaco(dir: &Path, origem: &str) -> io::Result<()> {
+    let livre = fs4::available_space(dir)?;
+    if livre < MARGEM {
+        return Err(io::Error::new(
+            ErrorKind::StorageFull,
+            format!(
+                "sem espaço para gravar {origem}: {} MiB livres em {} (precisa de {} MiB); libere espaço",
+                livre / MIB,
+                dir.display(),
+                MARGEM / MIB
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -81,11 +185,21 @@ mod testes {
         }
     }
 
+    fn envelhecer(c: &Path) {
+        File::options()
+            .write(true)
+            .open(c)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+    }
+
     #[test]
     fn grava_0600_e_apaga_ao_sair() {
         let d = tempfile::tempdir().unwrap();
         let t = gravar(&b"{\"a\":1}\n"[..], "stdin", &op(d.path())).unwrap();
         let c = t.caminho().to_path_buf();
+        assert!(temporario(&c));
         assert_eq!(fs::read(&c).unwrap(), b"{\"a\":1}\n");
         #[cfg(unix)]
         {
@@ -95,8 +209,10 @@ mod testes {
                 0o600
             );
         }
+        assert!(VIVOS.lock().unwrap().contains(&c));
         drop(t);
         assert!(!c.exists());
+        assert!(!VIVOS.lock().unwrap().contains(&c));
     }
 
     #[test]
@@ -110,10 +226,28 @@ mod testes {
         };
         let e = gravar(&b"12345"[..], "stdin", &pequeno).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::FileTooLarge);
-        assert_eq!(
-            gravar(&b"1234"[..], "stdin", &pequeno).map(|_| ()).ok(),
-            Some(())
-        );
+        assert!(gravar(&b"1234"[..], "stdin", &pequeno).is_ok());
         assert_eq!(fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn orfao_sai_e_vivo_fica() {
+        let d = tempfile::tempdir().unwrap();
+        // Vivo: travado por um `Temporario` deste processo, envelhecido.
+        let vivo = gravar(&b"{}"[..], "stdin", &op(d.path())).unwrap();
+        envelhecer(vivo.caminho());
+        let orfao = d.path().join("entrada.1.2.parcial");
+        fs::write(&orfao, "x").unwrap();
+        envelhecer(&orfao);
+        // Novo demais: o dono pode não ter travado ainda.
+        let novo = d.path().join("entrada.3.4.parcial");
+        fs::write(&novo, "x").unwrap();
+        // Outro arquivo do cache não é temporário de entrada.
+        let outro = d.path().join("abc.dados");
+        fs::write(&outro, "x").unwrap();
+        envelhecer(&outro);
+        assert_eq!(limpar_orfaos(&op(d.path())).unwrap(), 1);
+        assert!(!orfao.exists());
+        assert!(novo.exists() && vivo.caminho().exists() && outro.exists());
     }
 }
