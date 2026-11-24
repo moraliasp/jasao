@@ -223,7 +223,7 @@ impl Tabela {
     }
 
     /// Bytes do registro `r`, linha do arquivo onde começa e byte nessa linha.
-    fn registro(&self, r: usize) -> Option<(&[u8], usize, usize)> {
+    pub fn registro(&self, r: usize) -> Option<(&[u8], usize, usize)> {
         let dados = self.arquivo.bytes();
         match &self.elementos {
             None => Some((self.arquivo.janela(r, 1).into_iter().next()?, r, 0)),
@@ -240,6 +240,7 @@ impl Tabela {
     pub fn janela(
         &self,
         ordem: Option<(&Ordem, bool)>,
+        filtro: Option<&[u32]>,
         inicio: usize,
         quantidade: usize,
         colunas: &[usize],
@@ -250,9 +251,15 @@ impl Tabela {
             .rev() // coluna pedida duas vezes: vale a primeira posição
             .filter_map(|(pos, &c)| Some((self.colunas.get(c)?.chave.as_str(), pos)))
             .collect();
-        let fim = inicio.saturating_add(quantidade).min(self.registros());
+        let n = filtro.map_or(self.registros(), <[u32]>::len);
+        let fim = inicio.saturating_add(quantidade).min(n);
+        // A ordem, com filtro, já é só dos filtrados (`ordenar` recebe o mesmo filtro).
         (inicio..fim)
-            .filter_map(|i| ordem.map_or(Some(i), |(o, desc)| o.registro(i, desc)))
+            .filter_map(|i| match (ordem, filtro) {
+                (Some((o, desc)), _) => o.registro(i, desc),
+                (None, Some(f)) => f.get(i).map(|&r| r as usize),
+                (None, None) => Some(i),
+            })
             .filter_map(|r| {
                 let (bytes, linha, byte) = self.registro(r)?;
                 Some(self.linha(r, bytes, linha, byte, &alvo, colunas.len()))
@@ -330,15 +337,17 @@ impl Tabela {
     pub fn ordenar(
         &self,
         coluna: usize,
+        filtro: Option<&[u32]>,
         cancelar: &AtomicBool,
         ao_progresso: &(dyn Fn(u64) + Sync),
     ) -> Result<Ordem, FalhaOrdem> {
-        self.ordenar_ate(coluna, cancelar, ao_progresso, MAX_REGISTROS)
+        self.ordenar_ate(coluna, filtro, cancelar, ao_progresso, MAX_REGISTROS)
     }
 
     fn ordenar_ate(
         &self,
         coluna: usize,
+        filtro: Option<&[u32]>,
         cancelar: &AtomicBool,
         ao_progresso: &(dyn Fn(u64) + Sync),
         teto: usize,
@@ -349,7 +358,9 @@ impl Tabela {
             .ok_or(FalhaOrdem::Coluna)?
             .chave
             .as_str();
-        let n = self.registros();
+        // Com filtro, ordena só os filtrados: `k` é a posição no filtro, `alvo(k)` o registro.
+        let alvo = |k: usize| filtro.map_or(k, |f| f[k] as usize);
+        let n = filtro.map_or(self.registros(), <[u32]>::len);
         if n > teto {
             return Err(FalhaOrdem::Grande);
         }
@@ -365,7 +376,7 @@ impl Tabela {
                     return;
                 }
                 for (j, c) in bloco.iter_mut().enumerate() {
-                    if let Some((bytes, _, _)) = self.registro(b * BLOCO + j) {
+                    if let Some((bytes, _, _)) = self.registro(alvo(b * BLOCO + j)) {
                         *c = Chave::de(bytes, chave, base);
                     }
                 }
@@ -381,6 +392,9 @@ impl Tabela {
         // Estável: empate fica na ordem do arquivo.
         perm.par_sort_by(|&a, &b| chaves[a as usize].comparar(&chaves[b as usize], dados));
         perm.extend((0..n as u32).filter(|&r| chaves[r as usize].classe == Classe::Ausente));
+        if filtro.is_some() {
+            perm.iter_mut().for_each(|k| *k = alvo(*k as usize) as u32);
+        }
         // O sort não para no meio: cancelado durante ele, o resultado é descartado aqui.
         if cancelar.load(Relaxed) {
             return Err(FalhaOrdem::Cancelada);
@@ -697,7 +711,7 @@ mod testes {
         assert_eq!(t.colunas[0].presenca, 3);
         assert_eq!(t.colunas[0].tipos, ["inteiro"]);
         assert_eq!(t.objetos, 3);
-        let j = t.janela(None, 0, 10, &todas(&t));
+        let j = t.janela(None, None, 0, 10, &todas(&t));
         assert_eq!(celulas(&j[0]), ["1", r#""a\u00e9""#, "null", "-", "-", "-"]);
         // Número grande e texto com escape saem como estão; nulo ≠ ausente.
         assert_eq!(j[0].celulas[2].as_ref().unwrap().tipo, TipoValor::Nulo);
@@ -714,7 +728,7 @@ mod testes {
             &t.arquivo.janela(1, 1)[0][c.byte..c.byte + 6]
         );
         // Projeção: só as colunas pedidas, na ordem pedida.
-        let j = t.janela(None, 1, 1, &[4, 0]);
+        let j = t.janela(None, None, 1, 1, &[4, 0]);
         assert_eq!(celulas(&j[0]), ["[5]", "12345678901234567890123"]);
     }
 
@@ -722,27 +736,27 @@ mod testes {
     fn janela_e_linha_invalida() {
         let t = tabela(b"{\"a\":1}\n{\"a\":tru}\n{\"a\":3}\n").unwrap();
         assert_eq!(t.registros(), 3);
-        let j = t.janela(None, 1, 5, &[0]);
+        let j = t.janela(None, None, 1, 5, &[0]);
         assert_eq!(j.len(), 2);
         assert_eq!(j[0].registro, 1);
         assert!(j[0].celulas.is_empty());
         assert_eq!(j[0].erro.unwrap().motivo, arvore::Motivo::Literal);
         assert_eq!(j[0].previa.as_deref(), Some("{\"a\":tru}"));
         assert_eq!(celulas(&j[1]), ["3"]);
-        assert!(t.janela(None, 9, 5, &[0]).is_empty());
+        assert!(t.janela(None, None, 9, 5, &[0]).is_empty());
     }
 
     #[test]
     fn json_unico_lista_de_objetos() {
         let t = tabela(br#"[{"a":1},{"a":2,"b":"x"}]"#).unwrap();
         assert_eq!(t.registros(), 2);
-        let j = t.janela(None, 0, 2, &todas(&t));
+        let j = t.janela(None, None, 0, 2, &todas(&t));
         assert_eq!((j[1].linha, j[1].byte), (0, 9));
         assert_eq!(celulas(&j[1]), ["2", "\"x\""]);
         assert_eq!(j[1].celulas[1].as_ref().unwrap().byte, 20);
         // Formatado em várias linhas: a linha de cada registro é onde ele começa.
         let t = tabela(b"[\n  {\"a\": 1},\n  {\"a\": 2}\n]\n").unwrap();
-        let j = t.janela(None, 0, 2, &[0]);
+        let j = t.janela(None, None, 0, 2, &[0]);
         assert_eq!((j[1].linha, j[1].byte), (2, 2));
         assert_eq!(celulas(&j[1]), ["2"]);
     }
@@ -783,8 +797,8 @@ mod testes {
 
     fn ordem(t: &Tabela, coluna: usize, desc: bool) -> Vec<String> {
         let nao = AtomicBool::new(false);
-        let o = t.ordenar(coluna, &nao, &|_| {}).unwrap();
-        t.janela(Some((&o, desc)), 0, 100, &[coluna])
+        let o = t.ordenar(coluna, None, &nao, &|_| {}).unwrap();
+        t.janela(Some((&o, desc)), None, 0, 100, &[coluna])
             .iter()
             .map(|l| match &l.erro {
                 Some(_) => format!("erro{}", l.registro),
@@ -864,7 +878,7 @@ mod testes {
         let visto = AtomicU64::new(0);
         let nao = AtomicBool::new(false);
         let o = t
-            .ordenar(0, &nao, &|v| {
+            .ordenar(0, None, &nao, &|v| {
                 visto.fetch_max(v, Relaxed);
             })
             .unwrap();
@@ -874,8 +888,48 @@ mod testes {
         assert_eq!(o.registro(n - 1, false), Some(0));
         assert_eq!(o.registro(0, true), Some(0));
         let sim = AtomicBool::new(true);
-        assert_eq!(t.ordenar(0, &sim, &|_| {}), Err(FalhaOrdem::Cancelada));
-        assert_eq!(t.ordenar(99, &nao, &|_| {}), Err(FalhaOrdem::Coluna));
+        assert_eq!(
+            t.ordenar(0, None, &sim, &|_| {}),
+            Err(FalhaOrdem::Cancelada)
+        );
+        assert_eq!(t.ordenar(99, None, &nao, &|_| {}), Err(FalhaOrdem::Coluna));
+    }
+
+    #[test]
+    fn filtro_na_janela_e_na_ordem() {
+        let t = tabela(b"{\"n\":5}\n{\"n\":1}\n{\"n\":4}\n{\"m\":0}\n{\"n\":2}\n").unwrap();
+        let nao = AtomicBool::new(false);
+        let f: &[u32] = &[0, 2, 3, 4];
+        let regs = |o: Option<(&Ordem, bool)>| -> Vec<usize> {
+            t.janela(o, Some(f), 0, 100, &[0])
+                .iter()
+                .map(|l| l.registro)
+                .collect()
+        };
+        // Sem ordem: só os filtrados, na ordem do arquivo; a janela conta posições do filtro.
+        assert_eq!(regs(None), [0, 2, 3, 4]);
+        let j: Vec<usize> = t
+            .janela(None, Some(f), 1, 2, &[0])
+            .iter()
+            .map(|l| l.registro)
+            .collect();
+        assert_eq!(j, [2, 3]);
+        // Ordenar com filtro = ordenar tudo e tirar quem não passa (ausente no fim).
+        let o = t.ordenar(0, Some(f), &nao, &|_| {}).unwrap();
+        assert_eq!(regs(Some((&o, false))), [4, 2, 0, 3]);
+        assert_eq!(regs(Some((&o, true))), [0, 2, 4, 3]);
+        let todo = t.ordenar(0, None, &nao, &|_| {}).unwrap();
+        let esperado: Vec<usize> = (0..5)
+            .filter_map(|i| todo.registro(i, false))
+            .filter(|r| f.contains(&(*r as u32)))
+            .collect();
+        assert_eq!(regs(Some((&o, false))), esperado);
+        // O teto vale para o tamanho do filtro, não do arquivo.
+        assert_eq!(
+            t.ordenar_ate(0, Some(f), &nao, &|_| {}, 3),
+            Err(FalhaOrdem::Grande)
+        );
+        assert!(t.ordenar_ate(0, Some(f), &nao, &|_| {}, 4).is_ok());
     }
 
     #[test]
@@ -883,8 +937,11 @@ mod testes {
         // Ordenar: acima do teto recusa antes de alocar; no teto, ordena.
         let t = tabela(b"{\"n\":3}\n{\"n\":1}\n{\"n\":2}\n").unwrap();
         let nao = AtomicBool::new(false);
-        assert_eq!(t.ordenar_ate(0, &nao, &|_| {}, 2), Err(FalhaOrdem::Grande));
-        assert!(t.ordenar_ate(0, &nao, &|_| {}, 3).is_ok());
+        assert_eq!(
+            t.ordenar_ate(0, None, &nao, &|_| {}, 2),
+            Err(FalhaOrdem::Grande)
+        );
+        assert!(t.ordenar_ate(0, None, &nao, &|_| {}, 3).is_ok());
         // JSON único: a lista de elementos para no teto.
         let lista = b"[{\"a\":1},{\"a\":2},{\"a\":3}]";
         assert_eq!(
@@ -907,7 +964,7 @@ mod testes {
         let cancelar = AtomicBool::new(false);
         let avisos = AtomicU64::new(0);
         let r = pool.install(|| {
-            t.ordenar(0, &cancelar, &|_| {
+            t.ordenar(0, None, &cancelar, &|_| {
                 avisos.fetch_add(1, Relaxed);
                 cancelar.store(true, Relaxed);
             })
