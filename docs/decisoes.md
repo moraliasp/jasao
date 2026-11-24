@@ -162,6 +162,8 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 
 **Cancelamento e progresso:** `AtomicBool` conferido por bloco; cancelado devolve o resumo parcial com `cancelado = true` e `varridas < total`. Progresso em linhas varridas de total, por callback na thread do chamador, a cada ~1%.
 
+**Medido (23/11/2026, M-series, ponte HTTP de teste + Vite, JSONL gerado de 1 GB com 11.262.093 registros de 3 tipos, 114 linhas inválidas, cache de disco quente):** abrir e inferir 1,2 s; colunas na tela logo que a inferência acaba (11 colunas). Janela: `tabela_linhas` de 60 linhas × 11 colunas em 2 ms em qualquer ponto do arquivo; salto de rolagem até a janela desenhada em 4–10 ms. Ordenar por `.id` os 11,3 milhões: ~1 s até a ordem pronta; trocar para decrescente 33 ms, sem progresso; voltar à ordem do arquivo, imediato. Cancelar no meio mantém a ordem anterior.
+
 **Limites conhecidos:** profundidade máxima 128 (além disso a linha é inválida); a lista externa do JSON único não conta como nível. UTF-8 não é validado (o texto é tratado como bytes). JSON único é lido sem paralelismo.
 
 **Medido:** `jasao inferir` em JSONL gerado de 157 MB (951 mil linhas, cache quente, Apple M5 Pro): 128–168 ms; `--json` 140 ms; o mesmo arquivo em `.zst`, 128 ms depois de descompactar.
@@ -174,7 +176,7 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 
 **Varredura de inválidas:** `nucleo::resumo::varrer` valida todas as linhas em paralelo (`thread::scope`, blocos de 4.096 linhas por `AtomicUsize`, sem rayon) com a mesma regra da árvore (`arvore::validar`), então o número bate com o que a árvore mostra, linha vazia inclusive. O PR 7 (`erros::varrer`) trata linha vazia como não erro; quando ele entrar, alinhar as duas regras. `abrir` dispara a varredura numa thread e devolve na hora; o progresso vai pelo evento `varredura` a cada ~50 ms (`{geracao, varridas, total, invalidas, fim}`) e o comando `resumo` devolve o estado atual. Abrir outro arquivo cancela a varredura anterior (`AtomicBool`) e sobe a `geracao`, que descarta avisos atrasados. JSON em várias linhas pula a varredura: cada linha dele é inválida sozinha. No JSONL fictício de 400 MB (2,4 milhões de linhas), 2,18 milhões já estavam varridas 50 ms depois de abrir.
 
-**Cartões declarativos:** `MODOS` em `main.ts`, um registro por modo com `disponivel` e `sempre` (entra no seletor "Abrir sempre em…"). Hoje Árvore e Texto; Tabela está na lista com `disponivel: false`, e o sugerido é o primeiro disponível (Árvore até a Tabela existir). Atalhos 1, 2… por posição; Enter abre o sugerido.
+**Cartões declarativos:** `MODOS` em `main.ts`, um registro por modo com `disponivel` e `sempre` (entra no seletor "Abrir sempre em…"). Hoje Tabela, Árvore, Texto e Estrutura. O sugerido é o primeiro cartão que o arquivo aceita: a Tabela quando ela serve (antes da inferência acabar, quando o conteúdo é JSON Lines de objetos), senão a Árvore. O cartão da Tabela fica desligado, com o motivo, quando o arquivo não vira tabela (ver Modo Tabela). Atalhos 1, 2… por posição; Enter abre o sugerido.
 
 **Preferência:** "Ao abrir um arquivo" (mostrar o painel, ir ao sugerido, sempre em Árvore) fica no `localStorage` (`jasao.aoAbrir`); sem valor mostra o painel, valor desconhecido cai no sugerido, armazenamento bloqueado fica no padrão.
 
@@ -436,3 +438,27 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 **Regressão de 10% no CI: não ligada.** O CI roda no mesmo runner, nesta mesma máquina compartilhada, e a carga muda os tempos bem além de 10%. Primeira tela: 0,34 s contra 0,28 s com a mesma carga. Estrutura: 3,41 s com load ~190 contra 2,11 s com load ~25. Um limite de 10% reprovaria por ruído. Além disso, os benches de 1 GB levam minutos e não cabem no tempo do runner único.
 
 **Dadroit:** não está instalado nesta máquina, então a comparação de abertura do mesmo arquivo fica pendente.
+
+## Modo Tabela (Fase 2, 23/11/2026)
+
+**O que é:** JSONL de objetos, ou JSON único que é lista de objetos, vira grade: uma linha por registro, uma coluna por campo do 1º nível. Colunas vêm da inferência (`estrutura::inferir`), na ordem em que aparecem pela primeira vez, até 200 (`MAX_COLUNAS`); as demais são contadas e avisadas na barra. Ordenar, fixar e ocultar colunas; ⌥⌘4 e cartão no painel.
+
+**Nada inteiro no front:** `tabela_linhas(id, inicio, quantidade, colunas)` devolve só a janela visível e só as colunas visíveis; o bloco encolhe com muitas colunas (30 mil células por pedido, 60 a 300 linhas). Sem virtualização horizontal: com 200 colunas o DOM tem ~30 linhas × 200 células.
+
+**Fiel ao byte:** a célula mostra o texto cru do arquivo (número grande e string com escapes como estão; strings com aspas, igual à prévia da Árvore). Objeto e lista mostram `{n}`/`[n]` e abrem a Árvore no valor (clique, Enter ou duplo clique). Ausente (`—`, apagado) é diferente de `null`. Linha inválida ocupa a linha inteira com o byte e o motivo do erro e o texto cru, sem quebrar a grade. Todo texto do arquivo (nome de coluna, célula, linha inválida) passa por `visivel`, o mesmo neutralizador de bidi/invisíveis do Texto e da Árvore, e fica em `unicode-bidi: isolate`.
+
+**Ordenação, decisão:** ordenação completa no Rust, em 2º plano, com progresso e cancelar; sem amostragem escondida. `ordenar` extrai em paralelo (rayon, blocos de 65.536 registros) uma chave de 24 bytes por registro (classe, número e posição dos bytes crus no arquivo, sem copiar texto) e ordena só a permutação (`u32` por registro; com o buffer do `par_sort_by`, ~30 B por registro no pico, estimado pelos tamanhos, não medido). A ordem fica guardada no documento; trocar de direção na mesma coluna é instantâneo (inverte só os presentes) e voltar à ordem do arquivo também. O evento `ordenacao` (`{id, geracao, lidos, total, fim, falha}`) leva o progresso; a interface ignora geração velha.
+- Crescente por classe: número (pelo valor decimal exato: o `f64` decide quando difere, que o arredondamento é monótono; no empate do `f64`, acima de 2^53 ou fora do alcance, compara os dígitos; empate de valor pelo texto cru), texto (bytes), booleano, objeto, lista, `null`. Ausente e linha inválida vão sempre para o fim, na ordem do arquivo, nas duas direções.
+- Teto: **50 milhões de registros** (`MAX_REGISTROS`, ~1,5 GB no pico da ordenação). Acima disso `ordenar` recusa antes de alocar (`grande`) e a barra diz o teto; a grade continua na ordem do arquivo. O mesmo teto vale para listar os elementos de um JSON único (16 B por elemento, 800 MB): acima dele o arquivo fica indisponível para Tabela com o motivo `grande`. Um JSONL de 10 GB com linhas de 30 B (~330 M registros) abre na Tabela mas não ordena.
+- Cancelar: a extração para no próximo bloco; o `sort` final não para no meio, mas o resultado é descartado (o núcleo confere o `cancelar` depois do `sort` e `cancelar_ordenacao` sobe a geração, então uma ordem pronta de geração velha nunca é publicada). O evento de fim chega com `falha: cancelada` e a ordem anterior continua.
+- Descartadas: ordenar só a janela (mente sobre o arquivo); amostra com aviso (o pedido foi sem amostragem escondida, e a ordenação completa coube no tempo medido abaixo).
+
+**Indisponível, com motivo:** arquivo vazio, JSON único que não é lista, registros que não são objetos (lista mista, JSONL de escalares; o número vai no motivo), objetos que são mapas (chaves variam), só objetos vazios, JSON único inválido, JSON único com mais de 50 milhões de elementos. O cartão do painel fica desligado com o motivo; o modo, se aberto, mostra o mesmo texto.
+
+**Teclado e ARIA:** `role="grid"` com `aria-rowcount`/`aria-colcount`, `aria-rowindex`/`aria-colindex` e `aria-activedescendant` na célula; cabeçalho com `aria-sort`. Setas movem a célula; Home/End vão à 1ª/última coluna, ⌘Home ao cabeçalho e ⌘End à última linha (padrão de grid do WAI); PageUp/PageDown. No cabeçalho (seta para cima da 1ª linha): Enter ordena (crescente → decrescente → arquivo), F fixa/solta, Delete oculta. Colunas ocultas viram botões na barra para voltar. A última coluna visível não se oculta.
+
+**Limites conhecidos:**
+- JSON em várias linhas (formatado): o registro é a linha, então a tabela não se aplica (`json_invalido`/`nao_objetos`); abrir na Árvore a partir da célula cai no início da linha.
+- A régua não aparece no modo Tabela (o registro selecionado não é posição no arquivo depois de ordenar).
+- Fixar/ocultar/ordem valem por documento na sessão; não são guardados.
+

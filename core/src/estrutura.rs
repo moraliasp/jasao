@@ -193,6 +193,13 @@ impl Default for No {
 }
 
 impl No {
+    /// Campos (chave crua, nó) em ordem de primeira aparição.
+    pub fn campos(&self) -> Vec<(&[u8], &No)> {
+        let mut v: Vec<_> = self.filhos.iter().map(|(k, f)| (&**k, f)).collect();
+        v.sort_by(|a, b| (a.1.ordem, a.0).cmp(&(b.1.ordem, b.0)));
+        v
+    }
+
     pub fn tipo(&self, t: Tipo) -> Contagem {
         self.tipos[t as usize]
     }
@@ -580,9 +587,7 @@ fn listar(no: &No, caminho: String, relacao: Relacao, de: u64, v: &mut Vec<Camin
         de,
         tipos: no.tipos,
     });
-    let mut filhos: Vec<_> = no.filhos.iter().collect();
-    filhos.sort_by(|a, b| (a.1.ordem, a.0).cmp(&(b.1.ordem, b.0)));
-    for (k, f) in filhos {
+    for (k, f) in no.campos() {
         listar(
             f,
             juntar(&caminho, &segmento(k)),
