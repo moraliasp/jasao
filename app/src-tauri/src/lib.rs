@@ -16,6 +16,7 @@ pub use filho::filho as consulta_filho;
 
 use nucleo::arvore::{Formatado, Linha, MAX_FORMATADO};
 use nucleo::consulta::Consulta;
+use nucleo::laudo::Laudo;
 use nucleo::regua::{Baldes, Legenda};
 use nucleo::resumo::{self, Conteudo, Progresso};
 use nucleo::tabela::{self, Coluna, FalhaOrdem, Indisponivel, Ordem, Tabela};
@@ -267,6 +268,8 @@ struct Varredura {
     estrutura: Option<Arc<Estrutura>>,
     /// A inferência crua e o arquivo dela, para Exportar (gerar e validar); chega com `estrutura`.
     inferencia: Option<InfArquivo>,
+    /// Laudo do painel de entrada (`nucleo::laudo`); chega junto com `estrutura`.
+    laudo: Option<Arc<Laudo>>,
     /// Modo Tabela (ou por que não há); chega junto com `estrutura`.
     tabela: Option<Result<Arc<Tabela>, Indisponivel>>,
 }
@@ -280,7 +283,7 @@ struct Andamento {
     campos: Option<usize>,
     legenda: Option<Legenda>,
     coloriu: bool,
-    /// A inferência acabou: o comando `estrutura` já tem resposta.
+    /// A inferência acabou: os comandos `estrutura` e `laudo` já têm resposta.
     inferiu: bool,
     /// A Tabela foi montada (ou recusada): o comando `tabela` já tem resposta. Vem depois de
     /// `inferiu`, porque JSON único lista os elementos numa passada a mais.
@@ -679,6 +682,7 @@ fn instalar<R: Runtime>(
         v.coloriu = false;
         v.estrutura = None;
         v.inferencia = None;
+        v.laudo = None;
         v.tabela = None;
         v.geracao
     };
@@ -714,10 +718,13 @@ fn instalar<R: Runtime>(
         let campos = resumo::campos(&inf.resumo);
         let estrutura = Arc::new(Estrutura::de(&inf));
         let ds = inf.resumo.discriminadores();
+        // O laudo sai da mesma inferência: custo de percorrer os caminhos, sem reler o arquivo.
+        let laudo = Arc::new(Laudo::de(conteudo, arquivo.bytes().len() as u64, &inf));
         let inf = Arc::new(inf);
         avisar(&|v| {
             v.campos = campos;
             v.estrutura = Some(Arc::clone(&estrutura));
+            v.laudo = Some(Arc::clone(&laudo));
             v.inferencia = Some((Arc::clone(&inf), Arc::clone(&arquivo)));
         });
         // Depois do aviso: a Árvore, o Texto, a Estrutura e Exportar não esperam a lista de elementos.
@@ -970,6 +977,19 @@ fn estrutura(id: u32, estado: State<'_, Estado>) -> Result<Option<Estrutura>, St
         .clone();
     // Clona fora da trava: são centenas de caminhos, não o arquivo.
     Ok(e.map(|e| (*e).clone()))
+}
+
+/// Laudo do arquivo (ver `nucleo::laudo`); `None` até a inferência acabar (`inferiu`).
+#[tauri::command]
+fn laudo(id: u32, estado: State<'_, Estado>) -> Result<Option<Laudo>, String> {
+    let doc = estado.doc(id)?;
+    let l = doc
+        .varredura
+        .lock()
+        .map_err(|e| e.to_string())?
+        .laudo
+        .clone();
+    Ok(l.map(|l| (*l).clone()))
 }
 
 /// Estatísticas e registros com e sem o caminho `indice` (a posição em `estrutura().caminhos`),
@@ -2098,6 +2118,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             regua,
             marcas,
             estrutura,
+            laudo,
             perfil,
             tabela,
             tabela_linhas,
@@ -2493,6 +2514,7 @@ mod testes {
         let erro = em(1, "linhas", json!({"inicio": 0, "quantidade": 10})).unwrap_err();
         assert!(erro.as_str().unwrap().contains("não está aberto"), "{erro}");
         assert!(em(1, "estrutura", json!({})).is_err());
+        assert!(em(1, "laudo", json!({})).is_err());
         let caminho = f.path().to_str().unwrap();
         let abertura = chamar("nova_abertura", json!({})).unwrap();
         assert_ne!(abertura, chamar("nova_abertura", json!({})).unwrap());
@@ -2531,6 +2553,24 @@ mod testes {
                 {"caminho": ".a[]", "relacao": "elemento", "profundidade": 2, "presenca": 2,
                  "de": 1, "tipos": [["inteiro", 2, 0]], "avisos": []}
             ], "discriminadores": []})
+            )
+        );
+        // Laudo: sai da mesma inferência que a Estrutura, junto com `inferiu`.
+        let l = em(1, "laudo", json!({})).unwrap();
+        assert_eq!(
+            (
+                &l["conteudo"],
+                &l["bytes"],
+                &l["registros"],
+                &l["invalidas"],
+                &l["primeira_invalida"]
+            ),
+            (
+                &json!("objetos"),
+                &json!(22),
+                &json!(1),
+                &json!(1),
+                &json!(1)
             )
         );
         // Exportar: devolve o código e valida numa thread, que avisa o fim pelo evento `validacao`.
@@ -2749,6 +2789,14 @@ mod testes {
                 {"valor": "y", "registros": 1, "linha": 1, "obrigatorias": ["tipo", "y"], "opcionais": []}
             ]}])
         );
+        let l = em(2, "laudo", json!({})).unwrap();
+        assert_eq!(
+            l["discriminador"],
+            json!({"campo": ".tipo", "variantes": [
+                {"valor": "x", "registros": 2, "linha": 0},
+                {"valor": "y", "registros": 1, "linha": 1}
+            ], "mais": 0})
+        );
         // `.x` opcional: em 2 dos 3 objetos.
         assert_eq!(e["caminhos"][2]["caminho"], ".x");
         assert_eq!(
@@ -2856,6 +2904,18 @@ mod testes {
         assert_eq!(
             chamar("abrir", json!({ "caminho": resultado, "id": 2 })),
             Ok(json!({"id": 2, "total": 3}))
+        );
+        // O laudo é do arquivo novo, não o do anterior que ficou no documento.
+        let l = (0..200)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                let l = em(2, "laudo", json!({})).unwrap();
+                (!l.is_null()).then_some(l)
+            })
+            .expect("laudo do resultado não chegou");
+        assert_eq!(
+            (&l["conteudo"], &l["registros"]),
+            (&json!("valores"), &json!(3))
         );
         // Voltar ao original apaga o resultado.
         assert_eq!(

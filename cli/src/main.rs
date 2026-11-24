@@ -28,6 +28,9 @@
 //!   diff --valores <antes> <depois> [--json] [--falha-em qualquer]
 //!                                         valores adicionados, removidos e alterados, registro N
 //!                                         contra registro N; mesmos códigos de saída
+//!   laudo <arquivo> [--json] [--teto SEG] o que o arquivo é, a forma e o que merece atenção, em
+//!                                         Markdown; para a leitura depois de SEG (padrão 30) e
+//!                                         diz que o laudo é parcial
 //!
 //! Com o stdout num terminal, `janela`, `buscar`, `consultar`, `inferir` e `diff` trocam controles (C0
 //! menos `\n`/`\t`, DEL, C1) e invisíveis bidi/de largura zero por `\u{..}` visível: um JSON
@@ -57,7 +60,8 @@ const USO: &str = "uso:\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quanti
                    \x20   saída do validar: 0 todos passam · 1 algum falha · 2 uso errado ·\n\
                    \x20   3 não deu para validar (arquivo não abre, schema recusado)\n  \
                    diff <antes> <depois> [--json] [--falha-em quebra|qualquer]\n  \
-                   diff --valores <antes> <depois> [--json] [--falha-em qualquer]\n\
+                   diff --valores <antes> <depois> [--json] [--falha-em qualquer]\n  \
+                   laudo <arquivo> [--json] [--teto SEG]\n\
                    \x20   saída do diff: 0 ok · 1 `--falha-em` pegou · 2 uso errado ·\n\
                    \x20   3 não deu para comparar (arquivo não abre, ou registro inválido com `--falha-em`)";
 
@@ -147,6 +151,13 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         },
+        ["laudo", resto @ ..] => match opcoes_laudo(resto) {
+            Some((arquivo, json, teto)) => laudo(arquivo, json, teto, &mut tela()),
+            None => {
+                eprintln!("{USO}");
+                return ExitCode::from(2);
+            }
+        },
         _ => {
             eprintln!("{USO}");
             return ExitCode::from(2);
@@ -182,6 +193,32 @@ fn abrir(arquivo: &str) -> Result<ArquivoLinhas, Box<dyn std::error::Error>> {
         eprintln!();
     }
     r.map_err(|e| format!("{arquivo}: {e}").into())
+}
+
+/// `laudo <arquivo> [--json] [--teto SEG]`, em qualquer ordem.
+fn opcoes_laudo<'a>(args: &[&'a str]) -> Option<(&'a str, bool, Duration)> {
+    let (mut arquivo, mut json, mut teto) = (None, false, Duration::from_secs(30));
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--json" => json = true,
+            "--teto" => teto = Duration::try_from_secs_f64(it.next()?.parse().ok()?).ok()?,
+            _ if arquivo.is_none() && !a.starts_with("--") => arquivo = Some(a),
+            _ => return None,
+        }
+    }
+    Some((arquivo?, json, teto))
+}
+
+fn laudo(arquivo: &str, json: bool, teto: Duration, out: &mut Terminal<impl Write>) -> Resultado {
+    let a = abrir(arquivo)?;
+    let l = nucleo::laudo::gerar(&a, teto);
+    if json {
+        writeln!(out, "{}", serde_json::to_string(&l)?)?;
+    } else {
+        write!(out, "{}", nucleo::laudo::markdown(&l, arquivo))?;
+    }
+    Ok(out.flush()?)
 }
 
 fn linhas(arquivo: &str) -> Resultado {
@@ -1206,6 +1243,63 @@ mod testes {
         let inf = no_terminal(|t| inferir(f.0.to_str().unwrap(), false, t));
         assert!(inf.contains("a\\u{202e}b\\u{9b}"), "{inf:?}");
         assert!(!inf.chars().any(perigoso), "{inf:?}");
+    }
+
+    #[test]
+    fn opcoes_do_laudo() {
+        let s = Duration::from_secs;
+        assert_eq!(opcoes_laudo(&["a"]), Some(("a", false, s(30))));
+        assert_eq!(
+            opcoes_laudo(&["--teto", "2", "a", "--json"]),
+            Some(("a", true, s(2)))
+        );
+        assert_eq!(opcoes_laudo(&[]), None);
+        assert_eq!(opcoes_laudo(&["a", "b"]), None);
+        assert_eq!(opcoes_laudo(&["a", "--teto"]), None);
+        assert_eq!(opcoes_laudo(&["a", "--teto", "-1"]), None);
+        assert_eq!(opcoes_laudo(&["a", "--x"]), None);
+    }
+
+    #[test]
+    fn laudo_dourado() {
+        let f = Temporario::novo(
+            "laudo",
+            "{\"tipo\":\"a\",\"x\":1}\n{\"tipo\":\"b\",\"y\":2}\n{\"tipo\":\"a\",\"x\":3,\"token\":\"s3gr3d0\"}\nruim\n",
+        );
+        let nome = f.0.to_str().unwrap();
+        let md = no_terminal(|t| laudo(nome, false, Duration::from_secs(30), t));
+        let esperado = format!(
+            "# Laudo de `{nome}`\n\n\
+             **O que é:** JSON Lines de objetos · 80 B · 3 registros.\n\n\
+             ## Forma\n\n\
+             - 2 formatos por `.tipo`: `a` (2), `b` (1).\n\
+             - `.x` falta em 1 de 3 registros.\n\
+             - `.y` falta em 2 de 3 registros.\n\
+             - `.token` falta em 2 de 3 registros.\n\n\
+             ## Atenção\n\n\
+             - 1 linha inválida (a 1ª na linha 4).\n\
+             - `.token`: parece segredo (o valor não é mostrado).\n\n\
+             ## Próximos passos\n\n\
+             - `jasao inferir {nome}`: estrutura por caminho, com presença e avisos.\n\
+             - `jasao exportar --schema {nome}`: JSON Schema conferido contra o arquivo.\n\
+             - `jasao erros {nome}`: posição e motivo de cada linha inválida.\n"
+        );
+        assert_eq!(md, esperado);
+        assert!(!md.contains("s3gr3d0"));
+        let js = no_terminal(|t| laudo(nome, true, Duration::from_secs(30), t));
+        assert!(
+            js.starts_with("{\"conteudo\":\"objetos\",\"bytes\":80,"),
+            "{js}"
+        );
+        assert!(!js.contains("s3gr3d0"));
+    }
+
+    #[test]
+    fn laudo_neutraliza_chave() {
+        let f = Temporario::novo("laudo-neutro", "{\"a\u{202e}b\u{9b}\":1}\n{}\n");
+        let md = no_terminal(|t| laudo(f.0.to_str().unwrap(), false, Duration::from_secs(30), t));
+        assert!(md.contains("a\\u{202e}b\\u{9b}"), "{md:?}");
+        assert!(!md.chars().any(perigoso), "{md:?}");
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod estrutura;
 pub mod exportar;
 pub mod formatos;
 pub mod gerador;
+pub mod laudo;
 pub mod linhas;
 pub mod perfil;
 pub mod regua;
