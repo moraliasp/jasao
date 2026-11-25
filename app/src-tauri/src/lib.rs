@@ -204,6 +204,10 @@ struct FiltroUi {
     tem: Option<bool>,
     /// Filtro por variante: o valor, cru.
     valor: Option<String>,
+    /// Filtro por valor dos mais comuns: o token cru (`"a"`, `1.5`, `null`).
+    comum: Option<String>,
+    /// Filtro por faixa de número: sinal e ordem de grandeza.
+    faixa: Option<(bool, Option<i32>)>,
 }
 
 /// Evento com o id do documento de onde veio.
@@ -565,6 +569,15 @@ fn autorizado<R: Runtime>(app: &AppHandle<R>, caminho: &str) -> Result<String, S
 
 /// Põe um arquivo aberto no topo dos recentes. Falha ao gravar não impede a abertura.
 fn lembrar<R: Runtime>(app: &AppHandle<R>, caminho: &str) {
+    // O temporário de stdin some ao fechar: não vira recente.
+    if app.try_state::<Stdin>().is_some_and(|s| {
+        s.0.lock().is_ok_and(|t| {
+            t.as_ref()
+                .is_some_and(|t| t.caminho() == Path::new(caminho))
+        })
+    }) {
+        return;
+    }
     if let Some(Err(e)) = com_recentes(app, |a| recentes::adicionar(a, caminho)) {
         eprintln!("recentes: {e}");
     }
@@ -655,6 +668,7 @@ fn conceder_escolhidos<R: Runtime>(
 }
 
 /// Arquivos do argv da 1ª instância: o pedido é a concessão; entram na fila da abertura.
+/// `-` abre stdin (ver `stdin_argv`).
 fn conceder_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String], cwd: &Path) {
     let abertura = app.state::<abertura::Abertura>();
     let concedidos = app.state::<abertura::Concedidos>();
@@ -662,6 +676,43 @@ fn conceder_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String], cwd: &Path) {
         concedidos.conceder(Path::new(&c));
         abertura.enfileirar(c);
     }
+    stdin_argv(app, argv);
+}
+
+/// Temporário de stdin da 1ª instância; sai no `RunEvent::Exit`.
+#[derive(Default)]
+struct Stdin(Mutex<Option<nucleo::entrada::Temporario>>);
+
+/// `app -`: grava stdin no temporário do núcleo (o mesmo da CLI) numa thread, para a janela
+/// abrir sem esperar o EOF, e pede a abertura do caminho quando termina (concessão só desta
+/// execução; não entra nos recentes, ver `lembrar`). Só na 1ª instância: com o app já aberto,
+/// quem tem o stdin é a 2ª, que repassa o argv e sai. Erro (stdin terminal, vazio, acima do
+/// teto, sem espaço) vai para o stderr e o app segue sem ele.
+fn stdin_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String]) {
+    use std::io::IsTerminal;
+    if !argv.iter().skip(1).any(|a| a == "-") {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let r = if std::io::stdin().is_terminal() {
+            Err(std::io::Error::other(
+                "`-` lê stdin, mas stdin é o terminal",
+            ))
+        } else {
+            nucleo::entrada::gravar(std::io::stdin().lock(), "stdin", &nucleo::Opcoes::default())
+        };
+        match r {
+            Ok(t) => {
+                let c = t.caminho().to_string_lossy().into_owned();
+                if let Ok(mut s) = app.state::<Stdin>().0.lock() {
+                    *s = Some(t);
+                }
+                abertura::pedir(&app, vec![c]);
+            }
+            Err(e) => eprintln!("erro: {e}"),
+        }
+    });
 }
 
 /// Documento aberto: o id e o número de registros (= linhas visíveis).
@@ -1981,11 +2032,21 @@ fn cancelar_ordenacao(id: u32, estado: State<'_, Estado>) -> Result<(), String> 
 }
 
 /// O que filtrar: os registros com (ou sem) o caminho `caminho` (posição em
-/// `estrutura().caminhos`), ou os da `variante` do `discriminador` (posições em
-/// `estrutura().discriminadores`).
-#[derive(Clone, Copy, Deserialize)]
+/// `estrutura().caminhos`), os da `variante` do `discriminador` (posições em
+/// `estrutura().discriminadores`), ou, no caminho, os de um valor dos mais comuns do `perfil`
+/// (`comum`) ou de uma faixa de número dele (`negativo`/`expoente`).
+#[derive(Clone, Deserialize)]
 #[serde(untagged)]
 enum Alvo {
+    Comum {
+        caminho: usize,
+        comum: String,
+    },
+    Faixa {
+        caminho: usize,
+        negativo: bool,
+        expoente: Option<i32>,
+    },
     Caminho {
         caminho: usize,
         tem: bool,
@@ -2013,19 +2074,57 @@ fn alvo_segs(
     alvo: Alvo,
 ) -> Result<(Vec<nucleo::estrutura::Seg>, Option<String>, FiltroUi), String> {
     use nucleo::estrutura::Seg;
+    let no_caminho = |caminho: usize| {
+        inf.resumo
+            .caminhos()
+            .into_iter()
+            .nth(caminho)
+            .ok_or_else(|| format!("caminho {caminho} não existe"))
+    };
+    // Filtrar por valor é perguntar o valor: o perfil não mostra os de um segredo, nem isto.
+    let com_valores = |caminho: usize| {
+        no_caminho(caminho).and_then(|c| {
+            if c.avisos.contains(&nucleo::estrutura::Aviso::Segredo) {
+                Err(format!("caminho {caminho} tem segredo"))
+            } else {
+                Ok(c)
+            }
+        })
+    };
+    let vazio = |caminho| FiltroUi {
+        achados: 0,
+        caminho,
+        tem: None,
+        valor: None,
+        comum: None,
+        faixa: None,
+    };
     Ok(match alvo {
         Alvo::Caminho { caminho, tem } => {
-            let c = inf
-                .resumo
-                .caminhos()
-                .into_iter()
-                .nth(caminho)
-                .ok_or_else(|| format!("caminho {caminho} não existe"))?;
+            let c = no_caminho(caminho)?;
             let ui = FiltroUi {
-                achados: 0,
-                caminho: c.caminho,
                 tem: Some(tem),
-                valor: None,
+                ..vazio(c.caminho)
+            };
+            (c.segs, None, ui)
+        }
+        Alvo::Comum { caminho, comum } => {
+            let c = com_valores(caminho)?;
+            let ui = FiltroUi {
+                comum: Some(comum),
+                ..vazio(c.caminho)
+            };
+            (c.segs, None, ui)
+        }
+        Alvo::Faixa {
+            caminho,
+            negativo,
+            expoente,
+        } => {
+            let c = com_valores(caminho)?;
+            let ui = FiltroUi {
+                faixa: Some((negativo, expoente)),
+                ..vazio(c.caminho)
             };
             (c.segs, None, ui)
         }
@@ -2045,10 +2144,8 @@ fn alvo_segs(
                 .nth(variante)
                 .ok_or_else(|| format!("variante {variante} não existe"))?;
             let ui = FiltroUi {
-                achados: 0,
-                caminho: d.campo,
-                tem: None,
                 valor: Some(v.valor.clone()),
+                ..vazio(d.campo)
             };
             // Discriminador é campo do topo do registro.
             (vec![Seg::Campo(d.cru)], Some(v.valor), ui)
@@ -2060,12 +2157,14 @@ fn alvo_segs(
 fn criterio<'a>(
     segs: &'a [nucleo::estrutura::Seg],
     valor: Option<&'a str>,
-    tem: Option<bool>,
+    ui: &'a FiltroUi,
 ) -> Criterio<'a> {
-    match (valor, tem) {
-        (Some(v), _) => Criterio::Igual(segs, v.as_bytes()),
-        (None, Some(false)) => Criterio::NaoTem(segs),
-        (None, _) => Criterio::Tem(segs),
+    match (valor, ui.tem, &ui.comum, ui.faixa) {
+        (Some(v), ..) => Criterio::Igual(segs, v.as_bytes()),
+        (_, _, Some(c), _) => Criterio::Comum(segs, c),
+        (_, _, _, Some((neg, e))) => Criterio::Faixa(segs, neg, e),
+        (None, Some(false), ..) => Criterio::NaoTem(segs),
+        (None, ..) => Criterio::Tem(segs),
     }
 }
 
@@ -2112,7 +2211,7 @@ fn filtrar<R: Runtime>(
                 emitir(&app, "filtragem", id, p);
             }
         };
-        let criterio = criterio(&segs, valor.as_deref(), ui.tem);
+        let criterio = criterio(&segs, valor.as_deref(), &ui);
         let r = filtro::filtrar_ate(
             &inf,
             arquivo.bytes(),
@@ -2674,7 +2773,7 @@ async fn salvar_como<R: Runtime>(
             let (inf, _) =
                 inferencia(&estado, id)?.ok_or("a estrutura ainda está sendo inferida")?;
             let (segs, valor, ui) = alvo_segs(&inf, alvo)?;
-            Fonte::filtro(&criterio(&segs, valor.as_deref(), ui.tem))
+            Fonte::filtro(&criterio(&segs, valor.as_deref(), &ui))?
         }
     };
     // O filho compõe com o `documento` do arquivo que abre; aqui só confere que compila.
@@ -2887,6 +2986,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
     b.manage(Estado::default())
         .manage(abertura::Abertura::default())
         .manage(abertura::Concedidos::default())
+        .manage(Stdin::default())
         .invoke_handler(tauri::generate_handler![
             escolher,
             salvar_como,
@@ -3085,6 +3185,8 @@ pub fn run() {
                 app.manage(Recentes(dir.join("recentes.json")));
                 recentes_mudaram(app.handle());
             }
+            // Temporário de stdin de execução morta sem limpar (crash, SIGKILL).
+            let _ = nucleo::entrada::limpar_orfaos(&nucleo::Opcoes::default());
             let cwd = std::env::current_dir().unwrap_or_default();
             let argv: Vec<String> = std::env::args().collect();
             conceder_argv(app.handle(), &argv, &cwd);
@@ -3108,6 +3210,9 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 if let Ok(docs) = app.state::<Estado>().docs.lock() {
                     docs.values().for_each(|d| d.encerrar());
+                }
+                if let Ok(mut t) = app.state::<Stdin>().0.lock() {
+                    t.take();
                 }
             }
             _ => {}
@@ -4202,7 +4307,7 @@ mod testes {
             assert_eq!(registros(), [0, 2]);
             assert_eq!(
                 em(2, "tabela", json!({})).unwrap()["filtro"],
-                json!({"achados": 2, "caminho": ".tipo", "tem": null, "valor": "x"})
+                json!({"achados": 2, "caminho": ".tipo", "tem": null, "valor": "x", "comum": null, "faixa": null})
             );
             assert_eq!(
                 em(2, "filtrado", json!({"posicao": 1})),
@@ -4223,6 +4328,24 @@ mod testes {
             assert_eq!(fim["achados"], 1);
             assert_eq!(em(2, "tabela", json!({})).unwrap()["ordem"], Value::Null);
             assert_eq!(registros(), [1], "sem `.x`; a inválida não entra");
+            // Valor dos mais comuns (token cru) e faixa de número do perfil.
+            let fim = filtrar(json!({"caminho": 2, "comum": "2"}));
+            assert_eq!(fim["achados"], 1);
+            assert_eq!(registros(), [2]);
+            assert_eq!(
+                em(2, "tabela", json!({})).unwrap()["filtro"],
+                json!({"achados": 1, "caminho": ".x", "tem": null, "valor": null, "comum": "2", "faixa": null})
+            );
+            let fim = filtrar(json!({"caminho": 2, "negativo": false, "expoente": 0}));
+            assert_eq!(fim["achados"], 2);
+            assert_eq!(registros(), [0, 2]);
+            assert_eq!(
+                em(2, "tabela", json!({})).unwrap()["filtro"]["faixa"],
+                json!([false, 0])
+            );
+            assert!(em(2, "filtrar", json!({"alvo": {"caminho": 99, "comum": "2"}})).is_err());
+            let fim = filtrar(json!({"caminho": 2, "tem": false}));
+            assert_eq!(fim["achados"], 1);
             // Teto no call site: com o do documento baixado, recusa e não publica nada.
             app.state::<Estado>()
                 .doc(2)
@@ -4616,6 +4739,20 @@ mod testes {
             !tudo.contains("hunter2xyz") && !tudo.contains("s3cr3tvalue"),
             "{tudo}"
         );
+        // Nem filtrar pelo valor (seria perguntar se ele existe).
+        let i = em(id, "estrutura", json!({})).unwrap()["caminhos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|c| c["caminho"] == ".token")
+            .unwrap();
+        for alvo in [
+            json!({"caminho": i, "comum": "\"hunter2xyz\""}),
+            json!({"caminho": i, "negativo": false, "expoente": 0}),
+        ] {
+            let erro = em(id, "filtrar", json!({ "alvo": alvo })).unwrap_err();
+            assert!(erro.as_str().unwrap().contains("segredo"), "{erro}");
+        }
 
         // Pasta: `pastas` avisa e `abrir` recusa com mensagem clara.
         let dir = tempfile::tempdir().unwrap();
@@ -4716,7 +4853,7 @@ mod testes {
             assert_eq!(linhas(), [0, 3, 4], ".k = p");
             assert_eq!(
                 em(id, "tabela", json!({})).unwrap()["filtro"],
-                json!({"achados": 3, "caminho": ".k", "tem": null, "valor": "p"})
+                json!({"achados": 3, "caminho": ".k", "tem": null, "valor": "p", "comum": null, "faixa": null})
             );
             assert_eq!(em(id, "fechar", json!({})), Ok(Value::Null));
         }
@@ -4755,6 +4892,17 @@ mod testes {
         };
         let caminho = arq.to_str().unwrap();
         app.state::<abertura::Concedidos>().conceder(&arq);
+        assert_eq!(chamar("recentes", json!({})), json!([]));
+        // O temporário de stdin abre, mas não vira recente.
+        let op = nucleo::Opcoes {
+            dir_cache: Some(raiz.join("cache")),
+            ..nucleo::Opcoes::default()
+        };
+        let t = nucleo::entrada::gravar(&b"{\"s\":1}\n"[..], "stdin", &op).unwrap();
+        let tmp = t.caminho().to_str().unwrap().to_owned();
+        *app.state::<Stdin>().0.lock().unwrap() = Some(t);
+        abertura::pedir(app.handle(), vec![tmp.clone()]);
+        assert!(chamar("abrir", json!({ "caminho": tmp }))["total"] == json!(1));
         assert_eq!(chamar("recentes", json!({})), json!([]));
         chamar("abrir", json!({ "caminho": caminho }));
         let pasta_txt = raiz.to_str().unwrap();

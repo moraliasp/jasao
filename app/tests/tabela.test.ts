@@ -110,6 +110,8 @@ test("o CSS isola o texto das células e do cabeçalho", () => {
   const css = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   assert.match(css, /\.grade \.td \.v, \.grade \.td \.cru \{[^}]*unicode-bidi:\s*isolate/);
   assert.match(css, /\.grade \.th \.nm \{[^}]*unicode-bidi:\s*isolate/);
+  // Rótulo de filtro longo (faceta) encolhe com reticências; o botão de limpar não é cortado.
+  assert.match(css, /\.tfiltro \.chip \.tx \{[^}]*text-overflow:\s*ellipsis[^}]*min-width:\s*0/);
 });
 
 test("filtro: rótulo por caso, e o que vem do arquivo vai escapado no chip", () => {
@@ -117,6 +119,12 @@ test("filtro: rótulo por caso, e o que vem do arquivo vai escapado no chip", ()
   assert.equal(rotuloFiltro({ caminho: ".tipo", tem: null, valor: "x" }, t), tf.igual(".tipo", "x"));
   assert.equal(rotuloFiltro({ caminho: ".a", tem: true, valor: null }, t), tf.com(".a"));
   assert.equal(rotuloFiltro({ caminho: ".a", tem: false, valor: null }, t), tf.sem(".a"));
+  assert.equal(rotuloFiltro({ caminho: ".n", tem: null, valor: null, comum: '"a\\"b"' }, t), tf.comum(".n", '"a\\"b"'));
+  assert.equal(rotuloFiltro({ caminho: ".n", tem: null, valor: null, comum: "null" }, t), tf.comum(".n", "null"));
+  assert.equal(rotuloFiltro({ caminho: ".n", tem: null, valor: null, faixa: [true, -1] }, t), tf.faixa(".n", "−1e-1…1e0"));
+  assert.equal(rotuloFiltro({ caminho: ".n", tem: null, valor: null, faixa: [false, null] }, t), tf.faixa(".n", "0"));
+  const chip = chipFiltro({ filtrando: null, fimF: null }, { registros: 9, filtro: { achados: 1, caminho: ".n", tem: null, valor: null, comum: '"<b>\u202E"', faixa: null } } as TabelaUi, t, fmt);
+  assert.ok(!chip.includes("<b>") && !chip.includes("\u202E") && chip.includes("data-limpar-filtro"), chip);
   const info = { registros: 10, filtro: { achados: 3, caminho: ".tipo", tem: null, valor: '<img src=x onerror="alert(1)">' } } as TabelaUi;
   const e: EstadoFiltro = { filtrando: null, fimF: null };
   const html = chipFiltro(e, info, t, fmt);
