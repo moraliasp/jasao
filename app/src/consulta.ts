@@ -2,7 +2,7 @@
 // os resultados num JSONL temporário, que abre no lugar do arquivo; "Voltar ao arquivo" reabre
 // o original e apaga o temporário (`fechar_consulta`). Cada documento (aba) tem a sua consulta.
 // Ao vivo: digitar roda o filtro depois de uma pausa (`ESPERA`); o Rust cancela a anterior. O
-// resultado aberto sai em JSONL ou CSV (`salvar_consulta`).
+// resultado aberto sai pelo "Salvar como…" (`salvar_como`, fonte jq).
 import { listen } from "@tauri-apps/api/event";
 import { chamar } from "./doc";
 import { alternarFiltro, CHAVE_FILTROS, lerFiltros } from "./filtros";
@@ -48,7 +48,6 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   const anonimizar = () => anonBtn.getAttribute("aria-pressed") === "true";
   const salvarBtn = form.querySelector<HTMLButtonElement>("[data-salvar]")!;
   const sugestoes = form.querySelector<HTMLDataListElement>("datalist")!;
-  const exportarBtns = form.querySelectorAll<HTMLButtonElement>("[data-exportar]");
 
   /** Consulta de um documento. */
   interface Estado {
@@ -79,7 +78,6 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     campo.setAttribute("aria-invalid", String(erro));
     cancelarBtn.hidden = !s?.rodando;
     voltarBtn.hidden = !s || s.rodando || s.original === null;
-    for (const b of exportarBtns) b.hidden = !s || s.rodando || s.resultado === null;
   }
 
   // Filtros salvos. Armazenamento bloqueado: a lista fica só nesta execução.
@@ -161,17 +159,6 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     if (e === s) o.voltar();
   }
 
-  async function exportar(e: Estado, csv: boolean): Promise<void> {
-    if (!e.resultado || e.rodando) return;
-    const nome = (e.original ?? "").split(/[\\/]/).pop()!.replace(/\.(jsonl?|ndjson)(\.(gz|zst))?$/i, "") || "consulta";
-    try {
-      const salvo = await chamar<string | null>("salvar_consulta", { id: e.id, arquivo: e.resultado, csv, nome });
-      if (salvo) mostrar(e, t.consulta.salvo(salvo));
-    } catch (x) {
-      mostrar(e, `${t.erro}: ${erroDoRust((x as { mensagem?: string }).mensagem ?? x)}`, true);
-    }
-  }
-
   /** Cancelar não recebe `fim` (a geração já mudou); o resultado anterior, se aberto, foi apagado. */
   async function cancelar(e: Estado): Promise<void> {
     e.rodando = false;
@@ -191,7 +178,6 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
     } catch {}
     desenharFiltros();
   });
-  for (const b of exportarBtns) b.addEventListener("click", () => s && void exportar(s, b.dataset.exportar === "csv"));
   campo.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -227,7 +213,6 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
   voltarBtn.textContent = t.consulta.voltar;
   anonBtn.title = t.consulta.anonimizar;
   anonBtn.setAttribute("aria-label", t.consulta.anonimizar);
-  for (const b of exportarBtns) b.textContent = b.dataset.exportar === "csv" ? t.consulta.csv : t.consulta.jsonl;
   desenharFiltros();
   mostrar(null, "");
 

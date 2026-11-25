@@ -1,5 +1,5 @@
 // "Salvar como…": grava num arquivo NOVO o arquivo inteiro, o resultado da consulta jq ou os
-// registros do filtro da Tabela, com manter/tirar/renomear, em JSONL ou JSON. O Rust escolhe o
+// registros do filtro da Tabela, com manter/tirar/renomear, em JSONL, JSON ou CSV. O Rust escolhe o
 // destino (diálogo do sistema), recusa o original e os abertos e só troca o temporário pelo
 // destino no fim (`salvar_como`); progresso pelo evento `salvando`, cancelar por `cancelar_salvar`.
 import { listen } from "@tauri-apps/api/event";
@@ -53,6 +53,7 @@ export function criarSalvarComo(dialogo: HTMLDialogElement, o: { fmt(n: number):
           <option value="jsonl">JSONL</option>
           <option value="json">${s.json}</option>
           <option value="json_compacto">${s.jsonCompacto}</option>
+          <option value="csv">${s.csv}</option>
         </select>
       </fieldset>
       <fieldset><legend>${s.mascara}</legend>
