@@ -8,7 +8,7 @@ import { chamar, docAtivo } from "./doc";
 import { copiarTexto } from "./copiar";
 import { EXTENSOES } from "./abas";
 import { porGeracao } from "./geracao";
-import { t } from "./i18n";
+import { motivoDoRust, t } from "./i18n";
 import { aposSpan } from "./texto";
 
 interface Pedido {
@@ -25,6 +25,8 @@ interface Validacao {
   passam: number;
   falham: number;
   invalidas: number;
+  /** Registros que o validador não lê (número fora do alcance do JavaScript): nem passam nem falham. */
+  recusadas: number;
   falhas: [number, string][];
 }
 
@@ -76,7 +78,9 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
   function resultado(v: Validacao): void {
     const n = v.passam + v.falham;
     const p = pedido();
-    const invalidas = v.invalidas ? ` ${x.invalidas(o.fmt(v.invalidas))}` : "";
+    // A Estrutura conta passam + falham + recusadas; as inválidas nem são registro.
+    const invalidas =
+      (v.recusadas ? ` ${x.recusadas(o.fmt(v.recusadas))}` : "") + (v.invalidas ? ` ${x.invalidas(o.fmt(v.invalidas))}` : "");
     if (!v.falham && v.total === 0 && v.falhas.length) {
       // Schema que não compila é bug do gerador: aparece, não some.
       estado(`${o.icone("alert")}<span>${esc(x.naoCompila(v.falhas[0][1]))}</span>`, "bad");
@@ -90,7 +94,7 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
       estado(`${o.icone("alert")}<span>${x.deN(o.fmt(v.passam), o.fmt(n))}${porque}${invalidas}</span>`, "bad");
     }
     falhasEl.innerHTML = v.falhas
-      .map(([linha, motivo]) => `<li><b>${x.linha(o.fmt(linha + 1))}</b> <span>${esc(motivo)}</span></li>`)
+      .map(([linha, motivo]) => `<li><b>${x.linha(o.fmt(linha + 1))}</b> <span>${esc(motivoDoRust(motivo))}</span></li>`)
       .join("");
   }
 

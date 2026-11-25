@@ -99,8 +99,8 @@ mod testes {
         let marcas = nucleo::regua::marcas(a.linhas());
         let p = resumo::varrer(&a, &AtomicBool::new(false), &marcas, |_| {});
         assert!(p.fim);
-        // 5 inválidas com motivos diferentes + 1 linha vazia (scripts/exemplos.py, INVALIDAS).
-        assert_eq!(p.invalidas, 6);
+        // 5 inválidas com motivos diferentes e 1 linha vazia à parte (scripts/exemplos.py, INVALIDAS).
+        assert_eq!((p.invalidas, p.vazias), (5, 1));
         assert!(
             a.linhas() > 1_000,
             "régua e Ir para linha precisam de volume"

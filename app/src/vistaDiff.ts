@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { chamar, docAtivo } from "./doc";
 import { porGeracao } from "./geracao";
 import { t } from "./i18n";
-import { htmlEstrutura, htmlValores, lerRegistros, type DiffArquivos, type DiffEstrutura } from "./diff";
+import { htmlEstrutura, htmlValores, lerRegistros, mesmoArquivo, type DiffArquivos, type DiffEstrutura } from "./diff";
 import { htmlLinha, marcar, parMarcado, type Linha } from "./linhaTempo";
 import { escAtributo } from "./texto";
 
@@ -28,8 +28,8 @@ interface Andamento {
 export interface Opcoes {
   fmt: (n: number) => string;
   icone: (id: string) => string;
-  /** Abas com documento aberto, na ordem da barra. */
-  abas: () => { doc: number; nome: string }[];
+  /** Abas com documento aberto, na ordem da barra; `caminho` é o aberto agora (arquivo ou consulta). */
+  abas: () => { doc: number; nome: string; caminho: string | null }[];
   avisar: (msg: string) => void;
   erro: (e: unknown) => string;
   /** Abre cada caminho numa aba (já concedido) e devolve o doc de cada um, `null` se não abriu. */
@@ -80,6 +80,11 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
     statusEl.innerHTML = msg;
   };
   const par = () => [Number(antesEl.value), Number(depoisEl.value)] as const;
+  /** Antes e Depois nunca são o mesmo arquivo: cada lista desabilita o que a outra escolheu. */
+  const travarPar = (abas = o.abas()) => {
+    for (const [sel, outro] of [[antesEl, depoisEl], [depoisEl, antesEl]] as const)
+      for (const op of sel.options) op.disabled = mesmoArquivo(abas, op.value, outro.value);
+  };
 
   /** Refaz as listas de arquivos, mantendo a escolha que ainda existe; padrão: ativa × outra. */
   function opcoes(): boolean {
@@ -95,9 +100,10 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
     const tem = (v: string) => abas.some((a) => String(a.doc) === v);
     const ativo = String(docAtivo() ?? "");
     antesEl.value = tem(va) ? va : ativo;
-    const outra = abas.find((a) => String(a.doc) !== antesEl.value);
-    depoisEl.value = tem(vd) && vd !== antesEl.value ? vd : String(outra?.doc ?? antesEl.value);
-    const ok = abas.length > 1;
+    const outra = abas.find((a) => !mesmoArquivo(abas, String(a.doc), antesEl.value));
+    depoisEl.value = tem(vd) && !mesmoArquivo(abas, vd, antesEl.value) ? vd : String(outra?.doc ?? "");
+    travarPar(abas);
+    const ok = !!outra;
     comparar.disabled = !ok;
     vazioEl.hidden = ok;
     toolsEl.hidden = statusEl.hidden = resEl.hidden = !ok;
@@ -189,6 +195,7 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
     modoTipo();
     opcoes();
     [antesEl.value, depoisEl.value] = [String(a), String(b)];
+    travarPar();
     o.irParaDiff();
   }
 
@@ -228,8 +235,11 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
     else if (tipoEl.value === "linha" && linha) desenharLinha();
     else estado(tipoEl.value === "linha" ? `<span>${x.linha.escolha}</span>` : "");
   };
-  antesEl.addEventListener("change", mudouPar);
-  depoisEl.addEventListener("change", mudouPar);
+  for (const sel of [antesEl, depoisEl])
+    sel.addEventListener("change", () => {
+      travarPar();
+      mudouPar();
+    });
   tipoEl.addEventListener("change", () => {
     modoTipo();
     mudouPar();

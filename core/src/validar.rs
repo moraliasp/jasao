@@ -47,8 +47,12 @@ pub struct Validacao {
     pub passam: u64,
     /// Registros que o `serde_json` leu e o schema reprovou.
     pub falham: u64,
-    /// Linhas que o `serde_json` não leu como JSON (não contam como registro).
+    /// Linhas que não são JSON (a regra da árvore, `arvore::validar`) ou aninhadas acima de 128
+    /// (o limite da inferência e do `serde_json`): não contam como registro.
     pub invalidas: u64,
+    /// Registros (JSON válido para a árvore e a inferência) que o `serde_json` não lê: número
+    /// além do `f64`, o alcance do JavaScript. Nem passam nem falham.
+    pub recusadas: u64,
     /// As primeiras `MAX_FALHAS` (reprovadas e inválidas), por linha.
     pub falhas: Vec<Falha>,
     pub varridas: u64,
@@ -61,6 +65,7 @@ impl Validacao {
         self.passam += o.passam;
         self.falham += o.falham;
         self.invalidas += o.invalidas;
+        self.recusadas += o.recusadas;
         self.falhas.extend(o.falhas);
         self.falhas.sort_by_key(|f| f.linha);
         self.falhas.truncate(MAX_FALHAS);
@@ -84,10 +89,22 @@ impl Validacao {
             }
         };
         match serde_json::from_slice::<serde_json::Value>(b) {
-            Err(e) => {
-                falha(format!("não é JSON válido para o validador: {e}"));
-                self.invalidas += 1;
-            }
+            // O motivo é um código `jasao:…` (a interface traduz), não uma frase.
+            Err(e) => match (crate::arvore::validar(b), recusa(&e)) {
+                (Err(l), _) => {
+                    let c = serde_json::to_value(l.motivo).unwrap_or_default();
+                    falha(format!("jasao:{}", c.as_str().unwrap_or("outro")));
+                    self.invalidas += 1;
+                }
+                (Ok(_), Some(motivo)) => {
+                    falha(motivo.into());
+                    self.recusadas += 1;
+                }
+                (Ok(_), None) => {
+                    falha("jasao:aninhamento".into());
+                    self.invalidas += 1;
+                }
+            },
             // Com as falhas já guardadas, `is_valid` evita montar o erro (13× mais rápido em 1 GB que reprova).
             Ok(j) if cheio => match v.is_valid(&j) {
                 true => self.passam += 1,
@@ -101,6 +118,20 @@ impl Validacao {
                 }
             },
         }
+    }
+}
+
+/// Por que o `serde_json` recusou um registro que é JSON válido (mensagens estáveis dele).
+/// Por que o `serde_json` recusou um JSON que a árvore aceita. `None` é aninhamento acima de 128,
+/// que a inferência também conta como inválido (`estrutura::PROFUNDIDADE_MAX`).
+fn recusa(e: &serde_json::Error) -> Option<&'static str> {
+    let m = e.to_string();
+    if m.starts_with("recursion limit exceeded") {
+        None
+    } else if m.starts_with("number out of range") {
+        Some("jasao:numero_fora_do_alcance")
+    } else {
+        Some("jasao:recusado_pelo_validador")
     }
 }
 

@@ -149,7 +149,7 @@ const diff = criarDiff(diffEl, {
   icone: (id) => icone(id),
   abas: () => {
     const n = nomesDasAbas();
-    return lista.flatMap((a, i) => (a.doc === null ? [] : [{ doc: a.doc, nome: n[i] }]));
+    return lista.flatMap((a, i) => (a.doc === null ? [] : [{ doc: a.doc, nome: n[i], caminho: a.caminho }]));
   },
   avisar: (msg) => void (status.textContent = msg),
   erro: (e) => erroAoAbrir(e),
@@ -1173,10 +1173,12 @@ $("nova-aba").addEventListener("click", novaAba);
 
 type Conteudo = keyof typeof t.painel.conteudo;
 interface Andamento {
-  geracao: number; varridas: number; total: number; invalidas: number; fim: boolean; campos: number | null;
-  legenda: Legenda | null; coloriu: boolean; inferiu: boolean; tabelou: boolean;
+  geracao: number; varridas: number; total: number; invalidas: number; vazias: number; fim: boolean;
+  campos: number | null; legenda: Legenda | null; coloriu: boolean; inferiu: boolean; tabelou: boolean;
+  /** Registros pela inferência (o número da Estrutura e do laudo); `null` até ela acabar. */
+  registros: number | null;
 }
-interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
+interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; linhas: number }
 
 /** Visão sugerida: a Tabela, se o arquivo vira colunas; senão a Árvore. Com a Tabela ainda
  * indefinida, o tipo do conteúdo decide (e `mudou` confere quando a montagem responde). */
@@ -1216,14 +1218,16 @@ function desenharAndamento(): void {
     for (const id of ids) $(id).textContent = "";
     return;
   }
-  const n = plural(resumo.registros, t.registros);
+  // Registros (JSON válido) quando a inferência acaba; antes, só as linhas do arquivo.
+  const n = resumo.registros !== null ? plural(resumo.registros, t.registros) : plural(resumo.linhas, t.linhas);
   $("meta").textContent = $("meta-st").textContent = `${t.painel.conteudo[resumo.conteudo]} · ${n} · ${tamanho(resumo.bytes)}`;
   $("aberto-ms").textContent = a.ms ? t.barra.abertoEm(a.ms) : "";
   $("painel-meta").innerHTML =
     `${tamanho(resumo.bytes)} · ${n}` +
-    (resumo.campos || resumo.invalidas ? "<br>" : "") +
+    (resumo.campos || resumo.invalidas || resumo.vazias ? "<br>" : "") +
     [resumo.campos ? plural(resumo.campos, t.campos) : "",
-      resumo.invalidas ? `<span class="bad">${t.laudo.invalidas(fmt(resumo.invalidas), null)}</span>` : ""]
+      resumo.invalidas ? `<span class="bad">${t.laudo.invalidas(fmt(resumo.invalidas), null)}</span>` : "",
+      resumo.vazias ? t.laudo.vazias(fmt(resumo.vazias)) : ""]
       .filter(Boolean).join(" · ") +
     (resumo.fim ? "" : `<br>${t.painel.analisando(fmt(resumo.varridas), fmt(resumo.total))}`);
 }

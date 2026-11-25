@@ -2,8 +2,8 @@
 //!
 //! - `conteudo` olha só o começo do arquivo (rápido, roda ao abrir).
 //! - `varrer` valida todas as linhas em paralelo, fora da thread da interface, com progresso e
-//!   cancelamento. A regra de "inválida" é a da árvore (`arvore::validar`): o número do painel
-//!   bate com o que a árvore mostra (linha vazia conta como inválida).
+//!   cancelamento. A regra de "inválida" é a da árvore (`arvore::validar`); linha vazia (só
+//!   espaço) conta à parte, como no laudo, na Estrutura e em `erros`.
 //! - `campos` conta as chaves do topo dos registros pela inferência (`estrutura::inferir`).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::Relaxed};
@@ -82,6 +82,8 @@ pub struct Progresso {
     pub varridas: usize,
     pub total: usize,
     pub invalidas: usize,
+    /// Linhas só com espaço em branco: nem registro nem inválida.
+    pub vazias: usize,
     pub fim: bool,
     pub cancelado: bool,
 }
@@ -101,7 +103,8 @@ pub fn varrer(
         .map_or(1, |n| n.get())
         .min(blocos)
         .max(1);
-    let (proximo, varridas, invalidas, ativos) = (
+    let (proximo, varridas, invalidas, vazias, ativos) = (
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
@@ -111,6 +114,7 @@ pub fn varrer(
         varridas: varridas.load(Relaxed),
         total,
         invalidas: invalidas.load(Relaxed),
+        vazias: vazias.load(Relaxed),
         fim,
         cancelado: fim && varridas.load(Relaxed) < total,
     };
@@ -123,14 +127,17 @@ pub fn varrer(
                         break;
                     }
                     let linhas = arquivo.janela(b * BLOCO, BLOCO);
-                    let mut ruins = 0;
+                    let (mut ruins, mut brancas) = (0, 0);
                     for (i, l) in linhas.iter().enumerate() {
-                        if validar(l).is_err() {
+                        if l.iter().all(|c| matches!(c, b' ' | b'\t' | b'\r')) {
+                            brancas += 1;
+                        } else if validar(l).is_err() {
                             marcas[b * BLOCO + i].store(regua::INVALIDA, Relaxed);
                             ruins += 1;
                         }
                     }
                     invalidas.fetch_add(ruins, Relaxed);
+                    vazias.fetch_add(brancas, Relaxed);
                     varridas.fetch_add(linhas.len(), Relaxed);
                 }
                 ativos.fetch_sub(1, Relaxed);
@@ -185,7 +192,7 @@ mod testes {
     }
 
     #[test]
-    fn conta_invalidas_como_a_arvore() {
+    fn conta_invalidas_como_a_arvore_e_vazias_a_parte() {
         let mut dados = Vec::new();
         for i in 0..10_000 {
             match i % 1000 {
@@ -203,7 +210,8 @@ mod testes {
             Progresso {
                 varridas: 10_000,
                 total: 10_000,
-                invalidas: 20,
+                invalidas: 10,
+                vazias: 10,
                 fim: true,
                 cancelado: false
             }
