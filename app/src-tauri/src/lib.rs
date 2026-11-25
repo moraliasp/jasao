@@ -3248,12 +3248,7 @@ fn arquivo<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Submenu
         itens.push(MenuItem::with_id(app, id, texto, true, None::<&str>)?);
     }
     if itens.is_empty() {
-        itens.push(MenuItem::new(
-            app,
-            t.sem_recentes,
-            false,
-            None::<&str>,
-        )?);
+        itens.push(MenuItem::new(app, t.sem_recentes, false, None::<&str>)?);
     }
     let separador = PredefinedMenuItem::separator(app)?;
     let limpar = MenuItem::with_id(
