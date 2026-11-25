@@ -183,6 +183,12 @@ impl Arvore {
         self.total
     }
 
+    /// `validar` sobre `bytes` (já mascarados), mas com byte e motivo do erro tirados do arquivo
+    /// cru: o trecho mascarado daria outro erro (ver `cru_de`).
+    fn validar_registro<'a>(&'a self, bytes: &'a [u8]) -> Result<&'a str, ErroLinha> {
+        validar(bytes).map_err(|e| validar(self.arquivo.cru_de(bytes)).err().unwrap_or(e))
+    }
+
     fn bytes(&self, registro: usize) -> &[u8] {
         self.arquivo
             .janela(registro, 1)
@@ -276,10 +282,9 @@ impl Arvore {
             faixa: [0, bytes.len()],
             mascarado: false,
         };
-        match validar(bytes) {
+        match self.validar_registro(bytes) {
             Err(e) => {
-                // Byte e motivo do arquivo cru: o trecho mascarado daria outro erro (ver `cru_de`).
-                linha.erro = validar(self.arquivo.cru_de(bytes)).err().or(Some(e));
+                linha.erro = Some(e);
                 linha.previa = previa(String::from_utf8_lossy(bytes).trim_matches(ESPACO));
             }
             Ok(texto) => {
@@ -402,7 +407,7 @@ impl Arvore {
     /// os valores muda: chaves e escalares saem com o texto cru do arquivo (escape, número de
     /// 400 dígitos e chave repetida intactos). Corta em `MAX_FORMATADO` bytes e diz que cortou.
     pub fn formatado(&self, registro: usize) -> Result<Formatado, ErroLinha> {
-        let texto = validar(self.bytes(registro))?;
+        let texto = self.validar_registro(self.bytes(registro))?;
         Ok(formatar(texto.trim_matches(ESPACO), MAX_FORMATADO))
     }
 
@@ -1142,6 +1147,19 @@ mod testes {
         assert!(a.formatado(1).is_err());
         assert_eq!(arvore("7\n").formatado(0).unwrap().texto, "7");
         assert_eq!(arvore(" [ ] \n").formatado(0).unwrap().texto, "[ ]");
+    }
+
+    #[test]
+    fn formatado_da_o_erro_do_cru_como_a_linha() {
+        // Achado do fuzz: a máscara troca o `\xff` e o formatado acusava outro erro que a linha.
+        let dados: &'static [u8] = b"\x0b\0\0]rg[\xff~\n]rg[[[";
+        let a = Arvore::new(ArquivoLinhas::estatico(dados));
+        let e = ErroLinha {
+            byte: 7,
+            motivo: Motivo::Utf8,
+        };
+        assert_eq!(a.janela(0, 1)[0].erro, Some(e));
+        assert_eq!(a.formatado(0), Err(e));
     }
 
     /// Lista de `n` cadeias `[[[…0…]]]` de `prof` níveis: pouca entrada, muita indentação.
