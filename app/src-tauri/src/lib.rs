@@ -2704,55 +2704,6 @@ fn fechar_consulta(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
     Ok(())
 }
 
-/// Salva o resultado mostrado da consulta (`arquivo`, o temporário que o evento `consulta`
-/// entregou) em JSONL ou CSV, pelo diálogo de salvar no backend. Só o resultado atual do
-/// documento: caminho que não é o dele (outro arquivo, consulta nova já rodando) é recusado.
-/// Devolve o caminho salvo, ou `None` se o usuário cancelou.
-#[tauri::command]
-async fn salvar_consulta<R: Runtime>(
-    id: u32,
-    arquivo: String,
-    csv: bool,
-    nome: String,
-    janela: tauri::WebviewWindow<R>,
-    estado: State<'_, Estado>,
-) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    let atual = estado
-        .doc(id)?
-        .consulta
-        .lock()
-        .map_err(|e| e.to_string())?
-        .arquivo
-        .clone();
-    let Some(origem) = atual.filter(|a| a.as_os_str() == arquivo.as_str()) else {
-        return Err("o resultado da consulta não está mais aberto".into());
-    };
-    let (filtro, ext) = if csv {
-        ("CSV", "csv")
-    } else {
-        ("JSONL", "jsonl")
-    };
-    let nome = Path::new(&nome)
-        .file_stem()
-        .map(|n| format!("{}.{ext}", n.to_string_lossy()))
-        .unwrap_or_default();
-    let destino = janela
-        .dialog()
-        .file()
-        .set_parent(&janela)
-        .set_file_name(nome)
-        .add_filter(filtro, &[ext])
-        .blocking_save_file();
-    let Some(p) = destino.and_then(|f| f.into_path().ok()) else {
-        return Ok(None);
-    };
-    let mut protegidos = protegidos(janela.app_handle());
-    protegidos.push(origem.clone());
-    gravar_resultado(&origem, &p, csv, &protegidos)?;
-    Ok(Some(p.to_string_lossy().into_owned()))
-}
-
 /// O que o salvar nunca sobrescreve: o que o usuário abriu nesta execução, os resultados de
 /// consulta (todos concedidos) e os recentes (abrir por eles não concede).
 fn protegidos<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
@@ -2784,10 +2735,39 @@ struct PedidoSalvar {
     #[serde(default)]
     transformacao: Transformacao,
     #[serde(default)]
-    saida: Saida,
+    saida: SaidaSalvar,
     /// Padrão: segredos mascarados. Sem máscara só se a interface mandar.
     #[serde(default)]
     mascara: Mascara,
+}
+
+/// O formato do arquivo salvo: os de `Saida` e o CSV, que o filho grava como JSONL e o Rust
+/// converte no fim (`converter_csv`), com a máscara já aplicada.
+#[derive(Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+enum SaidaSalvar {
+    #[default]
+    Jsonl,
+    Json,
+    JsonCompacto,
+    Csv,
+}
+
+impl SaidaSalvar {
+    fn saida(self) -> Saida {
+        match self {
+            Self::Json => Saida::Json,
+            Self::JsonCompacto => Saida::JsonCompacto,
+            Self::Jsonl | Self::Csv => Saida::Jsonl,
+        }
+    }
+    #[cfg_attr(test, allow(dead_code))]
+    fn extensao(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            s => s.saida().extensao(),
+        }
+    }
 }
 
 /// Nos testes, o diálogo de salvar não abre: o destino vem daqui.
@@ -2798,7 +2778,7 @@ static DESTINO_TESTE: Mutex<Option<PathBuf>> = Mutex::new(None);
 fn escolher_destino<R: Runtime>(
     janela: &tauri::WebviewWindow<R>,
     nome: &str,
-    saida: Saida,
+    saida: SaidaSalvar,
 ) -> Option<PathBuf> {
     #[cfg(test)]
     {
@@ -2861,7 +2841,8 @@ async fn salvar_como<R: Runtime>(
     // O filho compõe com o `documento` do arquivo que abre; aqui só confere que compila.
     Consulta::nova(&transformar::compor(&fonte, &pedido.transformacao, false))
         .map_err(|e| e.to_string())?;
-    let Some(destino) = escolher_destino(&janela, &nome, pedido.saida) else {
+    let (csv, saida) = (matches!(pedido.saida, SaidaSalvar::Csv), pedido.saida);
+    let Some(destino) = escolher_destino(&janela, &nome, saida) else {
         return Ok(None);
     };
     let mut protegidos = protegidos(&app);
@@ -2871,7 +2852,7 @@ async fn salvar_como<R: Runtime>(
     let pedido = filho::Salvar {
         fonte,
         transformacao: pedido.transformacao,
-        saida: pedido.saida,
+        saida: pedido.saida.saida(),
         mascara: pedido.mascara,
     };
     std::thread::spawn(move || {
@@ -2889,9 +2870,14 @@ async fn salvar_como<R: Runtime>(
         // Cancelado ou falhou: o temporário some no `drop`, o destino fica como estava.
         if fim.falha.is_none() && !fim.cancelado {
             let cru = pedido.mascara == Mascara::SemMascara;
-            match transformar::persistir(tmp, &destino, &protegidos, cru) {
+            let r = if csv {
+                converter_csv(tmp.path(), &destino, &protegidos, cru)
+            } else {
+                transformar::persistir(tmp, &destino, &protegidos, cru).map_err(|e| e.to_string())
+            };
+            match r {
                 Ok(()) => fim.arquivo = Some(destino.to_string_lossy().into_owned()),
-                Err(e) => fim.falha = Some(e.to_string()),
+                Err(e) => fim.falha = Some(e),
             }
         }
         fim.geracao = geracao;
@@ -2913,43 +2899,37 @@ fn cancelar_salvar(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
     Ok(())
 }
 
-/// Copia o JSONL do resultado ou o converte em CSV (`nucleo::csv`, duas passadas no arquivo:
-/// em memória só os nomes das colunas). Recusa sobrescrever um dos `protegidos` (o arquivo
-/// aberto, o próprio resultado). Grava num temporário na pasta do destino e troca por `rename`:
-/// falha no meio deixa o destino que já existia intacto.
-fn gravar_resultado(
+/// Converte o JSONL `origem` em CSV (`nucleo::csv`, duas passadas no arquivo: em memória só os
+/// nomes das colunas). Recusa sobrescrever um dos `protegidos`. Grava num temporário na pasta
+/// do destino e troca por `rename`: falha no meio deixa o destino que já existia intacto.
+fn converter_csv(
     origem: &Path,
     destino: &Path,
-    csv: bool,
     protegidos: &[PathBuf],
+    cru: bool,
 ) -> Result<(), String> {
     use std::io::{BufRead, BufReader, BufWriter, Write};
     let erro = |e: std::io::Error| format!("{}: {e}", destino.display());
     let mut tmp = transformar::temporario(destino, protegidos).map_err(|e| e.to_string())?;
-    if csv {
-        let linhas = |f: &mut dyn FnMut(&[u8]) -> Result<(), String>| -> Result<(), String> {
-            let arquivo = std::fs::File::open(origem).map_err(|e| e.to_string())?;
-            let (mut r, mut l) = (BufReader::new(arquivo), Vec::new());
-            while r.read_until(b'\n', &mut l).map_err(|e| e.to_string())? > 0 {
-                if !l.trim_ascii().is_empty() {
-                    f(&l)?;
-                }
-                l.clear();
+    let linhas = |f: &mut dyn FnMut(&[u8]) -> Result<(), String>| -> Result<(), String> {
+        let arquivo = std::fs::File::open(origem).map_err(|e| e.to_string())?;
+        let (mut r, mut l) = (BufReader::new(arquivo), Vec::new());
+        while r.read_until(b'\n', &mut l).map_err(|e| e.to_string())? > 0 {
+            if !l.trim_ascii().is_empty() {
+                f(&l)?;
             }
-            Ok(())
-        };
-        let mut c = nucleo::csv::Csv::default();
-        linhas(&mut |l| c.ver(l))?;
-        let mut out = BufWriter::new(tmp.as_file_mut());
-        c.cabecalho(&mut out).map_err(erro)?;
-        linhas(&mut |l| c.escrever(l, &mut out).map_err(erro))?;
-        out.flush().map_err(erro)?;
-    } else {
-        let mut f = std::fs::File::open(origem).map_err(erro)?;
-        std::io::copy(&mut f, tmp.as_file_mut()).map_err(erro)?;
-    }
-    // O resultado da consulta já sai mascarado ou anonimizado.
-    transformar::persistir(tmp, destino, protegidos, false).map_err(|e| e.to_string())
+            l.clear();
+        }
+        Ok(())
+    };
+    let mut c = nucleo::csv::Csv::default();
+    linhas(&mut |l| c.ver(l))?;
+    let mut out = BufWriter::new(tmp.as_file_mut());
+    c.cabecalho(&mut out).map_err(erro)?;
+    linhas(&mut |l| c.escrever(l, &mut out).map_err(erro))?;
+    out.flush().map_err(erro)?;
+    drop(out);
+    transformar::persistir(tmp, destino, protegidos, cru).map_err(|e| e.to_string())
 }
 
 /// Busca `padrao` no arquivo inteiro numa thread própria, que emite `busca` com o progresso
@@ -3123,7 +3103,6 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             validar_outro,
             validar_com_schema,
             salvar_exportado,
-            salvar_consulta,
             diff_estrutura,
             diff_valores,
             cancelar_diff_valores,
@@ -3340,17 +3319,12 @@ mod testes {
     }
 
     #[test]
-    fn gravar_resultado_jsonl_e_csv() {
+    fn converter_csv_grava_e_nao_deixa_sobra() {
         let d = tempfile::tempdir().unwrap();
         let origem = d.path().join("r.jsonl");
         std::fs::write(&origem, "{\"a\":1,\"b\":\"=x\"}\n\n{\"a\":2,\"c\":{}}\n").unwrap();
-        let (jsonl, csv) = (d.path().join("s.jsonl"), d.path().join("s.csv"));
-        super::gravar_resultado(&origem, &jsonl, false, &[]).unwrap();
-        assert_eq!(
-            std::fs::read(&jsonl).unwrap(),
-            std::fs::read(&origem).unwrap()
-        );
-        super::gravar_resultado(&origem, &csv, true, &[]).unwrap();
+        let csv = d.path().join("s.csv");
+        super::converter_csv(&origem, &csv, &[], false).unwrap();
         assert_eq!(
             std::fs::read_to_string(&csv).unwrap(),
             ".a,.b,.c\r\n1,'=x,\r\n2,,{}\r\n"
@@ -3361,10 +3335,10 @@ mod testes {
             .collect();
         std::fs::write(&origem, format!("{{{}}}\n", largo.join(","))).unwrap();
         let destino = d.path().join("largo.csv");
-        let e = super::gravar_resultado(&origem, &destino, true, &[]).unwrap_err();
+        let e = super::converter_csv(&origem, &destino, &[], false).unwrap_err();
         assert!(e.contains("colunas"), "{e}");
         assert!(!destino.exists());
-        let e = super::gravar_resultado(&origem, &csv, true, &[]).unwrap_err();
+        let e = super::converter_csv(&origem, &csv, &[], false).unwrap_err();
         assert!(e.contains("colunas"), "{e}");
         assert_eq!(
             std::fs::read_to_string(&csv).unwrap(),
@@ -3386,28 +3360,28 @@ mod testes {
     /// Salvar não sobrescreve o arquivo aberto nem o resultado: pelo caminho, por link
     /// simbólico, por link físico, e o resultado sobre ele mesmo.
     #[test]
-    fn gravar_resultado_recusa_protegidos() {
+    fn converter_csv_recusa_protegidos() {
         let d = tempfile::tempdir().unwrap();
         let aberto = d.path().join("aberto.jsonl");
         let resultado = d.path().join("resultado.jsonl");
         std::fs::write(&aberto, "{\"original\":1}\n").unwrap();
         std::fs::write(&resultado, "1\n2\n").unwrap();
         let protegidos = [aberto.clone(), resultado.clone()];
-        let recusa = |destino: &std::path::Path, csv: bool| {
-            let e = super::gravar_resultado(&resultado, destino, csv, &protegidos).unwrap_err();
+        let recusa = |destino: &std::path::Path| {
+            let e = super::converter_csv(&resultado, destino, &protegidos, false).unwrap_err();
             assert!(e.contains("aberto no jasão"), "{e}");
         };
-        recusa(&aberto, false);
-        recusa(&aberto, true);
-        recusa(&resultado, false);
+        recusa(&aberto);
+        recusa(&aberto);
+        recusa(&resultado);
         #[cfg(unix)]
         {
             let link = d.path().join("link.jsonl");
             std::os::unix::fs::symlink(&aberto, &link).unwrap();
-            recusa(&link, false);
+            recusa(&link);
             let fisico = d.path().join("fisico.jsonl");
             std::fs::hard_link(&aberto, &fisico).unwrap();
-            recusa(&fisico, true);
+            recusa(&fisico);
         }
         assert_eq!(
             std::fs::read_to_string(&aberto).unwrap(),
@@ -3417,8 +3391,8 @@ mod testes {
         // Outro arquivo qualquer: sobrescreve.
         let outro = d.path().join("outro.jsonl");
         std::fs::write(&outro, "velho").unwrap();
-        super::gravar_resultado(&resultado, &outro, false, &protegidos).unwrap();
-        assert_eq!(std::fs::read_to_string(&outro).unwrap(), "1\n2\n");
+        super::converter_csv(&resultado, &outro, &protegidos, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&outro).unwrap(), ".\r\n1\r\n2\r\n");
     }
 
     #[test]
@@ -3849,10 +3823,10 @@ mod testes {
             let origem = Path::new(a["arquivo"].as_str().unwrap());
             let saida = std::fs::read_to_string(origem).unwrap();
             assert_eq!(vaza(&json!(saida)), None);
-            // Exportar o resultado (o que `salvar_consulta` grava depois do diálogo).
-            for csv in [false, true].into_iter().filter(|_| filtro == ".") {
-                let destino = saidas.path().join(if csv { "r.csv" } else { "r.jsonl" });
-                gravar_resultado(origem, &destino, csv, &[]).unwrap();
+            // Exportar o resultado em CSV (o que o "salvar como" converte no fim).
+            if filtro == "." {
+                let destino = saidas.path().join("r.csv");
+                converter_csv(origem, &destino, &[], false).unwrap();
                 let gravado = std::fs::read_to_string(&destino).unwrap();
                 assert!(gravado.contains("ana"), "exportou vazio: {gravado}");
                 assert_eq!(vaza(&json!(gravado)), None);
@@ -3992,6 +3966,16 @@ mod testes {
             json!({"fonte": {"tipo": "tudo"}, "mascara": "sem_mascara"}),
         );
         assert_eq!(cru, conteudo);
+        // CSV: o mesmo que converter o JSONL mascarado, e a máscara vale igual.
+        let csv = gravar("m.csv", json!({"fonte": {"tipo": "tudo"}, "saida": "csv"}));
+        let ref_jsonl = d.path().join("m.jsonl");
+        let ref_csv = d.path().join("ref.csv");
+        converter_csv(&ref_jsonl, &ref_csv, &[], false).unwrap();
+        assert_eq!(csv, std::fs::read_to_string(&ref_csv).unwrap());
+        assert!(
+            !csv.contains("S3NT1N3LA") && csv.starts_with(".tipo,.id,.senha,.nome,.b"),
+            "{csv}"
+        );
         // Sem máscara fica só do dono; mascarado, 0644.
         #[cfg(unix)]
         {
@@ -4655,22 +4639,6 @@ mod testes {
             std::path::Path::new(&resultado).exists(),
             "erro de sintaxe apagou o resultado"
         );
-        // Salvar o resultado: só o temporário atual do documento (antes do diálogo).
-        let salvar = |arquivo: &str| {
-            em(
-                2,
-                "salvar_consulta",
-                json!({"arquivo": arquivo, "csv": true, "nome": "x"}),
-            )
-        };
-        assert!(
-            salvar(caminho)
-                .unwrap_err()
-                .as_str()
-                .unwrap()
-                .contains("não está mais aberto")
-        );
-        assert!(salvar("/etc/passwd").is_err());
         // O resultado abre no lugar do original, no mesmo documento.
         assert_eq!(
             chamar("abrir", json!({ "caminho": resultado, "id": 2 })),

@@ -329,8 +329,6 @@ const pt = {
     anonimizar: "Anonimizar segredos no resultado: cada valor vira um código estável nesta sessão (não é criptografia)",
     salvar: "Salvar filtro",
     esquecer: "Tirar dos filtros salvos",
-    jsonl: "Salvar JSONL…",
-    csv: "Salvar CSV…",
     salvo: (c: string) => `Salvo em ${c}`,
   },
   salvarComo: {
@@ -349,6 +347,7 @@ const pt = {
     formato: "Formato",
     json: "JSON formatado",
     jsonCompacto: "JSON compacto",
+    csv: "CSV",
     mascara: "Segredos",
     mascarar: "Mascarar (padrão)",
     anonimizar: "Anonimizar: cada valor vira um código estável nesta sessão",
@@ -775,8 +774,6 @@ const en: Textos = {
     anonimizar: "Anonymize secrets in the result: each value becomes a code that is stable for this session (not cryptography)",
     salvar: "Save filter",
     esquecer: "Remove from saved filters",
-    jsonl: "Save JSONL…",
-    csv: "Save CSV…",
     salvo: (c: string) => `Saved to ${c}`,
   },
   salvarComo: {
@@ -795,6 +792,7 @@ const en: Textos = {
     formato: "Format",
     json: "Pretty JSON",
     jsonCompacto: "Compact JSON",
+    csv: "CSV",
     mascara: "Secrets",
     mascarar: "Mask (default)",
     anonimizar: "Anonymize: each value becomes a code stable within this session",
