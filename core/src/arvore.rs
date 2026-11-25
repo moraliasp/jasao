@@ -581,9 +581,10 @@ pub(crate) fn formatar(raw: &str, max: usize) -> Formatado {
             b' ' | b'\t' | b'\n' | b'\r' => i += 1,
             b'"' => {
                 let mut j = i + 1;
-                while b[j] != b'"' {
+                while j < b.len() && b[j] != b'"' {
                     j += if b[j] == b'\\' { 2 } else { 1 };
                 }
+                let j = j.min(b.len() - 1);
                 saida.push_str(&raw[i..=j]);
                 i = j + 1;
             }
@@ -655,6 +656,10 @@ pub(crate) fn validar(bytes: &[u8]) -> Result<&str, ErroLinha> {
     if let Some(pos) = passa_da_profundidade(bytes, MAX_PROFUNDIDADE) {
         return Err(erro(pos, Motivo::Profundidade));
     }
+    // O sonic-rs deixa passar NUL cru em string; a RFC 8259 (e a Estrutura) não.
+    if let Some(pos) = controle_em_texto(bytes) {
+        return Err(erro(pos, Motivo::Controle));
+    }
     // IgnoredAny no sonic-rs valida o valor inteiro e o que vem depois dele.
     sonic_rs::from_str::<serde::de::IgnoredAny>(texto).map_err(|e| do_sonic(&e))?;
     Ok(texto)
@@ -725,6 +730,25 @@ fn escape_u_invalido(bytes: &[u8]) -> Option<usize> {
         i = j + 2;
         if i >= bytes.len() {
             break;
+        }
+    }
+    None
+}
+
+/// Primeiro byte de controle cru (< 0x20) dentro de string.
+fn controle_em_texto(bytes: &[u8]) -> Option<usize> {
+    let (mut em_texto, mut escape) = (false, false);
+    for (i, &b) in bytes.iter().enumerate() {
+        if !em_texto {
+            em_texto = b == b'"';
+        } else if escape {
+            escape = false;
+        } else if b == b'\\' {
+            escape = true;
+        } else if b == b'"' {
+            em_texto = false;
+        } else if b < 0x20 {
+            return Some(i);
         }
     }
     None
@@ -1087,6 +1111,24 @@ mod testes {
                 (Tipo::Objeto, true, "{\"a\" : 1}"),
             ]
         );
+    }
+
+    #[test]
+    fn controle_cru_em_string_e_erro() {
+        for (json, byte) in [("[\"a\0b\"]", 3), ("[\"a\tb\"]", 3), ("\"\u{1f}\"", 1)] {
+            let e = validar(json.as_bytes()).expect_err(json);
+            assert_eq!((e.byte, e.motivo), (byte, Motivo::Controle), "{json}");
+        }
+        assert!(validar(br#"["a\u0000b", "\\"]"#).is_ok());
+        // Fora de string o controle (espaço em branco) segue válido.
+        assert!(validar(b"[1,\n\t2]").is_ok());
+    }
+
+    #[test]
+    fn formatar_string_aberta_no_fim_nao_entra_em_panico() {
+        for raw in ["\"abc\\", "\"abc", "[\"a\\\\\"]"] {
+            let _ = formatar(raw, 1000);
+        }
     }
 
     #[test]
