@@ -4317,7 +4317,7 @@ mod testes {
                 "{fim}"
             );
             assert!(
-                fim["falhas"][0][1].as_str().unwrap().contains("\"a\""),
+                fim["falhas"][0][1] == "jasao:schema_obrigatoria||a",
                 "{fim}"
             );
             // Este arquivo contra um schema de fora: `.a` precisa ser texto, e é lista.
