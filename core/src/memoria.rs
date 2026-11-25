@@ -18,12 +18,29 @@ static AVISOU: AtomicBool = AtomicBool::new(false);
 
 pub struct Contador;
 
-/// Liga o teto (bytes de heap vivo) para o resto do processo.
+/// Liga o teto (bytes de heap vivo) para o resto do processo. Só daqui em diante o heap é
+/// contado: o que foi alocado antes não entra (é pouco: quem limita chama logo ao começar).
 pub fn limitar(bytes: usize) {
     TETO.store(bytes, Relaxed);
 }
 
+/// Sem teto não se conta nada: o `fetch_add` num atômico só, em toda alocação de toda thread,
+/// disputava a mesma linha de cache e deixava a estrutura de 1 GB ~2× mais lenta (18 threads;
+/// docs/revisao/performance.md). Ler o `TETO` não disputa (ninguém escreve nele).
+fn contando() -> bool {
+    TETO.load(Relaxed) != usize::MAX
+}
+
+/// Devolve `n` bytes ao contador sem passar de zero: o que foi alocado antes de `limitar` e
+/// liberado depois não foi somado.
+fn liberar(n: usize) {
+    let _ = USADO.try_update(Relaxed, Relaxed, |u| Some(u.saturating_sub(n)));
+}
+
 fn reservar(n: usize) -> bool {
+    if !contando() {
+        return true;
+    }
     let antes = USADO.fetch_add(n, Relaxed);
     if antes.saturating_add(n) <= TETO.load(Relaxed) {
         return true;
@@ -60,8 +77,8 @@ unsafe impl GlobalAlloc for Contador {
             return std::ptr::null_mut();
         }
         let p = unsafe { System.alloc(l) };
-        if p.is_null() {
-            USADO.fetch_sub(l.size(), Relaxed);
+        if p.is_null() && contando() {
+            liberar(l.size());
         }
         p
     }
@@ -71,15 +88,17 @@ unsafe impl GlobalAlloc for Contador {
             return std::ptr::null_mut();
         }
         let p = unsafe { System.alloc_zeroed(l) };
-        if p.is_null() {
-            USADO.fetch_sub(l.size(), Relaxed);
+        if p.is_null() && contando() {
+            liberar(l.size());
         }
         p
     }
 
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         unsafe { System.dealloc(p, l) };
-        USADO.fetch_sub(l.size(), Relaxed);
+        if contando() {
+            liberar(l.size());
+        }
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, novo: usize) -> *mut u8 {
@@ -88,13 +107,42 @@ unsafe impl GlobalAlloc for Contador {
             return std::ptr::null_mut();
         }
         let q = unsafe { System.realloc(p, l, novo) };
-        if q.is_null() {
-            if novo > velho {
-                USADO.fetch_sub(novo - velho, Relaxed);
+        if contando() {
+            match q.is_null() {
+                true if novo > velho => liberar(novo - velho),
+                false if novo < velho => liberar(velho - novo),
+                _ => {}
             }
-        } else if novo < velho {
-            USADO.fetch_sub(velho - novo, Relaxed);
         }
         q
+    }
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    // O binário de teste do núcleo não usa o `Contador` como alocador global: só este teste
+    // mexe em `USADO`/`TETO`.
+    #[test]
+    fn alocado_antes_de_limitar_e_liberado_depois_nao_passa_de_zero() {
+        let l = Layout::from_size_align(4096, 8).unwrap();
+        // SAFETY: `l` tem tamanho não nulo; o ponteiro volta ao mesmo alocador com o mesmo `l`.
+        let p = unsafe { Contador.alloc(l) };
+        assert!(!p.is_null());
+        assert_eq!(USADO.load(Relaxed), 0, "sem teto não se conta");
+        limitar(1 << 20);
+        let q = unsafe { Contador.alloc(Layout::from_size_align(100, 8).unwrap()) };
+        assert_eq!(USADO.load(Relaxed), 100);
+        unsafe { Contador.dealloc(p, l) };
+        // Com `fetch_sub` sem saturar, daria a volta e toda alocação seguinte seria recusada.
+        assert_eq!(USADO.load(Relaxed), 0);
+        let r = unsafe { Contador.alloc(Layout::from_size_align(100, 8).unwrap()) };
+        assert!(!r.is_null(), "o contador não pode ter dado a volta");
+        unsafe {
+            Contador.dealloc(q, Layout::from_size_align(100, 8).unwrap());
+            Contador.dealloc(r, Layout::from_size_align(100, 8).unwrap());
+        }
+        TETO.store(usize::MAX, Relaxed);
     }
 }

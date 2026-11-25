@@ -2,7 +2,7 @@
 // Tauri nem DOM), para os testes provarem que todo texto do arquivo sai escapado: `visivel` no
 // conteúdo, `escAtributo` em atributo. Quem põe na tela e abre link é `detalhe.ts`.
 import { t, tamanho } from "./i18n.ts";
-import { escAtributo as esc, visivel } from "./texto.ts";
+import { escAtributo as esc, icone, visivel } from "./texto.ts";
 import { detectar, hostDe, type Inteligente, type Pista, pista, relativo } from "./valores.ts";
 
 /** Igual a `nucleo::arvore::MAX_PREVIA`: valor maior chega cortado na prévia. */
@@ -19,7 +19,6 @@ export interface No {
   mascarado?: boolean;
 }
 
-const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
 const dataLocal = (ms: number) => new Date(ms).toLocaleString(t.lang, { dateStyle: "short", timeStyle: "medium" });
 const bytes = (l: No) => l.faixa[1] - l.faixa[0];
 

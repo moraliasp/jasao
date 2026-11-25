@@ -27,6 +27,7 @@ import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar"
 import {
   decodificar,
   escAtributo,
+  icone,
   type JanelaTexto,
   marcado,
   resumir,
@@ -74,7 +75,6 @@ const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = escAtributo;
-const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
 
 let total = 0; // linhas visíveis
 let registros = 0;
@@ -1733,8 +1733,8 @@ void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {
   if (avisos.length) status.textContent = [abrir.length ? abaAtiva()?.status : "", ...avisos].filter(Boolean).join(" · ");
 });
 
-criarRecentes($("recentes"), (c) => void abrirPedido(c));
-criarRecentes($("df-recentes"), (c) => void compararCom(() => abrirPedido(c)));
+criarRecentes($("recentes"), (c) => void abrirPedido(c), avisar);
+criarRecentes($("df-recentes"), (c) => void compararCom(() => abrirPedido(c)), avisar);
 
 /** Do Diff vazio: abre o outro arquivo e volta ao Diff da aba de onde saiu (abrir troca de aba e de vista). */
 async function compararCom(abrir: () => Promise<unknown>): Promise<void> {
