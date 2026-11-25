@@ -87,7 +87,7 @@ impl Concedidos {
         self.0.lock().unwrap().contains(canonico)
     }
 
-    /// Tudo o que foi concedido: o que salvar não pode sobrescrever (ver `salvar_consulta`).
+    /// Tudo o que foi concedido: o que salvar não pode sobrescrever (ver `salvar_como`).
     pub fn todos(&self) -> Vec<PathBuf> {
         self.0.lock().unwrap().iter().cloned().collect()
     }
