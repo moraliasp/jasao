@@ -129,16 +129,13 @@ fn numero_como_texto_tratado_como_numero_reprova_no_schema() {
         .iter()
         .find(|f| f.linha == 1)
         .expect("linha 2 é pagamento");
-    assert_eq!(pagamento.motivo, "/valor: value is not of type \"number\"");
+    assert_eq!(pagamento.motivo, "jasao:schema_tipo|/valor|number");
     let pedido = v
         .falhas
         .iter()
         .find(|f| f.linha == 2)
         .expect("linha 3 é pedido");
-    assert_eq!(
-        pedido.motivo,
-        "/itens/0/preco: value is not of type \"number\""
-    );
+    assert_eq!(pedido.motivo, "jasao:schema_tipo|/itens/0/preco|number");
 }
 
 #[test]
@@ -185,7 +182,7 @@ fn motivo_vem_do_ramo_do_discriminador() {
     let v = validar(dados, inf.entrada, &exportar::schema(&inf.resumo, op));
     assert_eq!((v.passam, v.falham), (1, 1));
     assert!(
-        v.falhas[0].motivo.starts_with("/itens/"),
+        v.falhas[0].motivo.starts_with("jasao:schema_tipo|/itens/"),
         "{}",
         v.falhas[0].motivo
     );
@@ -452,7 +449,11 @@ fn schema_de_fora_recursivo_nao_derruba() {
     let v = validar(dados, Entrada::Jsonl, arvore);
     assert_eq!((v.passam, v.falham), (1, 1));
     assert_eq!(v.falhas[0].linha, 1);
-    assert!(v.falhas[0].motivo.starts_with("/a"), "{:?}", v.falhas);
+    assert!(
+        v.falhas[0].motivo.starts_with("jasao:schema_tipo|/a"),
+        "{:?}",
+        v.falhas
+    );
     // "Qualquer valor JSON": dois `$ref` ao topo, mas um só vale para objeto e o outro para
     // lista; nunca os dois no mesmo dado.
     let json = r##"{"anyOf": [{"type": ["string", "number", "boolean", "null"]},
