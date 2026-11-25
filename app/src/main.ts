@@ -12,7 +12,7 @@ import { criarBusca } from "./busca";
 import { abrirLinkDe, criarDetalhe, selo } from "./detalhe";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
 import { detalhe as detalheE, type Estrutura, faceta, type ItemE, itens as itensEstrutura, type Perfil } from "./estrutura";
-import { erroDoRust, type Motivo, t, tamanho } from "./i18n";
+import { erroDoRust, type Motivo, t, tamanho, tecla } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { type Acao, type Laudo, laudoHtml } from "./laudo";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
@@ -1552,7 +1552,6 @@ $("ir").addEventListener("submit", async (e) => {
 const so = /Mac/.test(navigator.userAgent) ? "mac" : /Windows/.test(navigator.userAgent) ? "win" : "linux";
 const mac = so === "mac";
 document.documentElement.dataset.os = so;
-const tecla = (x: string) => (mac ? x : x.replace("⌥⌘", "Ctrl+Alt+").replace("⇧⌘", "Ctrl+Shift+").replace("⌘", "Ctrl+"));
 const dica = (el: HTMLElement, texto: string) => {
   el.title = tecla(texto);
   el.setAttribute("aria-label", texto.replace(/ \(.*\)$/, ""));
