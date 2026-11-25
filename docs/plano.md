@@ -54,7 +54,7 @@ Cada alvo vira benchmark (`criterion`). A meta é rodar no CI e reprovar regress
 - **Fuzzing (`cargo-fuzz`)** em leitura, índice e inferência: nenhuma entrada derruba o processo.
 - **Corpus hostil:** JSONTestSuite, arquivo truncado, UTF-8 inválido, BOM, CRLF, linha de 1 GB, profundidade 10.000, chave duplicada, número de 400 dígitos, arquivo vazio.
 - **Limites explícitos** de profundidade, tamanho de linha e memória, com mensagem que diz o problema e a saída.
-- **Arquivo que muda por baixo:** detecta, reindexa só o acréscimo, avisa se foi reescrito. ✅ no modo seguir (Fase 5); ao abrir sem seguir, o arquivo continua mapeado e encolher por baixo ainda derruba o app (achado 14, ver `decisoes.md`, "Arquivo vivo").
+- **Arquivo que muda por baixo:** detecta, reindexa só o acréscimo, avisa se foi reescrito. ✅ no modo seguir (Fase 5); encolher por baixo não derruba o app nem ao abrir sem seguir: o mapa é de um clone do app (achado 14, #81, ver `decisoes.md`, "Arquivo vivo").
 - **Testes dourados** para o Diff e para cada formato de exportação.
 - **Acessibilidade:** árvore com papéis ARIA e navegação completa por teclado.
 

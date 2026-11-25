@@ -101,9 +101,8 @@ impl IndiceLinhas {
 /// Arquivo JSONL aberto por `mmap`, com o índice de linhas pronto.
 pub struct ArquivoLinhas {
     // Arquivo vazio não é mapeado: mmap de tamanho zero falha em algumas plataformas.
-    // shortcut: se outro processo truncar o arquivo enquanto ele está mapeado, o acesso pode
-    // gerar SIGBUS (achado 14). Quem espera mudança usa `vivo::Vivo`, que mapeia uma cópia do
-    // app; abrir sem seguir continua mapeando o original (mais rápido na 1ª tela).
+    // Nunca é o arquivo do usuário (ver `privada`): truncado por baixo, o mapa dele daria SIGBUS
+    // (achado 14).
     mapa: Option<Mmap>,
     /// Bytes embutidos no binário (`estatico`); vazio quando há `mapa`.
     estatico: &'static [u8],
@@ -252,7 +251,7 @@ impl ArquivoLinhas {
         let arquivo = match compactado::detectar(&magico[..n]) {
             Formato::Cru => match formatos::detectar(caminho, &mut arquivo)? {
                 None if copiar => copia(arquivo, op)?,
-                None => arquivo,
+                None => privada(arquivo, op)?,
                 Some(f) if copiar => convertido_da_copia(arquivo, f, op)?,
                 Some(f) => File::open(formatos::para_cache(caminho, f, op)?)?,
             },
@@ -402,7 +401,44 @@ fn copia(mut arquivo: File, op: &Opcoes) -> io::Result<File> {
     Ok(c)
 }
 
-/// Converte a partir de uma cópia (o `para_cache` de `formatos` mapeia o original) para outra
+/// Cópia de `arquivo` só do app, para mapear: outro processo truncar o original não derruba
+/// quem lê o mapa (achado 14). No macOS é um clone (APFS, mesmo volume do cache): instantâneo e
+/// sem ocupar disco enquanto o original não muda. Sem clone, a cópia de `copia`.
+// shortcut: fora do macOS, ou com o arquivo em outro volume, copia o arquivo inteiro antes da 1ª
+// tela (até `max_saida`); usar `FICLONE`/`copy_file_range` se o app for distribuído no Linux.
+pub(crate) fn privada(arquivo: File, op: &Opcoes) -> io::Result<File> {
+    #[cfg(target_os = "macos")]
+    if let Some(c) = clone(&arquivo, &compactado::pasta_cache(op)?) {
+        return Ok(c);
+    }
+    copia(arquivo, op)
+}
+
+/// Clone de `arquivo` na pasta `dir`, já fora do diretório (vive só enquanto aberto); `None`
+/// se o sistema de arquivos não clona ou se `dir` está em outro volume.
+#[cfg(target_os = "macos")]
+fn clone(arquivo: &File, dir: &Path) -> Option<File> {
+    use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    // Duas aberturas no mesmo instante (testes em paralelo) não disputam o nome.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    // `.parcial`: se o app cair antes do `remove_file`, a limpeza do cache leva a sobra.
+    let caminho = dir.join(format!(
+        "clone.{}.{}.parcial",
+        std::process::id(),
+        SEQ.fetch_add(1, Relaxed)
+    ));
+    let c = std::ffi::CString::new(caminho.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `arquivo` é um descritor aberto e `c`, um caminho terminado em zero.
+    if unsafe { libc::fclonefileat(arquivo.as_raw_fd(), libc::AT_FDCWD, c.as_ptr(), 0) } != 0 {
+        return None;
+    }
+    let f = File::open(&caminho);
+    let _ = std::fs::remove_file(&caminho);
+    f.ok()
+}
+
+/// Converte a partir de uma cópia (com `read`, sem o clone de `privada`) para outra
 /// cópia anônima. Não passa pelo cache de conversões: cada percurso converte de novo.
 fn convertido_da_copia(arquivo: File, f: formatos::Entrada, op: &Opcoes) -> io::Result<File> {
     let c = copia(arquivo, op)?;
@@ -582,5 +618,45 @@ mod testes {
     fn faixa_fora_do_indice() {
         let ind = IndiceLinhas::construir(b"a\n");
         assert_eq!(ind.faixa(1, b"a\n"), None);
+    }
+
+    /// Achado 14 (#81): outro processo trunca o arquivo aberto. Com o original mapeado, ler o
+    /// mapa depois do `set_len(0)` dá SIGBUS e derruba o processo de teste (no app, o Tauri
+    /// inteiro; no CI, `seguir_pelo_ipc` reescreve o log com a varredura do `abrir` lendo).
+    #[test]
+    fn truncar_o_original_aberto_nao_derruba() {
+        let pasta = tempfile::tempdir().unwrap();
+        let log = pasta.path().join("log.jsonl");
+        let linha = format!("{{\"texto\":\"{}\"}}\n", "x".repeat(200));
+        // Várias páginas: o SIGBUS só vem em página além do novo fim.
+        std::fs::write(&log, linha.repeat(2_000)).unwrap();
+        // Com e sem máscara: a cópia privada da máscara (`map_copy`) também lê do arquivo.
+        for sem_mascara in [false, true] {
+            let op = Opcoes {
+                dir_cache: Some(pasta.path().join("cache")),
+                sem_mascara,
+                ..Opcoes::default()
+            };
+            let a = ArquivoLinhas::abrir_com(&log, &op).unwrap();
+            File::options()
+                .write(true)
+                .open(&log)
+                .unwrap()
+                .set_len(0)
+                .unwrap();
+            assert_eq!(a.bytes(), linha.repeat(2_000).as_bytes());
+            assert_eq!(a.linhas(), 2_000);
+            std::fs::write(&log, linha.repeat(2_000)).unwrap();
+        }
+        // A cópia sai do diretório na hora: nada fica no cache.
+        assert_eq!(
+            std::fs::read_dir(pasta.path().join("cache"))
+                .unwrap()
+                .count(),
+            0
+        );
+        // No macOS a cópia é clone (mesmo volume): sem copiar o arquivo antes da 1ª tela.
+        #[cfg(target_os = "macos")]
+        assert!(clone(&File::open(&log).unwrap(), &pasta.path().join("cache")).is_some());
     }
 }
