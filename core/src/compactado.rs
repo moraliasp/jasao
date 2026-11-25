@@ -577,6 +577,40 @@ mod testes {
         assert_eq!(erros, 0);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn limpar_sobe_erro_que_nao_e_entrada_sumida() {
+        use std::os::unix::fs::PermissionsExt;
+        // Devolve a permissão antes de o tempdir ser apagado, mesmo se o teste falhar.
+        struct Devolve<'a>(&'a Path);
+        impl Drop for Devolve<'_> {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o700));
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().join("trancado");
+        fs::create_dir(&d).unwrap();
+        fs::write(d.join(format!("a.{EXT_CACHE}")), b"1").unwrap();
+        // Leitura sem execução: read_dir lista, metadata da entrada dá PermissionDenied.
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o400)).unwrap();
+        let _devolve = Devolve(&d);
+        if fs::read_dir(&d)
+            .unwrap()
+            .all(|e| e.unwrap().metadata().is_ok())
+        {
+            eprintln!(
+                "PULADO limpar_sobe_erro_que_nao_e_entrada_sumida: permissão não barra (root?)"
+            );
+            return;
+        }
+        let r = limpar(&d, u64::MAX, None);
+        assert_eq!(
+            r.map_err(|e| e.kind()),
+            Err(io::ErrorKind::PermissionDenied)
+        );
+    }
+
     #[test]
     fn detecta_pelos_bytes() {
         assert_eq!(detectar(b"\x1f\x8b\x08"), Formato::Gzip);
