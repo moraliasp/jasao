@@ -753,6 +753,7 @@ interface Aba {
   chave: number; // id no DOM
   doc: number | null; // documento no Rust (null: aba vazia ou abrindo)
   arquivo: string | null; // arquivo do usuário (dá o nome da aba)
+  rotulo?: string; // nome da aba no lugar do do arquivo (baixado de URL: o arquivo é do cache)
   caminho: string | null; // o aberto agora: o arquivo ou o resultado de uma consulta
   ms: string; // tempo de abertura, para o painel
   visao?: Modo | "painel"; // visão pedida ao abrir; vale quando a aba for preparada
@@ -798,7 +799,7 @@ function guardar(a: Aba): void {
 
 function nomesDasAbas(): string[] {
   const base = nomes(lista.map((a) => a.arquivo), t.abasArquivos.vazia);
-  return lista.map((a, i) => (a.arquivo && nomeExemplo(a.arquivo)) || base[i]);
+  return lista.map((a, i) => (a.arquivo && (a.rotulo ?? nomeExemplo(a.arquivo))) || base[i]);
 }
 
 function desenharAbas(): void {
@@ -1082,7 +1083,7 @@ async function preparar(a: Aba, visao?: Modo | "painel"): Promise<void> {
 }
 
 /** Abre o arquivo numa aba: a dele, se já estiver aberto; a ativa, se vazia; senão uma nova. */
-async function abrirEmAba(caminho: string): Promise<boolean> {
+async function abrirEmAba(caminho: string, rotulo?: string): Promise<boolean> {
   const j = lista.findIndex((a) => a.arquivo === caminho);
   if (j >= 0) {
     ativar(j);
@@ -1091,6 +1092,7 @@ async function abrirEmAba(caminho: string): Promise<boolean> {
   if (abaAtiva()?.arquivo !== null) novaAba();
   const a = abaAtiva()!;
   a.arquivo = caminho;
+  a.rotulo = rotulo;
   desenharAbas();
   return mostrar(caminho, a);
 }
@@ -1580,6 +1582,67 @@ async function abrirDialogo(): Promise<void> {
 }
 $("abrir").addEventListener("click", () => void abrirDialogo());
 $("sem-arquivo-abrir").addEventListener("click", () => void abrirDialogo());
+
+// ---- Abrir URL (ou cURL colado): só por ação explícita. O Rust baixa para o cache, com o método
+// e os cabeçalhos colados e nada mais, e devolve o caminho já concedido. ----
+const urlDialogo = $<HTMLDialogElement>("url");
+const urlEntrada = $<HTMLTextAreaElement>("url-entrada");
+function abrirUrlDialogo(): void {
+  urlDialogo.showModal();
+  urlEntrada.focus();
+}
+// O cURL pode trazer credencial: não fica no campo depois de fechar.
+urlDialogo.addEventListener("close", () => (urlEntrada.value = ""));
+$("url-fechar").addEventListener("click", () => urlDialogo.close());
+urlEntrada.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    $<HTMLFormElement>("url-form").requestSubmit();
+  }
+});
+$("url-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const entrada = urlEntrada.value.trim();
+  urlDialogo.close();
+  if (entrada) void abrirUrl(entrada);
+});
+$("abrir-url").addEventListener("click", abrirUrlDialogo);
+$("sem-arquivo-url").addEventListener("click", abrirUrlDialogo);
+for (const [id, texto] of [["abrir-url", t.url.botao], ["sem-arquivo-url", t.url.botao], ["url-titulo", t.url.titulo],
+  ["url-rotulo", t.url.rotulo], ["url-dica", t.url.dica], ["url-baixar", t.url.baixar]])
+  $(id).textContent = texto;
+$("url-fechar").setAttribute("aria-label", t.fechar);
+
+/** Baixa `entrada` (progresso e Cancelar na aba ativa) e abre o resultado numa aba.
+ * `http`: o usuário confirmou baixar sem cifra. */
+async function abrirUrl(entrada: string, http = false): Promise<void> {
+  const a = abaAtiva()!;
+  const abertura = await chamar<number>("nova_abertura");
+  abrindo.set(a, abertura);
+  mostrarCancelar();
+  a.status = status.textContent = t.url.baixando("0");
+  let b: { caminho: string; nome: string };
+  try {
+    b = await chamar<typeof b>("baixar_url", { entrada, http, abertura }).finally(() => {
+      if (abrindo.get(a) === abertura) abrindo.delete(a);
+      mostrarCancelar();
+    });
+  } catch (erro) {
+    if (String(erro) === "jasao:http" && !http && (await ask(t.url.http, { title: t.url.httpTitulo, kind: "warning" })))
+      return abrirUrl(entrada, true);
+    a.status = erroAoAbrir(erro);
+    if (a === abaAtiva()) status.textContent = a.status;
+    return;
+  }
+  await abrirEmAba(b.caminho, b.nome);
+}
+void listen<{ abertura: number; lidos: number }>("baixando", ({ payload: p }) => {
+  for (const [a, abertura] of abrindo) {
+    if (abertura !== p.abertura) continue;
+    a.status = t.url.baixando(fmt(Math.floor(p.lidos / 2 ** 20)));
+    if (a === abaAtiva()) status.textContent = a.status;
+  }
+});
 
 // Arrastar arquivos para a janela: cada aceito numa aba; o resto vira aviso no status, sem aba.
 void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {

@@ -522,6 +522,79 @@ fn cancelar_abertura(abertura: u32, estado: State<'_, Estado>) {
     estado.abrindo.cancelar(abertura);
 }
 
+/// A interface pergunta antes de baixar por `http://` e repete com `http: true`.
+const ERRO_HTTP: &str = "jasao:http";
+
+/// Evento `baixando`: bytes recebidos (e o total declarado, ou 0) da abertura `abertura`.
+#[derive(Clone, Serialize)]
+struct Baixando {
+    abertura: u32,
+    lidos: u64,
+    total: u64,
+}
+
+/// Resultado do `baixar_url`: onde ficou e o nome para a aba (sem consulta nem credencial).
+#[derive(Serialize)]
+struct Baixado {
+    caminho: String,
+    nome: String,
+}
+
+/// Baixa uma URL `https://` (ou `http://`, com `http`) ou um comando cURL colado para o cache e
+/// devolve o caminho, já concedido, para o `abrir`. Só por ação explícita do usuário (campo
+/// "Abrir URL"); cancelável por `cancelar_abertura(abertura)`. Erros nunca trazem a entrada
+/// crua: cabeçalho de autorização, `-u` e consulta da URL saem mascarados pelo núcleo.
+#[tauri::command]
+async fn baixar_url<R: Runtime>(
+    entrada: String,
+    http: Option<bool>,
+    abertura: Option<u32>,
+    app: AppHandle<R>,
+    estado: State<'_, Estado>,
+) -> Result<Baixado, String> {
+    let pedido = nucleo::url::Pedido::interpretar(&entrada)?;
+    let abertura = abertura.unwrap_or(0);
+    let cancelar = estado.abrindo.registrar(abertura);
+    let progresso = |lidos: u64, total: u64| {
+        let _ = app.emit(
+            "baixando",
+            Baixando {
+                abertura,
+                lidos,
+                total,
+            },
+        );
+    };
+    let op = nucleo::url::Opcoes {
+        permitir_http: http.unwrap_or(false),
+        cancelar: Some(&cancelar),
+        progresso: Some(&progresso),
+        ..nucleo::url::Opcoes::default()
+    };
+    let r = nucleo::url::baixar(&pedido, &op);
+    estado.abrindo.soltar(abertura, &cancelar);
+    let caminho = r.map_err(|e| match e.kind() {
+        _ if nucleo::compactado::cancelada(&e) => ERRO_CANCELADA.into(),
+        _ if e.to_string() == nucleo::url::ERRO_HTTP => ERRO_HTTP.into(),
+        _ => e.to_string(),
+    })?;
+    app.state::<abertura::Concedidos>()
+        .conceder(caminho.caminho());
+    let texto = caminho
+        .caminho()
+        .to_str()
+        .ok_or_else(|| NEGADO.to_owned())?
+        .to_owned();
+    if let Ok(mut b) = app.state::<Baixados>().0.lock() {
+        b.push(caminho);
+    }
+    let caminho = texto;
+    Ok(Baixado {
+        caminho,
+        nome: pedido.nome(),
+    })
+}
+
 /// Se cada caminho é uma pasta (o arraste avisa em vez de tentar abrir).
 #[tauri::command]
 fn pastas<R: Runtime>(caminhos: Vec<String>, app: AppHandle<R>) -> Vec<bool> {
@@ -679,6 +752,10 @@ fn conceder_argv<R: Runtime>(app: &AppHandle<R>, argv: &[String], cwd: &Path) {
     stdin_argv(app, argv);
 }
 
+/// Temporários dos downloads de `baixar_url`; saem no `RunEvent::Exit`.
+#[derive(Default)]
+struct Baixados(Mutex<Vec<nucleo::entrada::Temporario>>);
+
 /// Temporário de stdin da 1ª instância; sai no `RunEvent::Exit`.
 #[derive(Default)]
 struct Stdin(Mutex<Option<nucleo::entrada::Temporario>>);
@@ -757,7 +834,11 @@ async fn abrir<R: Runtime>(
     *doc.marca.lock().map_err(|e| e.to_string())? = marca;
     // Recentes: só arquivo novo do usuário. Exemplo embutido fica fora; o resultado de consulta
     // jq reabre num documento que já existe (`id` Some), então também fica.
-    if novo && exemplos::embutido(&caminho).is_none() {
+    // Temporário (stdin, download de URL) também: some ao fechar e o recente apontaria para o nada.
+    if novo
+        && exemplos::embutido(&caminho).is_none()
+        && !nucleo::entrada::temporario(Path::new(&caminho))
+    {
         lembrar(&app, &caminho);
     }
     Ok(aberto)
@@ -2987,6 +3068,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
         .manage(abertura::Abertura::default())
         .manage(abertura::Concedidos::default())
         .manage(Stdin::default())
+        .manage(Baixados::default())
         .invoke_handler(tauri::generate_handler![
             escolher,
             salvar_como,
@@ -3000,6 +3082,7 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
             seguir,
             nova_abertura,
             cancelar_abertura,
+            baixar_url,
             fechar,
             pastas,
             resumo,
@@ -3214,6 +3297,9 @@ pub fn run() {
                 if let Ok(mut t) = app.state::<Stdin>().0.lock() {
                     t.take();
                 }
+                if let Ok(mut b) = app.state::<Baixados>().0.lock() {
+                    b.clear();
+                }
             }
             _ => {}
         });
@@ -3376,6 +3462,67 @@ mod testes {
         a.cancelar(x);
         assert!(a.registrar(x).load(Relaxed));
         assert!(!a.registrar(y).load(Relaxed));
+    }
+
+    /// Abrir URL pelo IPC: `http://` só depois da confirmação, o baixado abre (concedido) e o
+    /// erro não traz o segredo do cURL colado.
+    #[test]
+    fn baixar_url_pelo_ipc() {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let porta = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for (status, corpo) in [("200 OK", "{\"a\":1}\n{\"a\":2}\n"), ("404 Not Found", "x")] {
+                let (mut s, _) = l.accept().unwrap();
+                let mut ler = BufReader::new(&mut s);
+                let mut linha = String::new();
+                while ler.read_line(&mut linha).unwrap_or(0) > 0 && linha != "\r\n" {
+                    linha.clear();
+                }
+                let r = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corpo}",
+                    corpo.len()
+                );
+                let _ = s.write_all(r.as_bytes());
+            }
+        });
+        let app = comandos(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let janela = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let chamar = |cmd: &str, args: Value| -> Result<Value, Value> {
+            let pedido = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            };
+            get_ipc_response(&janela, pedido).map(|b| b.deserialize::<Value>().unwrap())
+        };
+        let url = format!("http://127.0.0.1:{porta}/x.jsonl");
+        assert_eq!(
+            chamar("baixar_url", json!({ "entrada": url })),
+            Err(json!(ERRO_HTTP))
+        );
+        let b = chamar("baixar_url", json!({ "entrada": url, "http": true })).unwrap();
+        assert_eq!(b["nome"], "x.jsonl");
+        let caminho = &b["caminho"];
+        let aberto = chamar("abrir", json!({ "caminho": caminho })).unwrap();
+        assert_eq!(aberto["total"], 2);
+        let curl = format!("curl -H 'Authorization: Bearer seg-77aa' http://127.0.0.1:{porta}/y");
+        let e = chamar("baixar_url", json!({ "entrada": curl, "http": true })).unwrap_err();
+        assert!(
+            e.as_str().unwrap().contains("404") && !e.to_string().contains("seg-77aa"),
+            "{e}"
+        );
+        let e = chamar("baixar_url", json!({ "entrada": "curl -k https://x/" })).unwrap_err();
+        assert!(e.to_string().contains("-k"), "{e}");
+        let _ = std::fs::remove_file(caminho.as_str().unwrap());
     }
 
     /// Modo seguir pelo IPC: cresce sem reabrir, espera a linha parcial e reabre ao truncar.

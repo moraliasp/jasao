@@ -2,6 +2,16 @@
 const pt = {
   lang: "pt-BR",
   abrir: "Abrir…",
+  url: {
+    botao: "Abrir URL…",
+    titulo: "Abrir URL",
+    rotulo: "URL https:// ou comando cURL (Copiar como cURL do navegador)",
+    dica: "Baixa só quando você clicar em Abrir, com o método e os cabeçalhos colados e nada mais. Cabeçalhos de autorização não são guardados.",
+    baixar: "Abrir",
+    baixando: (mib: string) => `Baixando… ${mib} MiB`,
+    httpTitulo: "Conexão sem cifra",
+    http: "Esta URL usa http://, sem cifra: qualquer um no caminho pode ler e alterar o conteúdo, e os cabeçalhos colados vão às claras. Baixar assim mesmo?",
+  },
   exemplos: {
     historia: "História do JSON",
     vitrine: "Vitrine do Jasão",
@@ -435,6 +445,16 @@ export type Textos = typeof pt;
 const en: Textos = {
   lang: "en",
   abrir: "Open…",
+  url: {
+    botao: "Open URL…",
+    titulo: "Open URL",
+    rotulo: "https:// URL or cURL command (the browser's Copy as cURL)",
+    dica: "Downloads only when you click Open, with the pasted method and headers and nothing else. Authorization headers are not stored.",
+    baixar: "Open",
+    baixando: (mib) => `Downloading… ${mib} MiB`,
+    httpTitulo: "Unencrypted connection",
+    http: "This URL uses http://, without encryption: anyone on the path can read and change the content, and the pasted headers travel in the clear. Download anyway?",
+  },
   exemplos: {
     historia: "History of JSON",
     vitrine: "Jasão showcase",
