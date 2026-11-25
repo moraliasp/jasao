@@ -111,6 +111,8 @@ const pt = {
     deN: (n: string, m: string) => `${n} de ${m} registros passam.`,
     textoOndeNumero: 'Os outros têm texto onde este schema pede número (JSON Schema não converte). Volte para "Manter texto" ou exporte em Zod.',
     invalidas: (n: string) => `${n} ${n === "1" ? "linha inválida ficou" : "linhas inválidas ficaram"} de fora.`,
+    recusadas: (n: string) =>
+      `${n} ${n === "1" ? "registro a mais reprovado" : "registros a mais reprovados"} pelo validador: número fora do alcance do JavaScript.`,
     naoCompila: (e: string) => `O schema gerado não compilou (erro do Jasão): ${e}`,
     linha: (n: string) => `Linha ${n}`,
     cancelada: "Validação cancelada.",
@@ -139,7 +141,7 @@ const pt = {
     grupos: { quebra: "Quebra", compativel: "Compatível", igual: "Igual" },
     resumoEstrutura: (q: string, c: string, i: string) => `${q} ${q === "1" ? "quebra" : "quebras"} · ${c} ${c === "1" ? "compatível" : "compatíveis"} · ${i} ${i === "1" ? "caminho igual" : "caminhos iguais"}`,
     semMudanca: "Mesma estrutura nos dois arquivos.",
-    invalidas: (a: string, d: string) => `Registros inválidos ignorados: ${a} antes, ${d} depois.`,
+    invalidas: (a: string, d: string) => `Linhas inválidas ignoradas: ${a} antes, ${d} depois.`,
     evidencia: (n: string, de: string) => `${n} de ${de}`,
     regras: {
       campo_removido: "campo removido",
@@ -283,6 +285,7 @@ const pt = {
   vazio: "Arquivo vazio.",
   linha: (n: string) => `Linha ${n}`,
   foraDoArquivo: (n: string, max: string) => `Linha ${n} fora do arquivo (1 a ${max}).`,
+  linhas: ["linha", "linhas"],
   registros: ["registro", "registros"],
   campos: ["campo", "campos"],
   itens: ["item", "itens"],
@@ -446,6 +449,9 @@ const pt = {
     virgula_sobrando: "vírgula depois do último valor",
     texto_depois_do_valor: "há texto depois do valor",
     outro: "JSON inválido",
+    aninhamento: "aninhamento passa de 128 níveis: não é registro para a Estrutura nem para o validador",
+    numero_fora_do_alcance: "número fora do alcance do JavaScript (double): o validador não lê",
+    recusado_pelo_validador: "JSON que o validador não lê",
   },
 };
 
@@ -558,6 +564,8 @@ const en: Textos = {
     deN: (n: string, m: string) => `${n} of ${m} records pass.`,
     textoOndeNumero: 'The others have text where this schema asks for a number (JSON Schema does not convert). Switch back to "Keep text" or export as Zod.',
     invalidas: (n: string) => `${n} invalid ${n === "1" ? "line was" : "lines were"} left out.`,
+    recusadas: (n: string) =>
+      `${n} more ${n === "1" ? "record was" : "records were"} rejected by the validator: number outside the JavaScript range.`,
     naoCompila: (e: string) => `The generated schema did not compile (a Jasão bug): ${e}`,
     linha: (n: string) => `Line ${n}`,
     cancelada: "Validation cancelled.",
@@ -586,7 +594,7 @@ const en: Textos = {
     grupos: { quebra: "Breaking", compativel: "Compatible", igual: "Unchanged" },
     resumoEstrutura: (q: string, c: string, i: string) => `${q} breaking · ${c} compatible · ${i} unchanged ${i === "1" ? "path" : "paths"}`,
     semMudanca: "Same structure in both files.",
-    invalidas: (a: string, d: string) => `Invalid records ignored: ${a} before, ${d} after.`,
+    invalidas: (a: string, d: string) => `Invalid lines ignored: ${a} before, ${d} after.`,
     evidencia: (n: string, de: string) => `${n} of ${de}`,
     regras: {
       campo_removido: "field removed",
@@ -727,6 +735,7 @@ const en: Textos = {
   vazio: "Empty file.",
   linha: (n) => `Line ${n}`,
   foraDoArquivo: (n, max) => `Line ${n} is outside the file (1 to ${max}).`,
+  linhas: ["line", "lines"],
   registros: ["record", "records"],
   campos: ["field", "fields"],
   itens: ["item", "items"],
@@ -889,6 +898,9 @@ const en: Textos = {
     virgula_sobrando: "comma after the last value",
     texto_depois_do_valor: "text after the value",
     outro: "invalid JSON",
+    aninhamento: "nesting exceeds 128 levels: not a record for Structure or the validator",
+    numero_fora_do_alcance: "number outside the JavaScript (double) range: the validator cannot read it",
+    recusado_pelo_validador: "JSON the validator cannot read",
   },
 };
 
@@ -912,4 +924,18 @@ export function erroDoRust(erro: unknown, x: Textos = t): string {
     "jasao:negado": x.negado,
   };
   return textos[e] ?? e;
+}
+
+/** Motivo de linha que o validador não leu: código `jasao:…` (os de `arvore::Motivo` e os do
+ * validador); o do schema reprovado vem como texto e passa como veio. */
+export function motivoDoRust(motivo: string, x: Textos = t): string {
+  if (!motivo.startsWith("jasao:")) return motivo;
+  return (x.motivos as Record<string, string>)[motivo.slice(6)] ?? x.motivos.outro;
+}
+
+/** O número do arquivo no título e no inspetor: linhas enquanto a inferência corre, registros
+ * (JSON válido) quando ela acaba (`registros` deixa de ser `null`). */
+export function contagemArquivo(registros: number | null, linhas: number, fmt: (n: number) => string): string {
+  const [n, [um, varios]] = registros !== null ? [registros, t.registros] : [linhas, t.linhas];
+  return `${fmt(n)} ${n === 1 ? um : varios}`;
 }

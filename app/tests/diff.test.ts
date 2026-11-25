@@ -1,7 +1,7 @@
 // Modo Diff, desenho puro (roda com `node --test`): a classe vem do núcleo e não é recalculada aqui.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agrupar, htmlEstrutura, htmlValores, lerRegistros, type DiffArquivos, type DiffEstrutura } from "../src/diff.ts";
+import { agrupar, htmlEstrutura, htmlValores, lerRegistros, mesmoArquivo, travarPar, type DiffArquivos, type DiffEstrutura } from "../src/diff.ts";
 import { t } from "../src/i18n.ts";
 
 const x = t.diff;
@@ -94,4 +94,33 @@ test("valores: só inválidos ou só grandes não dizem que é igual", () => {
 test("estrutura: caminho igual hostil sai escapado", () => {
   const h = htmlEstrutura({ mudancas: [], iguais: [".<x>"], invalidas: [0, 0] }, x, fmt);
   assert.ok(h.html.includes("<code>.&lt;x></code>") && !h.html.includes(".<x>"));
+});
+
+test("Antes e Depois: mesmo doc ou mesmo caminho em duas abas é o mesmo arquivo", () => {
+  const abas = [
+    { doc: 1, caminho: "/a.jsonl" },
+    { doc: 2, caminho: "/a.jsonl" },
+    { doc: 3, caminho: "/b.jsonl" },
+    { doc: 4, caminho: null },
+  ];
+  assert.ok(mesmoArquivo(abas, "1", "1"));
+  assert.ok(mesmoArquivo(abas, "1", "2"));
+  assert.ok(!mesmoArquivo(abas, "1", "3"));
+  assert.ok(!mesmoArquivo(abas, "4", "3"));
+});
+
+test("travarPar desabilita no outro select o arquivo já escolhido, e refaz a cada troca", () => {
+  // Docs 1 e 3 são o mesmo caminho em duas abas; 2 é outro arquivo.
+  const abas = [{ doc: 1, caminho: "/a.jsonl" }, { doc: 2, caminho: "/b.jsonl" }, { doc: 3, caminho: "/a.jsonl" }];
+  const lista = (value: string) => ({ value, options: abas.map((a) => ({ value: String(a.doc), disabled: false })) });
+  const off = (l: ReturnType<typeof lista>) => l.options.filter((o) => o.disabled).map((o) => o.value);
+  const [antes, depois] = [lista("1"), lista("2")];
+  travarPar(abas, antes, depois);
+  assert.deepEqual(off(antes), ["2"]);
+  assert.deepEqual(off(depois), ["1", "3"], "o mesmo caminho em outra aba também trava");
+  // O handler de `change` chama travarPar de novo: a trava segue a nova escolha.
+  depois.value = "3";
+  travarPar(abas, antes, depois);
+  assert.deepEqual(off(antes), ["1", "3"]);
+  assert.deepEqual(off(depois), ["1", "3"]);
 });

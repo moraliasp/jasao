@@ -255,3 +255,22 @@ fn orfao_sai_na_proxima_leitura() {
     assert!(novo.exists() && vivo.exists());
     drop(trava);
 }
+
+#[test]
+fn validar_conta_recusada_e_mostra_codigo_sem_prefixo() {
+    let casa = Casa::nova("recusada");
+    let schema = casa.0.join("s.json");
+    std::fs::write(&schema, br#"{"type":"object"}"#).unwrap();
+    let s = schema.to_str().unwrap();
+    let (c, out, err) = casa.jasao(
+        &["validar", "-", "--schema", s],
+        b"{\"a\":1}\n{\"a\":1e400}\n",
+    );
+    assert_eq!(c, 1, "{err}");
+    assert!(out.contains("linha 2: numero_fora_do_alcance"), "{out}");
+    assert!(!out.contains("jasao:"), "{out}");
+    assert!(
+        err.contains("1 registros a mais o validador não lê"),
+        "{err}"
+    );
+}

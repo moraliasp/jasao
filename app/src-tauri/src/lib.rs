@@ -375,6 +375,8 @@ struct Andamento {
     #[serde(flatten)]
     progresso: Progresso,
     campos: Option<usize>,
+    /// Registros pela inferência (o número da Estrutura e do laudo); chega com `campos`.
+    registros: Option<u64>,
     legenda: Option<Legenda>,
     coloriu: bool,
     /// A inferência acabou: os comandos `estrutura` e `laudo` já têm resposta.
@@ -390,6 +392,7 @@ impl Varredura {
             geracao: self.geracao,
             progresso: self.progresso?,
             campos: self.campos,
+            registros: self.estrutura.as_ref().map(|e| e.registros),
             legenda: self.legenda.clone(),
             coloriu: self.coloriu,
             inferiu: self.estrutura.is_some(),
@@ -900,6 +903,7 @@ fn instalar<R: Runtime>(
             varridas: if pular { linhas } else { 0 },
             total: linhas,
             invalidas: 0,
+            vazias: 0,
             fim: pular,
             cancelado: false,
         });
@@ -1073,7 +1077,8 @@ fn fechar(id: u32, estado: State<'_, Estado>) -> Result<(), String> {
 struct Resumo {
     conteudo: Conteudo,
     bytes: usize,
-    registros: usize,
+    /// Linhas do arquivo (registros, inválidas e vazias); os registros vêm no `andamento`.
+    linhas: usize,
     #[serde(flatten)]
     andamento: Andamento,
 }
@@ -1082,7 +1087,7 @@ struct Resumo {
 #[tauri::command]
 fn resumo(id: u32, estado: State<'_, Estado>) -> Result<Resumo, String> {
     let doc = estado.doc(id)?;
-    let (bytes, registros) = doc.com(|a| (a.arquivo().cru().len(), a.arquivo().linhas()))?;
+    let (bytes, linhas) = doc.com(|a| (a.arquivo().cru().len(), a.arquivo().linhas()))?;
     let v = doc.varredura.lock().map_err(|e| e.to_string())?;
     let (Some(conteudo), Some(andamento)) = (v.conteudo, v.andamento()) else {
         return Err("nenhum arquivo aberto".into());
@@ -1090,7 +1095,7 @@ fn resumo(id: u32, estado: State<'_, Estado>) -> Result<Resumo, String> {
     Ok(Resumo {
         conteudo,
         bytes,
-        registros,
+        linhas,
         andamento,
     })
 }
@@ -1320,7 +1325,8 @@ struct AndamentoValidacao {
     passam: u64,
     falham: u64,
     invalidas: u64,
-    /// `[linha base 0, motivo]`, as primeiras por linha.
+    recusadas: u64,
+    /// `[linha base 0, motivo]`, as primeiras por linha; motivo `jasao:…` é código traduzido na interface.
     falhas: Vec<(u64, String)>,
 }
 
@@ -1394,6 +1400,7 @@ fn validar_em_fundo<R: Runtime>(
             passam: 0,
             falham: 0,
             invalidas: 0,
+            recusadas: 0,
             falhas: Vec::new(),
         };
         // shortcut: a inferência inteira só para saber se é JSONL ou JSON único; trocar por um
@@ -1413,6 +1420,7 @@ fn validar_em_fundo<R: Runtime>(
                 passam: v.passam,
                 falham: v.falham,
                 invalidas: v.invalidas,
+                recusadas: v.recusadas,
                 falhas: v.falhas.into_iter().map(|f| (f.linha, f.motivo)).collect(),
                 ..vazio(v.varridas, v.total, true)
             }),
@@ -4219,9 +4227,9 @@ mod testes {
             .expect("varredura não terminou");
         assert_eq!(
             resumo,
-            json!({"conteudo": "objetos", "bytes": 22, "registros": 2, "geracao": 1,
-                   "varridas": 2, "total": 2, "invalidas": 1, "fim": true, "cancelado": false,
-                   "campos": 1, "legenda": null, "coloriu": true, "inferiu": true,
+            json!({"conteudo": "objetos", "bytes": 22, "linhas": 2, "geracao": 1,
+                   "varridas": 2, "total": 2, "invalidas": 1, "vazias": 0, "fim": true,
+                   "cancelado": false, "campos": 1, "registros": 1, "legenda": null, "coloriu": true, "inferiu": true,
                    "tabelou": true})
         );
         // Estrutura: a linha inválida não vira registro; `.a[]` com a 1ª linha de cada tipo.
