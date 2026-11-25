@@ -109,6 +109,8 @@ test("faixa de grandeza", () => {
   assert.equal(faixa({ negativo: false, expoente: null }), "0");
   assert.equal(faixa({ negativo: false, expoente: 2 }), "1e2…1e3");
   assert.equal(faixa({ negativo: true, expoente: -1 }), "−1e-1…1e0");
+  assert.equal(faixa({ negativo: false, expoente: -30 }), "…1e-29"); // inclui 1e-35
+  assert.equal(faixa({ negativo: true, expoente: 30 }), "−1e30…");
 });
 
 test("painel do perfil: extremos, faixas, comuns e linhas com e sem (1ª linha = 1)", () => {
