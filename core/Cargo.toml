@@ -34,6 +34,10 @@ yaml-rust2 = "0.13"
 zstd = "0.14.4"
 foldhash = "0.2"
 
+# `fclonefileat`: clone (APFS) do arquivo aberto, que o app mapeia no lugar do original.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1"

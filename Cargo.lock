@@ -2989,6 +2989,7 @@ dependencies = [
  "jaq-json",
  "jaq-std",
  "jsonschema",
+ "libc",
  "memchr",
  "memmap2",
  "percent-encoding",
