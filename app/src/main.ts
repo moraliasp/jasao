@@ -1664,7 +1664,7 @@ void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {
   if (avisos.length) status.textContent = [abrir.length ? abaAtiva()?.status : "", ...avisos].filter(Boolean).join(" · ");
 });
 
-criarRecentes($("recentes"), (c) => void abrirPedido(c));
+criarRecentes($("recentes"), (c) => void abrirPedido(c), avisar);
 
 // Pedidos do sistema com o app aberto (Finder, "Abrir com", menu Arquivo › Abrir recente,
 // 2ª instância): o aviso não leva caminho; cada um sai da fila uma vez, numa aba.
