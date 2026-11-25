@@ -164,7 +164,7 @@ A varredura reaproveita o motor da busca: o laço paralelo de `Busca::executar` 
 
 **Medido (23/11/2026, M-series, ponte HTTP de teste + Vite, JSONL gerado de 1 GB com 11.262.093 registros de 3 tipos, 114 linhas inválidas, cache de disco quente):** abrir e inferir 1,2 s; colunas na tela logo que a inferência acaba (11 colunas). Janela: `tabela_linhas` de 60 linhas × 11 colunas em 2 ms em qualquer ponto do arquivo; salto de rolagem até a janela desenhada em 4–10 ms. Ordenar por `.id` os 11,3 milhões: ~1 s até a ordem pronta; trocar para decrescente 33 ms, sem progresso; voltar à ordem do arquivo, imediato. Cancelar no meio mantém a ordem anterior.
 
-**Limites conhecidos:** profundidade máxima 128 (além disso a linha é inválida); a lista externa do JSON único não conta como nível. UTF-8 não é validado (o texto é tratado como bytes). JSON único é lido sem paralelismo.
+**Limites conhecidos:** profundidade máxima 128 (além disso a linha é inválida, inclusive em `jasao erros`); a lista externa do JSON único não conta como nível. UTF-8 não é validado (o texto é tratado como bytes). JSON único é lido sem paralelismo.
 
 **Medido:** `jasao inferir` em JSONL gerado de 157 MB (951 mil linhas, cache quente, Apple M5 Pro): 128–168 ms; `--json` 140 ms; o mesmo arquivo em `.zst`, 128 ms depois de descompactar.
 
