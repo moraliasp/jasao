@@ -88,7 +88,6 @@ let texto: JanelaTexto | null = null;
 let pedidoTexto: number | null = null;
 let alvo = 0; // registro pedido pelo teclado no Texto, antes da resposta chegar
 let selecao = 0; // descarta resposta de seleção mais velha que a última pedida
-let noPainel = false; // painel de entrada no lugar do conteúdo
 let irN = 0; // descarta resposta de arraste na régua mais velha que a última
 const estruturaEl = $("estrutura");
 const estruturaLinhas = $("estrutura-linhas");
@@ -111,13 +110,10 @@ const grade = criarGrade(tabelaEl, {
     // "Sugerido" abriu um modo antes de saber se a Tabela serve: a resposta chegou, vai ao sugerido de fato.
     if (palpite && grade.disponivel() !== null) {
       palpite = false;
-      if (!noPainel && sugerido() !== modo) trocarModo(sugerido());
+      if (sugerido() !== modo) trocarModo(sugerido());
     }
+    desenharSugestao(); // a Tabela passou a servir (ou não): o motivo no rodapé muda
     if (modo === "tabela") rodape();
-    if (!noPainel) return;
-    const f = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-modo]")?.dataset.modo;
-    desenharPainel(); // cartão da Tabela liga ou desliga; o foco fica no mesmo cartão
-    if (f) painelModos.querySelector<HTMLElement>(`[data-modo="${f}"]`)?.focus();
   },
   erro: (erro) => (status.textContent = `${t.erro}: ${erro}`),
   fmt: (n) => fmt(n),
@@ -163,6 +159,7 @@ const diff = criarDiff(diffEl, {
     return docs;
   },
   irParaDiff: () => trocarModo("diff"),
+  abrirOutro: () => void compararCom(abrirDialogo),
 });
 
 const busca = criarBusca($("busca") as HTMLFormElement, {
@@ -242,7 +239,7 @@ function linhaHtml(v: number, l: Linha | undefined): string {
   return `<div class="row" id="l${v}" data-v="${v}" role="treeitem" aria-level="${l.prof + 1}"
     aria-selected="${v === sel}"${l.expansivel ? ` aria-expanded="${l.aberto}"` : ""}
     ${l.prof === 0 ? `aria-posinset="${l.registro + 1}" aria-setsize="${registros}"` : `aria-posinset="${l.pos + 1}" aria-setsize="${l.irmaos}"`}
-    style="padding-left:${8 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${visivel(chave(l))}</span>${valor(l)}${selo(l)}
+    style="padding-left:${16 + l.prof * 20}px">${exp}${ponto(l.prof === 0 ? regua.ponto(l.registro) : null)}<span class="key">${visivel(chave(l))}</span>${valor(l)}${selo(l)}
     <button class="ib cp" type="button" tabindex="-1" data-cp aria-label="${esc(t.copiarCaminho)} ${esc(chave(l))}">${icone("copy")}</button></div>`;
 }
 
@@ -274,18 +271,26 @@ const agendar = () => (quadro ||= requestAnimationFrame(desenhar));
 
 let migalhasDe = ""; // doc:versão:linha das migalhas mostradas (vêm do Rust só para a seleção)
 
+/** Migalhas do rodapé: o arquivo e depois o caminho da seleção. */
+function migalhar(itens: string[]): void {
+  const a = abaAtiva();
+  const nome = a?.arquivo ? nomesDasAbas()[ativa] : "";
+  migalhas.innerHTML = [nome, ...itens].filter(Boolean).map((x) => `<li>${visivel(x)}</li>`).join("");
+}
+
 /** Migalhas e botões do rodapé da seleção, iguais nas duas visões. */
 function rodape(): void {
   if (modo === "exportar" || modo === "diff") {
     copiar.disabled = verFormatado.disabled = true; // o Exportar tem o próprio Copiar; o Diff não tem seleção
-    migalhas.innerHTML = migalhasDe = "";
+    migalhasDe = "";
+    migalhar([]);
     return;
   }
   if (modo === "estrutura") {
     const it = estr?.[selE];
     copiar.disabled = !it;
     verFormatado.disabled = true;
-    migalhas.innerHTML = it ? `<li>${visivel(it.caminho)}</li>` : "";
+    migalhar(it ? [it.caminho] : []);
     migalhasDe = "";
     void detalhe.mostrar("", undefined, 0);
     return;
@@ -294,7 +299,7 @@ function rodape(): void {
     const c = grade.caminho();
     copiar.disabled = !c;
     verFormatado.disabled = true;
-    migalhas.innerHTML = c ? `<li>${visivel(c)}</li>` : "";
+    migalhar(c ? [c] : []);
     migalhasDe = "";
     return;
   }
@@ -304,15 +309,12 @@ function rodape(): void {
   void detalhe.mostrar(de, atual, sel);
   if (de === migalhasDe) return;
   migalhasDe = de;
-  if (!atual) {
-    migalhas.innerHTML = "";
-    return;
-  }
+  if (!atual) return migalhar([]);
   const inicio = t.linha(fmt(atual.registro + 1));
-  migalhas.innerHTML = `<li>${visivel(inicio)}</li>`;
+  migalhar([inicio]);
   chamar<string[] | null>("migalhas", { v: sel })
     .then((m) => {
-      if (migalhasDe === de) migalhas.innerHTML = [inicio, ...(m ?? [])].map((x) => `<li>${visivel(x)}</li>`).join("");
+      if (migalhasDe === de) migalhar([inicio, ...(m ?? [])]);
     })
     .catch(() => {}); // doc fechado no meio: o próximo desenho refaz
 }
@@ -573,9 +575,8 @@ function trocarModo(m: Modo, rolagem?: [number, number]): void {
   if (m !== "diff") diff.parar();
   modo = m;
   palpite = false;
-  noPainel = false;
-  painel.hidden = true;
-  conteudo.hidden = false;
+  $("busca").hidden = $("jq").hidden = semBusca(); // Exportar e Diff não leem registro a registro
+  mostrarFiltro();
   for (const [k, aba] of Object.entries(abas)) {
     aba.setAttribute("aria-selected", String(k === m));
     aba.tabIndex = k === m ? 0 : -1;
@@ -723,9 +724,13 @@ const consulta = criarConsulta($("consulta"), {
     const a = lista.find((x) => x.doc === id);
     if (!a) return;
     a.quieta = true; // `preparar` desliga ao terminar
-    await mostrar(c, a, a === abaAtiva() ? (noPainel ? undefined : modo) : a.modo);
+    await mostrar(c, a, a === abaAtiva() ? modo : a.modo);
   },
-  voltar: () => visaoAtual().focus(),
+  voltar: () => {
+    if (!consulta.ativa()) filtroAberto = false; // Esc sem filtro: a faixa sai
+    mostrarFiltro();
+    visaoAtual().focus();
+  },
   fmt,
 });
 
@@ -756,12 +761,11 @@ interface Aba {
   rotulo?: string; // nome da aba no lugar do do arquivo (baixado de URL: o arquivo é do cache)
   caminho: string | null; // o aberto agora: o arquivo ou o resultado de uma consulta
   ms: string; // tempo de abertura, para o painel
-  visao?: Modo | "painel"; // visão pedida ao abrir; vale quando a aba for preparada
+  visao?: Modo; // visão pedida ao abrir; vale quando a aba for preparada
   total: number;
   registros: number;
   sel: number;
   modo: Modo;
-  noPainel: boolean;
   resumo: Resumo | null; // null: aberta no Rust, mas ainda não preparada na tela
   quieta?: boolean; // abrindo resultado de consulta: até preparar, não tira o foco do campo da consulta
   atual: Linha | undefined;
@@ -784,7 +788,7 @@ let ativa = -1;
 const abaAtiva = (): Aba | undefined => lista[ativa];
 const abaVazia = (): Aba => ({
   chave: ++chaves, doc: null, arquivo: null, caminho: null, ms: "", total: 0, registros: 0, sel: 0, modo: "arvore",
-  noPainel: false, resumo: null, atual: undefined, alvo: 0, rolagem: [0, 0], status: "",
+  resumo: null, atual: undefined, alvo: 0, rolagem: [0, 0], status: "",
   estr: null, selE: 0, registrosE: 0, seguindo: false, novas: 0,
 });
 /** Acima desta soma de registros nas abas, abrir mais um avisa (o Rust guarda índice e árvore de cada). */
@@ -792,7 +796,7 @@ const AVISO_REGISTROS = 50_000_000;
 
 function guardar(a: Aba): void {
   Object.assign(a, {
-    total, registros, sel, modo, noPainel, resumo, atual, alvo, estr, selE, registrosE,
+    total, registros, sel, modo, resumo, atual, alvo, estr, selE, registrosE,
     rolagem: [arvore.scrollTop, textoEl.scrollTop], status: status.textContent ?? "",
   });
 }
@@ -816,6 +820,7 @@ function desenharAbas(): void {
         data-fechar="${i}" aria-label="${esc(t.abasArquivos.fechar(n[i]))}">${icone("x")}</button></div>`;
     })
     .join("");
+  $("arquivos").hidden = lista.length < 2;
   const a = abaAtiva();
   if (!a) return;
   area.setAttribute("aria-labelledby", `arq-${a.chave}`);
@@ -833,7 +838,7 @@ function ativar(i: number, foco = false): void {
   }
   ativa = i;
   const a = lista[i];
-  ({ total, registros, sel, modo, noPainel, resumo, atual, alvo, estr, selE, registrosE } = a);
+  ({ total, registros, sel, modo, resumo, atual, alvo, estr, selE, registrosE } = a);
   status.textContent = a.status;
   mostrarCancelar();
   mostrarSeguir();
@@ -850,17 +855,14 @@ function ativar(i: number, foco = false): void {
   const vazia = a.doc === null;
   semArquivo.hidden = !vazia;
   area.hidden = vazia;
-  inicioBtn.disabled = vazia;
   faixa.textContent = "";
+  desenharInspetor(); // sem resumo ainda: limpa o da aba que saiu
+  mostrarFiltro();
   if (vazia) regua.abrir(0, false);
   else if (!resumo) preparando = preparar(a, a.visao);
   else {
     prepararRegua();
-    $("painel-nome").textContent = semInvisiveis(nomesDasAbas()[i]);
-    $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[resumo.conteudo], a.ms);
-    desenharPainel();
-    if (noPainel) mostrarPainel();
-    else trocarModo(modo, a.rolagem);
+    trocarModo(modo, a.rolagem);
   }
   if (foco) document.getElementById(`arq-${a.chave}`)?.focus();
   else if (vazia && !a.arquivo) $("sem-arquivo-abrir").focus();
@@ -921,7 +923,7 @@ function mostrarSeguir(): void {
 
 /** Elemento que rola no modo atual (sem rolagem própria: Painel, Estrutura, Exportar). */
 const rolavel = (): HTMLElement | null =>
-  noPainel ? null : modo === "arvore" ? arvore : modo === "texto" ? textoEl : modo === "tabela" ? tabelaEl : null;
+  modo === "arvore" ? arvore : modo === "texto" ? textoEl : modo === "tabela" ? tabelaEl : null;
 const noFim = (): boolean => {
   const el = rolavel();
   return !!el && el.scrollTop + el.clientHeight >= el.scrollHeight - 2 * ALTURA;
@@ -944,7 +946,7 @@ async function lerSeguido(a: Aba): Promise<void> {
       if (ativaAgora) guardar(a);
       a.novas = naoVistas(a.novas, r, fim);
       Object.assign(a, {
-        total: r.total, registros: r.registros, resumo: null, estr: null, visao: a.noPainel ? "painel" : a.modo,
+        total: r.total, registros: r.registros, resumo: null, estr: null, visao: a.modo,
         status: r.reescrito ? t.seguir.reescrito : t.seguir.seguindo(plural(r.registros, t.registros)),
       });
       if (r.reescrito) Object.assign(a, { sel: 0, atual: undefined, alvo: 0, rolagem: [0, 0] });
@@ -1021,11 +1023,11 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo, forcar = false): P
     const ms = fmt(Math.round(performance.now() - inicio));
     Object.assign(a, {
       doc: r.id, caminho, ms, visao, total: r.total, registros: r.total, sel: 0, atual: undefined, alvo: 0,
-      resumo: null, rolagem: [0, 0], status: t.aberto(plural(r.total, t.registros), ms), estr: null, selE: 0,
+      resumo: null, rolagem: [0, 0], status: "", estr: null, selE: 0,
       seguindo: false, novas: 0, // `abrir` no Rust sai do modo seguir
     });
     const soma = lista.reduce((n, x) => n + x.registros, 0);
-    if (soma > AVISO_REGISTROS) a.status += ` · ${t.abasArquivos.memoria(fmt(soma))}`;
+    if (soma > AVISO_REGISTROS) a.status = t.abasArquivos.memoria(fmt(soma));
     if (a === abaAtiva()) ativar(ativa);
     else desenharAbas();
     return true;
@@ -1052,24 +1054,21 @@ async function mostrar(caminho: string, a: Aba, visao?: Modo, forcar = false): P
 }
 
 /** Primeira vez na tela de um documento já aberto no Rust: resumo, régua e visão inicial. */
-async function preparar(a: Aba, visao?: Modo | "painel"): Promise<void> {
+async function preparar(a: Aba, visao?: Modo): Promise<void> {
   const v = versao;
   try {
     const r = await chamar<Resumo>("resumo");
     if (v !== versao) return; // trocou de aba: prepara quando voltar
     resumo = r;
     prepararRegua();
-    $("painel-nome").textContent = semInvisiveis(nomesDasAbas()[ativa]);
-    $("painel-sub").textContent = t.painel.aberto(t.painel.conteudo[r.conteudo], a.ms);
-    desenharPainel();
+    desenharInspetor();
     const destino = visao ?? destinoAoAbrir();
-    if (destino === "painel") mostrarPainel();
     await recarregar(); // incrementa `versao`: daqui em diante, trocar de aba é o que cancela
     if (destino === "texto") await selecionar(0);
     if (abaAtiva() !== a) return;
-    if (destino !== "painel") trocarModo(destino);
+    trocarModo(destino);
     // "Sugerido" escolheu antes de saber se a Tabela serve; se já se sabe, confere agora, senão `mudou` confere.
-    if (destino !== "painel" && !visao && lerPreferencia() === "sugerido") {
+    if (!visao && lerPreferencia() === "sugerido") {
       if (grade.disponivel() === null) palpite = true;
       else if (sugerido() !== destino) trocarModo(sugerido());
     }
@@ -1170,7 +1169,7 @@ listaEl.addEventListener("keydown", (e) => {
 });
 $("nova-aba").addEventListener("click", novaAba);
 
-// ---- Painel de entrada: o que é o arquivo e por onde começar. ----
+// ---- Inspetor (laudo), título, rodapé e a visão sugerida ao abrir. ----
 
 type Conteudo = keyof typeof t.painel.conteudo;
 interface Andamento {
@@ -1179,29 +1178,14 @@ interface Andamento {
 }
 interface Resumo extends Andamento { conteudo: Conteudo; bytes: number; registros: number }
 
-/** Modos com cartão, na ordem dos cartões e dos atalhos 1, 2…; o sugerido é o primeiro disponível.
- * `sempre`: entra no seletor "Abrir sempre em…". Modo novo entra ligando `disponivel`. */
-const MODOS: { id: Modo; icone: string; disponivel: boolean; sempre: boolean }[] = [
-  { id: "tabela", icone: "table", disponivel: true, sempre: true },
-  { id: "arvore", icone: "binary-tree", disponivel: true, sempre: true },
-  { id: "texto", icone: "file-text", disponivel: true, sempre: false },
-  { id: "estrutura", icone: "list-tree", disponivel: true, sempre: false },
-  { id: "exportar", icone: "braces", disponivel: true, sempre: false },
-  { id: "diff", icone: "list-tree", disponivel: true, sempre: false },
-];
-const disponiveis = MODOS.filter((m) => m.disponivel);
-/** Modo que o arquivo aceita agora; só a Tabela depende do arquivo (`null`: inferência em curso). */
-const aceita = (m: Modo): boolean | null => (m === "tabela" ? grade.disponivel() : true);
-/** Primeiro cartão disponível que o arquivo aceita; com a Tabela ainda indefinida, o tipo do conteúdo decide. */
-const sugerido = (): Modo =>
-  disponiveis.find((m) => aceita(m.id) ?? resumo?.conteudo === "objetos")?.id ?? "arvore";
+/** Visão sugerida: a Tabela, se o arquivo vira colunas; senão a Árvore. Com a Tabela ainda
+ * indefinida, o tipo do conteúdo decide (e `mudou` confere quando a montagem responde). */
+const sugerido = (): Modo => ((grade.disponivel() ?? resumo?.conteudo === "objetos") ? "tabela" : "arvore");
 const PREFERENCIA = "jasao.aoAbrir";
-const opcoes = ["painel", "sugerido", ...disponiveis.filter((m) => m.sempre).map((m) => m.id)];
-
+/** "painel" (o antigo padrão, já sem tela) e valor desconhecido caem no sugerido. */
+const opcoes = Object.keys(t.painel.pref) as (keyof typeof t.painel.pref)[];
 const painel = $("painel");
-const conteudo = $("conteudo");
-const inicioBtn = $<HTMLButtonElement>("inicio");
-const painelModos = $("painel-modos");
+const inspetorBtn = $("inspetor");
 const preferencia = $<HTMLSelectElement>("painel-pref");
 let resumo: Resumo | null = null;
 /** Laudo do documento e geração em `laudoDe` (`null`: inferência em curso). */
@@ -1215,33 +1199,36 @@ function lerPreferencia(): string {
   try {
     v = localStorage.getItem(PREFERENCIA);
   } catch {} // armazenamento bloqueado: fica o padrão
-  if (v === null) return "painel";
-  return opcoes.includes(v) ? v : "sugerido";
+  return v !== null && (opcoes as string[]).includes(v) ? v : "sugerido";
 }
 
-function destinoAoAbrir(): Modo | "painel" {
+function destinoAoAbrir(): Modo {
   const p = lerPreferencia();
-  return p === "painel" ? "painel" : p === "sugerido" ? sugerido() : (p as Modo);
+  return p === "sugerido" ? sugerido() : (p as Modo);
 }
 
 
-/** Selo e indicadores: refeitos a cada aviso de progresso da varredura. */
+/** Números do arquivo no título, no inspetor e no rodapé: refeitos a cada aviso de progresso da varredura. */
 function desenharAndamento(): void {
-  if (!resumo) return;
-  const selo = $("painel-selo");
-  selo.classList.toggle("fim", resumo.fim);
-  selo.innerHTML = resumo.fim
-    ? `${icone("check")}<span>${t.painel.completa}</span>`
-    : `<span>${t.painel.analisando(fmt(resumo.varridas), fmt(resumo.total))}</span>`;
-  const indicador = (rotulo: string, valor: string, classe = "") => `<div class="${classe}"><dt>${rotulo}</dt><dd>${valor}</dd></div>`;
-  $("painel-indic").innerHTML =
-    indicador(t.painel.tamanho, tamanho(resumo.bytes)) +
-    indicador(t.painel.registros, fmt(resumo.registros)) +
-    (resumo.campos ? indicador(t.painel.campos, fmt(resumo.campos)) : "") +
-    (resumo.invalidas ? indicador(t.painel.invalidas, fmt(resumo.invalidas), "aviso") : "");
+  const a = abaAtiva();
+  const ids = ["meta", "meta-st", "aberto-ms", "painel-meta"];
+  if (!resumo || !a) {
+    for (const id of ids) $(id).textContent = "";
+    return;
+  }
+  const n = plural(resumo.registros, t.registros);
+  $("meta").textContent = $("meta-st").textContent = `${t.painel.conteudo[resumo.conteudo]} · ${n} · ${tamanho(resumo.bytes)}`;
+  $("aberto-ms").textContent = a.ms ? t.barra.abertoEm(a.ms) : "";
+  $("painel-meta").innerHTML =
+    `${tamanho(resumo.bytes)} · ${n}` +
+    (resumo.campos || resumo.invalidas ? "<br>" : "") +
+    [resumo.campos ? plural(resumo.campos, t.campos) : "",
+      resumo.invalidas ? `<span class="bad">${t.laudo.invalidas(fmt(resumo.invalidas), null)}</span>` : ""]
+      .filter(Boolean).join(" · ") +
+    (resumo.fim ? "" : `<br>${t.painel.analisando(fmt(resumo.varridas), fmt(resumo.total))}`);
 }
 
-/** Laudo do painel: pede quando a inferência acaba e redesenha (os passos dependem da Tabela e das abas). */
+/** Laudo do inspetor: pede quando a inferência acaba e redesenha (as cores seguem a legenda da régua). */
 function desenharLaudo(): void {
   if (!resumo) return;
   const de = `${docAtivo()}:${resumo.geracao}`;
@@ -1257,9 +1244,76 @@ function desenharLaudo(): void {
         desenharLaudo();
       })
       .catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
-  const outraAba = lista.filter((a) => a.doc !== null).length > 1;
-  $("painel-laudo").innerHTML = laudoHtml(laudo, { tabela: grade.disponivel(), outraAba }, t, fmt);
+  const cores = resumo.legenda?.variantes.map((v) => v[0]) ?? [];
+  $("painel-laudo").innerHTML = laudoHtml(laudo, { cores }, t, fmt);
+  desenharSugestao(); // o número de formatos vem do laudo
 }
+
+/** Por que a visão sugerida, à direita no rodapé. */
+function desenharSugestao(): void {
+  const el = $("sugestao");
+  if (!resumo) return void (el.innerHTML = "");
+  const m = sugerido();
+  const d = laudo?.discriminador;
+  const formatos = d ? d.variantes.length + d.mais : 0;
+  const motivo = m === "arvore" ? t.painel.motivo.arvore : formatos > 1 ? t.painel.motivo.tabela(fmt(formatos)) : t.painel.motivo.tabelaUma;
+  el.innerHTML = `${icone("spark")}<span>${t.painel.sugestao(t.painel.modos[m][0], motivo)}</span>`;
+}
+
+function desenharInspetor(): void {
+  desenharAndamento();
+  desenharLaudo();
+}
+
+/** ⌥⌘I: mostra ou esconde o inspetor (a escolha vale para todas as abas). */
+function alternarInspetor(): void {
+  painel.hidden = !painel.hidden;
+  inspetorBtn.setAttribute("aria-pressed", String(!painel.hidden));
+}
+
+// ---- Faixa do filtro jq: aparece pelo funil (⌘J) e fica enquanto houver filtro. ----
+const consultaEl = $("consulta");
+let filtroAberto = false;
+const semBusca = () => modo === "exportar" || modo === "diff";
+function mostrarFiltro(): void {
+  consultaEl.hidden = semBusca() || !(filtroAberto || consulta.ativa());
+  $("jq").setAttribute("aria-pressed", String(!consultaEl.hidden));
+}
+function abrirFiltro(): void {
+  if (semBusca()) trocarModo(sugerido());
+  filtroAberto = true;
+  mostrarFiltro();
+  consulta.focar();
+}
+/** ×: tira o filtro (volta ao original, se o resultado estiver aberto) e fecha a faixa. */
+function fecharFiltro(): void {
+  for (const sel of ["[data-cancelar]", "[data-voltar]"]) {
+    const b = consultaEl.querySelector<HTMLButtonElement>(sel)!;
+    if (!b.hidden) b.click();
+  }
+  const campo = consultaEl.querySelector("input")!;
+  campo.value = "";
+  campo.dispatchEvent(new Event("input")); // a pausa antes de rodar não vale mais
+  filtroAberto = false;
+  mostrarFiltro();
+  visaoAtual().focus();
+}
+
+/** ⌘L: o campo "Ir para linha" no rodapé, só enquanto em uso. */
+const irForm = $("ir");
+const linhaCampo = $<HTMLInputElement>("linha");
+function irParaLinha(): void {
+  if (!resumo) return;
+  irForm.hidden = false;
+  linhaCampo.select();
+  linhaCampo.focus();
+}
+linhaCampo.addEventListener("blur", () => (irForm.hidden = true));
+linhaCampo.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  e.preventDefault();
+  visaoAtual().focus();
+});
 
 /** Passo do laudo: abre o modo (e o ponto) que o botão indica. */
 async function seguirLaudo(b: HTMLElement): Promise<void> {
@@ -1271,33 +1325,6 @@ async function seguirLaudo(b: HTMLElement): Promise<void> {
     const i = estr?.findIndex((it) => it.indice === Number(b.dataset.indice)) ?? -1;
     if (i >= 0) moverE(i);
   } else trocarModo(acao);
-}
-
-function desenharPainel(): void {
-  desenharAndamento();
-  desenharLaudo();
-  grade.inferiu(); // documento já inferido: a Tabela diz se serve (e o painel redesenha)
-  const sug = sugerido();
-  painelModos.innerHTML = disponiveis
-    .map((m, i) => {
-      const [titulo, desc] = t.painel.modos[m.id];
-      const s = m.id === sug;
-      const nao = aceita(m.id) === false; // indisponível para este arquivo: o cartão diz por quê
-      return `<button class="modo${s ? " sugerido" : ""}" type="button" data-modo="${m.id}" aria-keyshortcuts="${i + 1}"${nao ? " disabled" : ""}>
-        ${icone(m.icone)}<b>${titulo}</b><span>${nao ? esc(grade.motivo() ?? desc) : desc}</span>${s ? `<em>${t.painel.sugerido}</em>` : ""}<kbd>${i + 1}</kbd></button>`;
-    })
-    .join("");
-}
-
-function mostrarPainel(): void {
-  if (!resumo) return;
-  exportar.parar();
-  diff.parar();
-  noPainel = true;
-  painel.hidden = false;
-  conteudo.hidden = true;
-  for (const aba of Object.values(abas)) aba.setAttribute("aria-selected", "false");
-  focar(painelModos.querySelector<HTMLElement>(".sugerido"));
 }
 
 arvore.addEventListener("scroll", agendar, { passive: true });
@@ -1400,25 +1427,24 @@ document.addEventListener("keydown", (e) => {
   }
   if (cmd && !e.shiftKey && e.key.toLowerCase() === "j" && resumo) {
     e.preventDefault();
-    if (noPainel) trocarModo(sugerido());
-    consulta.focar();
+    abrirFiltro();
     return;
   }
   if (cmd && !e.shiftKey && e.key.toLowerCase() === "f" && resumo) {
     e.preventDefault();
-    if (noPainel) trocarModo(sugerido());
+    if (semBusca()) trocarModo(sugerido());
     busca.focar();
     return;
   }
   // Copiar: menu pela tecla de contexto ou ⇧F10; ⇧⌘C copia o caminho jq; ⌘C, o valor (sem texto selecionado).
   const visao = (e.target as HTMLElement).closest<HTMLElement>("#arvore, #texto");
-  if (visao && atual && !noPainel && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
+  if (visao && atual && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
     e.preventDefault();
     const r = (document.getElementById(modo === "texto" ? `t${atual.registro}` : `l${sel}`) ?? visao).getBoundingClientRect();
     menu.abrir(r.left + 24, r.bottom, visao);
     return;
   }
-  if (cmd && e.key.toLowerCase() === "c" && atual && !noPainel) {
+  if (cmd && e.key.toLowerCase() === "c" && atual) {
     const vale = e.shiftKey ? !(e.target as HTMLElement).closest("input, textarea") : visao && getSelection()?.isCollapsed !== false;
     if (vale) {
       e.preventDefault();
@@ -1439,6 +1465,17 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return fecharAba(ativa);
   }
+  // No mac, ⌘O e ⌘L vêm do menu Arquivo (evento "menu"); fora dele, daqui.
+  if (cmd && !e.shiftKey && !mac && (e.key.toLowerCase() === "o" || e.key.toLowerCase() === "l")) {
+    e.preventDefault();
+    if (e.key.toLowerCase() === "o") void abrirDialogo();
+    else irParaLinha();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === "KeyI") {
+    e.preventDefault();
+    return alternarInspetor();
+  }
   // Visões: ⌥⌘1 Árvore, ⌥⌘2 Texto, ⌥⌘3 Estrutura, ⌥⌘4 Tabela, ⌥⌘5 Exportar, ⌥⌘6 Diff (`code`: com ⌥ o `key` vira outro caractere).
   if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && resumo) {
     const m = ({ Digit1: "arvore", Digit2: "texto", Digit3: "estrutura", Digit4: "tabela", Digit5: "exportar", Digit6: "diff" } as const)[e.code as "Digit1" | "Digit2" | "Digit3" | "Digit4" | "Digit5" | "Digit6"];
@@ -1450,25 +1487,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.altKey || e.shiftKey) return;
-  if (!(e.metaKey || e.ctrlKey)) {
-    // No painel: 1, 2… abrem o cartão daquela posição; Enter fora de um botão abre o sugerido.
-    const alvo = e.target as HTMLElement;
-    if (!noPainel || alvo.closest("select, input, dialog")) return;
-    const m =
-      e.key === "Enter" && !alvo.closest("button") ? sugerido()
-      : /^[1-9]$/.test(e.key) ? disponiveis[Number(e.key) - 1]?.id
-      : undefined;
-    if (m && aceita(m) === false) return; // cartão desligado: o atalho também
-    if (!m) return;
-    e.preventDefault();
-    trocarModo(m);
-    return;
-  }
-  if (e.key === "0") {
-    e.preventDefault();
-    mostrarPainel();
-    return;
-  }
+  if (!(e.metaKey || e.ctrlKey)) return;
   const i = /^[1-9]$/.test(e.key) ? porAtalho(lista.length, Number(e.key)) : null;
   if (i === null) return;
   e.preventDefault();
@@ -1478,11 +1497,10 @@ $("painel-laudo").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-acao]");
   if (b) seguirLaudo(b).catch((erro) => (status.textContent = `${t.erro}: ${erro}`));
 });
-painelModos.addEventListener("click", (e) => {
-  const m = (e.target as HTMLElement).closest<HTMLElement>("[data-modo]")?.dataset.modo;
-  if (m) trocarModo(m as Modo);
-});
-inicioBtn.addEventListener("click", mostrarPainel);
+inspetorBtn.addEventListener("click", alternarInspetor);
+$("jq").addEventListener("click", () => (consultaEl.hidden ? abrirFiltro() : consulta.ativa() ? consulta.focar() : fecharFiltro()));
+$("consulta-fechar").addEventListener("click", fecharFiltro);
+$("ir-menu").addEventListener("click", irParaLinha);
 preferencia.addEventListener("change", () => {
   try {
     localStorage.setItem(PREFERENCIA, preferencia.value);
@@ -1495,12 +1513,12 @@ void listen<Andamento & { id: number }>("varredura", ({ payload: p }) => {
   // Aviso de arquivo anterior, ou mais velho que o `resumo` já recebido: ignora.
   if (!r || p.geracao !== r.geracao || (p.varridas < r.varridas && !p.fim)) return;
   Object.assign(r, p);
-  if (p.inferiu && modo === "diff" && !noPainel) diff.inferiu(); // o outro arquivo do par também conta
+  if (p.inferiu && modo === "diff") diff.inferiu(); // o outro arquivo do par também conta
   if (!ativo) return;
   desenharAndamento();
-  if (p.inferiu && noPainel) desenharLaudo();
-  if (p.inferiu && modo === "estrutura" && !noPainel && !estr) void carregarEstrutura();
-  if (p.inferiu && modo === "exportar" && !noPainel && !exportar.temCodigo()) void exportar.mostrar();
+  if (p.inferiu) desenharLaudo();
+  if (p.inferiu && modo === "estrutura" && !estr) void carregarEstrutura();
+  if (p.inferiu && modo === "exportar" && !exportar.temCodigo()) void exportar.mostrar();
   if (p.tabelou) grade.inferiu(); // colunas (ou o motivo) chegam; painel e Tabela redesenham
 
   regua.andamento(p);
@@ -1530,9 +1548,28 @@ $("ir").addEventListener("submit", async (e) => {
   const n = Number(($("linha") as HTMLInputElement).value);
   if (!(Number.isInteger(n) && n >= 1 && (await focarRegistro(n - 1)))) status.textContent = t.foraDoArquivo(String(n), fmt(registros));
 });
+// Sistema: mac tem barra integrada aos semáforos e atalhos com ⌘; Windows e Linux, moldura nativa e Ctrl.
+const so = /Mac/.test(navigator.userAgent) ? "mac" : /Windows/.test(navigator.userAgent) ? "win" : "linux";
+const mac = so === "mac";
+document.documentElement.dataset.os = so;
+const tecla = (x: string) => (mac ? x : x.replace("⌥⌘", "Ctrl+Alt+").replace("⇧⌘", "Ctrl+Shift+").replace("⌘", "Ctrl+"));
+const dica = (el: HTMLElement, texto: string) => {
+  el.title = tecla(texto);
+  el.setAttribute("aria-label", texto.replace(/ \(.*\)$/, ""));
+};
+
 // Textos fixos do HTML no idioma do sistema.
 document.documentElement.lang = t.lang;
-$("abrir").textContent = t.abrir;
+const itemMenu = (id: string, texto: string, atalho = "") =>
+  ($(id).innerHTML = `<span>${texto}</span>${atalho ? `<kbd>${tecla(atalho)}</kbd>` : ""}`);
+itemMenu("abrir", t.barra.menu.abrir, "⌘O");
+itemMenu("abrir-url", t.barra.menu.abrirUrl);
+itemMenu("ir-menu", t.barra.menu.irLinha, "⌘L");
+itemMenu("tema", t.barra.menu.tema);
+dica($("jq"), t.barra.jq);
+dica(inspetorBtn, t.barra.inspetor);
+dica($("mais"), t.barra.mais);
+dica($("consulta-fechar"), t.barra.fecharFiltro);
 abas.arvore.firstChild!.textContent = t.arvore;
 abas.texto.firstChild!.textContent = t.texto;
 abas.estrutura.firstChild!.textContent = t.estrutura.aba;
@@ -1542,6 +1579,7 @@ $("tabela-ordem").querySelector("button")!.textContent = t.tabela.cancelar;
 abas.exportar.firstChild!.textContent = t.exportar.aba;
 exportarEl.setAttribute("aria-label", t.exportar.rotulo);
 abas.diff.firstChild!.textContent = t.diff.aba;
+for (const b of Object.values(abas)) b.title = `${b.textContent} (${tecla(b.dataset.tecla!)})`;
 diffEl.setAttribute("aria-label", t.diff.rotulo);
 estruturaEl.setAttribute("aria-label", t.estrutura.rotulo);
 perfilEl.setAttribute("aria-label", t.estrutura.perfil);
@@ -1553,21 +1591,52 @@ $("sem-arquivo-titulo").textContent = t.abasArquivos.semArquivo;
 $("sem-arquivo-dica").textContent = t.abasArquivos.dica;
 $("sem-arquivo-abrir").textContent = t.abrir;
 soltar.textContent = t.abasArquivos.soltar;
-verFormatado.querySelector("span")!.textContent = t.verFormatado;
+dica(verFormatado, t.verFormatado);
 $("formatado-fechar").setAttribute("aria-label", t.fechar);
 textoEl.setAttribute("aria-label", t.textoDoArquivo);
 $("rotulo-linha").textContent = t.irParaLinha;
-copiar.querySelector("span")!.textContent = t.copiarCaminho;
+dica(copiar, t.copiarCaminho);
 $("menu").setAttribute("aria-label", t.copiar.menu);
 for (const f of FORMATOS) document.querySelector(`[data-formato="${f}"] span`)!.textContent = t.copiar[f];
 migalhas.setAttribute("aria-label", t.caminhoSelecionado);
-$("tema").setAttribute("aria-label", t.tema);
 arvore.setAttribute("aria-label", t.valoresDoArquivo);
-inicioBtn.querySelector("span")!.textContent = t.inicio;
-$("painel-pergunta").textContent = t.painel.pergunta;
+$("painel-titulo").textContent = t.laudo.titulo;
 $("painel-rotulo").textContent = t.painel.aoAbrir;
-preferencia.innerHTML = opcoes.map((o) => `<option value="${o}">${t.painel.pref[o as keyof typeof t.painel.pref]}</option>`).join("");
+preferencia.innerHTML = opcoes.map((o) => `<option value="${o}">${t.painel.pref[o]}</option>`).join("");
 preferencia.value = lerPreferencia();
+for (const el of document.querySelectorAll<HTMLElement>("[title]")) el.title = tecla(el.title); // os da busca
+
+// "Mais" (Windows e Linux): Abrir, Abrir URL, Ir para linha e Tema; no mac estão no menu Arquivo.
+const acoes = $("acoes");
+const maisBtn = $("mais");
+function fecharAcoes(foco = false): void {
+  acoes.hidden = true;
+  maisBtn.setAttribute("aria-expanded", "false");
+  if (foco) maisBtn.focus();
+}
+maisBtn.addEventListener("click", () => {
+  if (!acoes.hidden) return fecharAcoes();
+  const r = maisBtn.getBoundingClientRect();
+  acoes.hidden = false;
+  acoes.style.top = `${r.bottom + 4}px`;
+  acoes.style.right = `${innerWidth - r.right}px`;
+  maisBtn.setAttribute("aria-expanded", "true");
+  acoes.querySelector<HTMLElement>("button")!.focus();
+});
+acoes.addEventListener("click", () => fecharAcoes());
+acoes.addEventListener("keydown", (e) => {
+  const itens = [...acoes.querySelectorAll<HTMLElement>("button")];
+  const i = itens.indexOf(document.activeElement as HTMLElement);
+  if (e.key === "Escape") fecharAcoes(true);
+  else if (e.key === "ArrowDown" || e.key === "ArrowUp") itens[(i + (e.key === "ArrowDown" ? 1 : itens.length - 1)) % itens.length].focus();
+  else return;
+  e.preventDefault();
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!acoes.hidden && !acoes.contains(e.target as Node) && !maisBtn.contains(e.target as Node)) fecharAcoes();
+});
+// Menu Arquivo do mac: o Rust manda o id do botão equivalente.
+void listen<string>("menu", ({ payload: id }) => document.getElementById(id)?.click());
 
 $("tema").addEventListener("click", () => {
   const raiz = document.documentElement;
@@ -1608,7 +1677,7 @@ $("url-form").addEventListener("submit", (e) => {
 });
 $("abrir-url").addEventListener("click", abrirUrlDialogo);
 $("sem-arquivo-url").addEventListener("click", abrirUrlDialogo);
-for (const [id, texto] of [["abrir-url", t.url.botao], ["sem-arquivo-url", t.url.botao], ["url-titulo", t.url.titulo],
+for (const [id, texto] of [["sem-arquivo-url", t.url.botao], ["url-titulo", t.url.titulo],
   ["url-rotulo", t.url.rotulo], ["url-dica", t.url.dica], ["url-baixar", t.url.baixar]])
   $(id).textContent = texto;
 $("url-fechar").setAttribute("aria-label", t.fechar);
@@ -1665,6 +1734,16 @@ void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {
 });
 
 criarRecentes($("recentes"), (c) => void abrirPedido(c), avisar);
+criarRecentes($("df-recentes"), (c) => void compararCom(() => abrirPedido(c)), avisar);
+
+/** Do Diff vazio: abre o outro arquivo e volta ao Diff da aba de onde saiu (abrir troca de aba e de vista). */
+async function compararCom(abrir: () => Promise<unknown>): Promise<void> {
+  const volta = abaAtiva();
+  await abrir();
+  await preparando;
+  const i = volta ? lista.indexOf(volta) : -1;
+  if (i >= 0 && i !== ativa) ativar(i);
+}
 
 // Pedidos do sistema com o app aberto (Finder, "Abrir com", menu Arquivo › Abrir recente,
 // 2ª instância): o aviso não leva caminho; cada um sai da fila uma vez, numa aba.

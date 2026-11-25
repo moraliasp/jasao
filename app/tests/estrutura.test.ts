@@ -67,7 +67,7 @@ test("itens: um por caminho e um por variante, com a 1ª linha para ir à Árvor
   assert.ok(it[2].rotulo.includes(t.estrutura.opcional));
   assert.ok(it[2].html.includes(`${t.estrutura.tipos.inteiro} 1 | ${t.estrutura.tipos.nulo} 1`));
   // Recuo pela profundidade e nome relativo ao pai.
-  assert.match(it[4].html, /padding-left:68px" title="\.x\.a\[\]">\[\]</);
+  assert.match(it[4].html, /padding-left:76px" title="\.x\.a\[\]">\[\]</);
   // Chave do arquivo é escapada.
   assert.ok(it[5].html.includes("chave &lt;b>"));
   assert.ok(!it[5].html.includes("<b>"));

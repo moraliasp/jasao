@@ -91,7 +91,7 @@ export function itens(e: Estrutura, t: Textos, fmt: Fmt): ItemE[] {
       alvo: { caminho: indice, tem: true },
       valor: null,
       rotulo: `${c.caminho}: ${ti}; ${pr}${opcional ? `; ${t.estrutura.opcional}` : ""}${av.map((a) => `; ${t.estrutura.aviso}: ${a}`).join("")}`,
-      html: `<span class="ec" style="padding-left:${8 + c.profundidade * 20}px" title="${esc(c.caminho)}">${visivel(nome)}</span>` +
+      html: `<span class="ec" style="padding-left:${16 + c.profundidade * 20}px" title="${esc(c.caminho)}">${visivel(nome)}</span>` +
         `<span class="et">${esc(ti)}${av.map((a) => ` <span class="ea">${esc(a)}</span>`).join("")}</span><span class="ep${opcional ? " op" : ""}">${esc(pr)}</span>`,
     };
   });
@@ -106,7 +106,7 @@ export function itens(e: Estrutura, t: Textos, fmt: Fmt): ItemE[] {
         alvo: { discriminador, variante },
         valor: v.valor,
         rotulo: `${t.estrutura.formato(d.campo, v.valor)}: ${t.estrutura.registros(fmt(v.registros))}; ${det}`,
-        html: `<span class="ec" style="padding-left:8px">${visivel(`${d.campo} = "${v.valor}"`)}</span>` +
+        html: `<span class="ec" style="padding-left:16px">${visivel(`${d.campo} = "${v.valor}"`)}</span>` +
           `<span class="et">${visivel(det)}</span><span class="ep">${esc(t.estrutura.registros(fmt(v.registros)))}</span>`,
       });
     }

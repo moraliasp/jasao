@@ -18,11 +18,15 @@
         "width": 1100,
         "height": 760,
         "minWidth": 480,
-        "minHeight": 320
+        "minHeight": 320,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 20 }
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; form-action 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; form-action 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
