@@ -652,7 +652,7 @@ pub(crate) fn validar(bytes: &[u8]) -> Result<&str, ErroLinha> {
     if let Some(pos) = escape_u_invalido(bytes) {
         return Err(erro(pos, Motivo::Unicode));
     }
-    if let Some(pos) = passa_da_profundidade(bytes) {
+    if let Some(pos) = passa_da_profundidade(bytes, MAX_PROFUNDIDADE) {
         return Err(erro(pos, Motivo::Profundidade));
     }
     // IgnoredAny no sonic-rs valida o valor inteiro e o que vem depois dele.
@@ -730,8 +730,8 @@ fn escape_u_invalido(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// Primeiro byte em que o aninhamento passa de `MAX_PROFUNDIDADE`, ignorando o que está em texto.
-fn passa_da_profundidade(bytes: &[u8]) -> Option<usize> {
+/// Primeiro byte em que o aninhamento passa de `max`, ignorando o que está em texto.
+pub(crate) fn passa_da_profundidade(bytes: &[u8], max: usize) -> Option<usize> {
     let (mut prof, mut em_texto, mut escape) = (0usize, false, false);
     for (i, &b) in bytes.iter().enumerate() {
         if em_texto {
@@ -747,7 +747,7 @@ fn passa_da_profundidade(bytes: &[u8]) -> Option<usize> {
             b'"' => em_texto = true,
             b'{' | b'[' => {
                 prof += 1;
-                if prof > MAX_PROFUNDIDADE {
+                if prof > max {
                     return Some(i);
                 }
             }
@@ -1064,7 +1064,10 @@ mod testes {
         assert_eq!((ultimo.prof, ultimo.filhos), (MAX_PROFUNDIDADE - 1, 0));
         // Colchete dentro de texto não conta.
         assert_eq!(
-            passa_da_profundidade(format!("[\"{}\"]", "[".repeat(5000)).as_bytes()),
+            passa_da_profundidade(
+                format!("[\"{}\"]", "[".repeat(5000)).as_bytes(),
+                MAX_PROFUNDIDADE
+            ),
             None
         );
     }

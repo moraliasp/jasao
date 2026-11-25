@@ -24,7 +24,8 @@ regex = "1"
 # Só para reconhecer o erro de TLS que o ureq devolve (é o mesmo crate que ele já usa).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# `unbounded_depth`: o validador lê até `estrutura::PROFUNDIDADE_MAX` (conferido antes), não 127.
+serde_json = { version = "1.0.154", features = ["unbounded_depth"] }
 sonic-rs = "0.5.12"
 tempfile = "3"
 toml = { version = "1.2", default-features = false, features = ["parse", "preserve_order", "serde", "std"] }

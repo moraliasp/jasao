@@ -119,3 +119,23 @@ export function lerRegistros(a: string, b: string): [number, number] | null | "r
   const [x, y] = [n(a || b), n(b || a)];
   return Number.isSafeInteger(x) && Number.isSafeInteger(y) ? [x, y] : "ruim";
 }
+
+/** Dois docs são o mesmo arquivo: o mesmo doc ou o mesmo caminho aberto em duas abas. */
+export function mesmoArquivo(abas: { doc: number; caminho: string | null }[], a: string, b: string): boolean {
+  if (a === b) return true;
+  const caminho = (v: string) => abas.find((x) => String(x.doc) === v)?.caminho ?? null;
+  const ca = caminho(a);
+  return ca !== null && ca === caminho(b);
+}
+
+/** Um `<select>` para `travarPar`: só o que a função lê e muda (testável sem DOM). */
+export interface Lista {
+  value: string;
+  options: Iterable<{ value: string; disabled: boolean }>;
+}
+
+/** Antes e Depois nunca são o mesmo arquivo: cada lista desabilita o que a outra escolheu. */
+export function travarPar(abas: { doc: number; caminho: string | null }[], antes: Lista, depois: Lista): void {
+  for (const [sel, outro] of [[antes, depois], [depois, antes]] as const)
+    for (const op of sel.options) op.disabled = mesmoArquivo(abas, op.value, outro.value);
+}

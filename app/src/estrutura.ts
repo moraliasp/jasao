@@ -148,7 +148,9 @@ export function detalhe(caminho: string, p: Perfil, t: Textos, fmt: Fmt): string
   const aprox = (sim: boolean) => (sim ? ` <span class="pm">${esc(e.aproximado)}</span>` : "");
   let h = `<p class="rot">${esc(e.perfil)} · ${visivel(caminho)}</p>`;
   if (p.oculto) h += `<p class="pm">${esc(e.oculto)}</p>`;
-  h += `<p>${esc(e.valores(fmt(p.valores)))} · ${esc(e.distintos(fmt(p.distintos)))}${aprox(p.distintos_aprox)}</p>`;
+  // Distintos conta só escalares: num caminho só de objetos/listas (a raiz) "0 distintos" engana.
+  const distintos = p.distintos ? ` · ${esc(e.distintos(fmt(p.distintos)))}${aprox(p.distintos_aprox)}` : "";
+  h += `<p>${esc(e.valores(fmt(p.valores)))}${distintos}</p>`;
   // Cada faixa e cada valor comum é um botão (`data-faixa`/`data-comum` = posição no perfil):
   // filtra a Tabela por ele (ver `faceta`). O rótulo leva o valor cortado, como na tela.
   const rot = (f: Omit<FiltroUi, "achados">, n: number) => esc(e.facetar(rotuloFiltro(f, t), fmt(n)));

@@ -1,7 +1,7 @@
 // Tradução dos códigos de erro do Rust (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { erroDoRust, t } from "../src/i18n.ts";
+import { contagemArquivo, erroDoRust, motivoDoRust, t } from "../src/i18n.ts";
 
 test("códigos da descompactação e da concessão viram texto, ao abrir e na consulta", () => {
   assert.equal(erroDoRust("jasao:razao"), t.compactado.recusada);
@@ -14,4 +14,22 @@ test("códigos da descompactação e da concessão viram texto, ao abrir e na co
 test("outro erro passa como veio", () => {
   assert.equal(erroDoRust("a.jsonl: sem permissão"), "a.jsonl: sem permissão");
   assert.equal(erroDoRust(new Error("x")), "Error: x");
+});
+
+test("motivo do validador: código jasao: vira texto; o do schema passa como veio", () => {
+  // Os códigos que `core/src/validar.rs` devolve além dos de `arvore::Motivo`.
+  for (const c of ["valor", "numero_fora_do_alcance", "aninhamento", "recusado_pelo_validador"]) {
+    const m = motivoDoRust(`jasao:${c}`);
+    assert.ok(m && !m.includes("jasao:") && m !== t.motivos.outro, c);
+  }
+  assert.equal(motivoDoRust("jasao:desconhecido"), t.motivos.outro);
+  assert.equal(motivoDoRust("/a: 1 is not of type \"string\""), "/a: 1 is not of type \"string\"");
+});
+
+test("contagemArquivo: linhas enquanto infere, registros quando acaba", () => {
+  const fmt = (n: number) => String(n);
+  assert.equal(contagemArquivo(null, 1417, fmt), `1417 ${t.linhas[1]}`);
+  assert.equal(contagemArquivo(1411, 1417, fmt), `1411 ${t.registros[1]}`);
+  assert.equal(contagemArquivo(1, 3, fmt), `1 ${t.registros[0]}`);
+  assert.equal(contagemArquivo(0, 3, fmt), `0 ${t.registros[1]}`, "inferência acabada com zero registros não volta para linhas");
 });

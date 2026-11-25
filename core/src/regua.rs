@@ -200,7 +200,7 @@ mod testes {
     }
 
     fn dados() -> Vec<u8> {
-        // 6 tipos (frequências 6, 5, 4, 3, 2, 1) e inválidas juntas no meio.
+        // 6 tipos (frequências 6, 5, 4, 3, 2, 1), uma inválida e uma vazia (neutra, não inválida).
         let mut d = Vec::new();
         for (tipo, n) in [("f", 1), ("e", 2), ("d", 3), ("c", 4), ("b", 5), ("a", 6)] {
             for i in 0..n {
@@ -224,7 +224,7 @@ mod testes {
         assert_eq!(&todas[..3], &[OUTROS, OUTROS, OUTROS]); // f, e, e
         assert_eq!(todas[3], 4); // primeiro d
         assert_eq!(todas[20], 1); // último a
-        assert_eq!(&todas[21..], &[INVALIDA, INVALIDA]);
+        assert_eq!(&todas[21..], &[INVALIDA, NEUTRO]);
     }
 
     #[test]
@@ -232,7 +232,7 @@ mod testes {
         let (_, m) = regua(&dados());
         let b = baldes(&m, 2);
         assert_eq!(b.cores, [3, 1]); // 0..11: c ganha de d (4 x 3); 11..23: a
-        assert_eq!(b.invalidas, [(1, 2, 21)]);
+        assert_eq!(b.invalidas, [(1, 1, 21)]);
         assert_eq!(baldes(&m, 1000).cores.len(), 23);
     }
 

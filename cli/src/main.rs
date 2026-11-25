@@ -1165,14 +1165,25 @@ fn exportar(
         t.elapsed()
     );
     if v.invalidas > 0 {
-        eprintln!("{} linhas não são JSON para o validador", v.invalidas);
+        eprintln!(
+            "{} linhas inválidas (não são JSON) ficaram de fora",
+            v.invalidas
+        );
     }
-    // O motivo cita caminho de chave do arquivo: sai pelo stderr neutralizado.
+    if v.recusadas > 0 {
+        eprintln!(
+            "{} registros a mais o validador não lê: número fora do alcance do JavaScript (double)",
+            v.recusadas
+        );
+    }
+    // O motivo cita caminho de chave do arquivo: sai pelo stderr neutralizado. Linha que o
+    // validador não leu vem como código `jasao:…` (a interface traduz; aqui sai o código).
     let mut err = erro();
     for f in &v.falhas {
-        writeln!(err, "linha {}: {}", f.linha + 1, f.motivo)?;
+        let motivo = f.motivo.strip_prefix("jasao:").unwrap_or(&f.motivo);
+        writeln!(err, "linha {}: {motivo}", f.linha + 1)?;
     }
-    Ok(v.falham == 0 && v.invalidas == 0)
+    Ok(v.falham == 0 && v.invalidas == 0 && v.recusadas == 0)
 }
 
 /// Contra o que validar.
@@ -1239,7 +1250,8 @@ fn validar(
     let v = validar::validar(a.cru(), entrada, &schema, &nada, |_| {})?;
     // O motivo cita caminho de chave do arquivo: sai neutralizado no terminal.
     for f in &v.falhas {
-        writeln!(out, "linha {}: {}", f.linha + 1, f.motivo)?;
+        let motivo = f.motivo.strip_prefix("jasao:").unwrap_or(&f.motivo);
+        writeln!(out, "linha {}: {}", f.linha + 1, motivo)?;
     }
     out.flush()?;
     eprintln!(
@@ -1250,10 +1262,16 @@ fn validar(
         v.invalidas,
         t.elapsed()
     );
-    if v.falham + v.invalidas > v.falhas.len() as u64 {
+    if v.recusadas > 0 {
+        eprintln!(
+            "{} registros a mais o validador não lê: número fora do alcance do JavaScript (double)",
+            v.recusadas
+        );
+    }
+    if v.falham + v.invalidas + v.recusadas > v.falhas.len() as u64 {
         eprintln!("(só as {} primeiras falhas aparecem)", v.falhas.len());
     }
-    Ok(v.falham + v.invalidas > 0)
+    Ok(v.falham + v.invalidas + v.recusadas > 0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
