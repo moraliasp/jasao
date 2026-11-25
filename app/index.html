@@ -14,7 +14,7 @@
         --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
         --win: #ffffff; --chrome: #f6f6f6; --side: #f5f5f7; --line: rgba(0,0,0,.09); --line-strong: rgba(0,0,0,.14);
         --fg: #1d1d1f; --fg2: #6e6e73; --fg3: #76767b; --hover: rgba(0,0,0,.05);
-        --accent: #007aff; --accent-fg: #0063d1; --sel: rgba(0,122,255,.12); --seg: rgba(0,0,0,.06); --seg-on: #ffffff; --field: rgba(0,0,0,.05);
+        --accent: #007aff; --accent-fg: #0059bd; --sel: rgba(0,122,255,.12); --seg: rgba(0,0,0,.06); --seg-on: #ffffff; --field: rgba(0,0,0,.05);
         --change: #9a6700; --ok: #1a7f37; --del: #cf222e;
         /* Régua do micronavegador: neutro, as 4 variantes mais frequentes e "outros". */
         --rg-neutro: #eaeef2; --rg-1: #1b7c83; --rg-2: #8250df; --rg-3: #bc4c00; --rg-4: #bf3989; --rg-outros: #8c959f;
@@ -25,15 +25,15 @@
       :root[data-theme="dark"] {
         --win: #1e1e1e; --chrome: #2a2a2a; --side: #252525; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.13);
         --fg: #f5f5f7; --fg2: #a1a1a6; --fg3: #8e8e93; --hover: rgba(255,255,255,.06);
-        --accent: #0a84ff; --accent-fg: #64b0ff; --sel: rgba(10,132,255,.22); --seg: rgba(255,255,255,.08); --seg-on: #5a5a5c; --field: rgba(255,255,255,.07);
+        --accent: #0a84ff; --accent-fg: #85c2ff; --sel: rgba(10,132,255,.22); --seg: rgba(255,255,255,.08); --seg-on: #5a5a5c; --field: rgba(255,255,255,.07);
         --change: #d29922; --ok: #3fb950; --del: #f85149;
         --rg-neutro: #21262d; --rg-1: #39c5cf; --rg-2: #a371f7; --rg-3: #f0883e; --rg-4: #db61a2; --rg-outros: #6e7681;
         color-scheme: dark;
       }
       :root[data-os="win"] { --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; --mono: "Cascadia Mono", Consolas, ui-monospace, monospace; }
-      :root[data-os="win"]:not([data-theme="dark"]) { --chrome: #f3f3f3; --side: #f9f9f9; --accent: #0067c0; --accent-fg: #0067c0; --sel: rgba(0,103,192,.10); }
+      :root[data-os="win"]:not([data-theme="dark"]) { --chrome: #f3f3f3; --side: #f9f9f9; --accent: #0067c0; --accent-fg: #005fb3; --sel: rgba(0,103,192,.10); }
       :root[data-os="linux"] { --sans: Cantarell, "Noto Sans", Ubuntu, system-ui, sans-serif; --mono: "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace; }
-      :root[data-os="linux"][data-theme="dark"] { --chrome: #303030; --side: #2a2a2a; --accent: #78aeed; --accent-fg: #8cbcf2; --sel: rgba(53,132,228,.30); --seg-on: rgba(255,255,255,.18); }
+      :root[data-os="linux"][data-theme="dark"] { --chrome: #303030; --side: #2a2a2a; --accent: #78aeed; --accent-fg: #aacef6; --sel: rgba(53,132,228,.30); --seg-on: rgba(255,255,255,.18); }
       * { box-sizing: border-box; }
       html, body { height: 100%; margin: 0; }
       body { display: flex; flex-direction: column; background: var(--page-bg); color: var(--bar-fg); font-size: 13px; line-height: 1.45; -webkit-font-smoothing: antialiased; scrollbar-color: var(--border) transparent; }
