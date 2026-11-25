@@ -2,8 +2,8 @@
 // (src-tauri/src/recentes.rs); aqui só se desenha a lista, refeita a cada aviso `recentes`.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { t } from "./i18n";
-import { semInvisiveis } from "./texto";
+import { erroDoRust, t } from "./i18n.ts";
+import { semInvisiveis } from "./texto.ts";
 
 export interface Recente {
   caminho: string;
@@ -11,8 +11,9 @@ export interface Recente {
   pasta: string;
 }
 
-/** Desenha os recentes em `el` (botão com nome e pasta por recente) e chama `escolher` no clique. */
-export function criarRecentes(el: HTMLElement, escolher: (caminho: string) => void): void {
+/** Desenha os recentes em `el` (botão com nome e pasta por recente) e chama `escolher` no clique;
+ * falha ao limpar vai para `avisar`. */
+export function criarRecentes(el: HTMLElement, escolher: (caminho: string) => void, avisar: (msg: string) => void): void {
   el.setAttribute("aria-label", t.recentes.titulo);
   async function desenhar(): Promise<void> {
     const lista = await invoke<Recente[]>("recentes");
@@ -21,6 +22,17 @@ export function criarRecentes(el: HTMLElement, escolher: (caminho: string) => vo
     if (!lista.length) return;
     const h = document.createElement("h2");
     h.textContent = t.recentes.titulo;
+    const limpar = document.createElement("button");
+    limpar.type = "button";
+    limpar.className = "limpar";
+    limpar.textContent = t.recentes.limpar;
+    limpar.title = t.recentes.limparDica;
+    // O Rust avisa `recentes` depois de limpar e a lista se redesenha (vazia, some).
+    limpar.addEventListener("click", () =>
+      invoke("limpar_recentes").catch((e) => avisar(`${t.erro}: ${erroDoRust(e)}`)),
+    );
+    const topo = document.createElement("header");
+    topo.append(h, limpar);
     const ul = document.createElement("ul");
     for (const r of lista) {
       const b = document.createElement("button");
@@ -37,7 +49,7 @@ export function criarRecentes(el: HTMLElement, escolher: (caminho: string) => vo
       li.append(b);
       ul.append(li);
     }
-    el.append(h, ul);
+    el.append(topo, ul);
   }
   void listen("recentes", () => void desenhar());
   void desenhar();

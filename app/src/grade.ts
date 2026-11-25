@@ -9,7 +9,7 @@ import {
   type Alvo, type Coluna, type Concluida, type EstadoFiltro, type EstadoOrdem, type Filtragem, type LinhaT, type Ordem, type Ordenacao, type TabelaUi,
   celula, chegou, chipFiltro, detalhe, filtroChegou, filtroRespondeu, invalida, largura, linhasNaGrade, motivo, ordemVisivel, proximaOrdem, respondeu, rotulos,
 } from "./tabela.ts";
-import { visivel } from "./texto.ts";
+import { icone, visivel } from "./texto.ts";
 
 const ALTURA = 26; // px por linha; igual ao CSS de .grade .td
 const CAB = 44; // px do cabeçalho; igual ao CSS de .grade .thead .tr
@@ -43,7 +43,6 @@ interface Deps {
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
-const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
 
 export function criarGrade(el: HTMLElement, deps: Deps) {
   const linhasEl = el.querySelector<HTMLElement>(".rows")!;

@@ -31,7 +31,7 @@ pub mod valores;
 pub mod vivo;
 
 pub use arvore::Arvore;
-pub use busca::{Achado, Busca, ErroBusca, Lote, Resumo};
-pub use compactado::{Formato, Opcoes};
+pub use busca::{Achado, Busca};
+pub use compactado::Opcoes;
 pub use linhas::{ArquivoLinhas, IndiceLinhas};
 pub use vivo::{Marca, Mudanca, Vivo};
