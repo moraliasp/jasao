@@ -709,7 +709,6 @@ fn do_sonic(e: &sonic_rs::Error) -> ErroLinha {
     }
 }
 
-/// Primeiro byte em que o aninhamento passa de `MAX_PROFUNDIDADE`, ignorando o que está em texto.
 /// Byte do primeiro `\u` sem 4 dígitos hexa logo depois. Barra invertida só é válida dentro de
 /// texto, e lá vem sempre em par com o caractere escapado: basta pular de par em par.
 fn escape_u_invalido(bytes: &[u8]) -> Option<usize> {
@@ -731,6 +730,7 @@ fn escape_u_invalido(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+/// Primeiro byte em que o aninhamento passa de `MAX_PROFUNDIDADE`, ignorando o que está em texto.
 fn passa_da_profundidade(bytes: &[u8]) -> Option<usize> {
     let (mut prof, mut em_texto, mut escape) = (0usize, false, false);
     for (i, &b) in bytes.iter().enumerate() {

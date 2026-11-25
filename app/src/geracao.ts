@@ -21,3 +21,11 @@ export function porGeracao<T extends { geracao: number }>(aplicar: (v: T) => voi
     },
   };
 }
+
+/** Se um evento de consulta vale para o estado `e`. Não vale se não há consulta rodando
+ * (cancelada, ou outro arquivo aberto: o `fim` emitido no mesmo instante não abre), se é de geração
+ * velha, ou se `consultar` está em voo e o evento ainda é da geração atual. */
+export const eventoVale = (
+  e: { rodando: boolean; esperando: boolean; geracao: number } | undefined,
+  geracao: number,
+): boolean => !!e && e.rodando && geracao >= e.geracao && !(e.esperando && geracao === e.geracao);

@@ -507,13 +507,18 @@ fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
     let agora = SystemTime::now();
     let mut entradas = Vec::new();
     for e in fs::read_dir(dir)? {
-        // Outra abertura pode renomear ou apagar a entrada entre listar e ler: pula, não falha.
-        let Ok(e) = e else { continue };
-        let caminho = e.path();
-        let Ok(meta) = e.metadata() else { continue };
-        let Ok(quando) = meta.modified() else {
-            continue;
+        // Outra abertura pode apagar a entrada entre listar e ler: sumiu, pula; outro erro sobe.
+        let sumiu = |x: &io::Error| x.kind() == io::ErrorKind::NotFound;
+        let e = match e {
+            Err(x) if sumiu(&x) => continue,
+            r => r?,
         };
+        let caminho = e.path();
+        let meta = match e.metadata() {
+            Err(x) if sumiu(&x) => continue,
+            r => r?,
+        };
+        let quando = meta.modified()?;
         match caminho.extension().and_then(|x| x.to_str()) {
             Some(EXT_CACHE) => {
                 // Cache de versão anterior foi criado aberto para todos.

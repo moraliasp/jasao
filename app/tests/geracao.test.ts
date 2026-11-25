@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { porGeracao } from "../src/geracao.ts";
+import { eventoVale, porGeracao } from "../src/geracao.ts";
 
 type Ev = { geracao: number; fim: boolean };
 
@@ -37,4 +37,15 @@ test("fim de uma geração mais nova sobrevive a fixar uma mais velha (respostas
   e.fixar(1); // resposta da 1ª chamada chega depois do fim da 2ª
   e.fixar(2);
   assert.deepEqual(vistos, [{ geracao: 2, fim: true }]);
+});
+
+test("consulta: evento de consulta cancelada não vale, nem o `fim` emitido junto", () => {
+  const e = { rodando: true, esperando: false, geracao: 2 };
+  assert.equal(eventoVale(e, 2), true);
+  assert.equal(eventoVale(e, 3), true);
+  assert.equal(eventoVale(e, 1), false); // geração velha
+  assert.equal(eventoVale({ ...e, esperando: true }, 2), false); // `consultar` em voo
+  assert.equal(eventoVale({ ...e, rodando: false }, 2), false); // cancelada
+  assert.equal(eventoVale({ ...e, rodando: false }, 3), false);
+  assert.equal(eventoVale(undefined, 2), false);
 });
