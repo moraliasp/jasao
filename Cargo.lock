@@ -2982,6 +2982,7 @@ dependencies = [
  "criterion",
  "ctrlc",
  "flate2",
+ "foldhash 0.2.0",
  "fs4",
  "jaq-core",
  "jaq-json",

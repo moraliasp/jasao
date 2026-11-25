@@ -18,12 +18,29 @@ static AVISOU: AtomicBool = AtomicBool::new(false);
 
 pub struct Contador;
 
-/// Liga o teto (bytes de heap vivo) para o resto do processo.
+/// Liga o teto (bytes de heap vivo) para o resto do processo. Só daqui em diante o heap é
+/// contado: o que foi alocado antes não entra (é pouco: quem limita chama logo ao começar).
 pub fn limitar(bytes: usize) {
     TETO.store(bytes, Relaxed);
 }
 
+/// Sem teto não se conta nada: o `fetch_add` num atômico só, em toda alocação de toda thread,
+/// disputava a mesma linha de cache e deixava a estrutura de 1 GB ~2× mais lenta (18 threads;
+/// docs/revisao/performance.md). Ler o `TETO` não disputa (ninguém escreve nele).
+fn contando() -> bool {
+    TETO.load(Relaxed) != usize::MAX
+}
+
+/// Devolve `n` bytes ao contador sem passar de zero: o que foi alocado antes de `limitar` e
+/// liberado depois não foi somado.
+fn liberar(n: usize) {
+    let _ = USADO.try_update(Relaxed, Relaxed, |u| Some(u.saturating_sub(n)));
+}
+
 fn reservar(n: usize) -> bool {
+    if !contando() {
+        return true;
+    }
     let antes = USADO.fetch_add(n, Relaxed);
     if antes.saturating_add(n) <= TETO.load(Relaxed) {
         return true;
@@ -60,8 +77,8 @@ unsafe impl GlobalAlloc for Contador {
             return std::ptr::null_mut();
         }
         let p = unsafe { System.alloc(l) };
-        if p.is_null() {
-            USADO.fetch_sub(l.size(), Relaxed);
+        if p.is_null() && contando() {
+            liberar(l.size());
         }
         p
     }
@@ -71,15 +88,17 @@ unsafe impl GlobalAlloc for Contador {
             return std::ptr::null_mut();
         }
         let p = unsafe { System.alloc_zeroed(l) };
-        if p.is_null() {
-            USADO.fetch_sub(l.size(), Relaxed);
+        if p.is_null() && contando() {
+            liberar(l.size());
         }
         p
     }
 
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         unsafe { System.dealloc(p, l) };
-        USADO.fetch_sub(l.size(), Relaxed);
+        if contando() {
+            liberar(l.size());
+        }
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, novo: usize) -> *mut u8 {
@@ -88,12 +107,12 @@ unsafe impl GlobalAlloc for Contador {
             return std::ptr::null_mut();
         }
         let q = unsafe { System.realloc(p, l, novo) };
-        if q.is_null() {
-            if novo > velho {
-                USADO.fetch_sub(novo - velho, Relaxed);
+        if contando() {
+            match q.is_null() {
+                true if novo > velho => liberar(novo - velho),
+                false if novo < velho => liberar(velho - novo),
+                _ => {}
             }
-        } else if novo < velho {
-            USADO.fetch_sub(velho - novo, Relaxed);
         }
         q
     }
