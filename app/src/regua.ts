@@ -7,7 +7,6 @@ import { t } from "./i18n";
 export interface Legenda { campo: string; variantes: [string, number][]; outros: number }
 interface Baldes { cores: number[]; invalidas: [number, number, number][] }
 
-export const INVALIDA = 255;
 const OUTROS = 5;
 const MIN_JANELA = 6; // px: altura mínima do retângulo
 const PERTO = 16; // px: inválidas mais próximas que isto viram um balão só

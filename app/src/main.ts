@@ -27,6 +27,7 @@ import { copiar as copiarNo, criarMenu, FORMATOS, type Formato } from "./copiar"
 import {
   decodificar,
   escAtributo,
+  icone,
   type JanelaTexto,
   marcado,
   resumir,
@@ -74,7 +75,6 @@ const abas = { arvore: $("aba-arvore"), texto: $("aba-texto"), estrutura: $("aba
 type Modo = keyof typeof abas;
 const fmt = (n: number) => n.toLocaleString(t.lang);
 const esc = escAtributo;
-const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
 
 let total = 0; // linhas visíveis
 let registros = 0;
@@ -1664,7 +1664,7 @@ void getCurrentWebview().onDragDropEvent(async ({ payload: p }) => {
   if (avisos.length) status.textContent = [abrir.length ? abaAtiva()?.status : "", ...avisos].filter(Boolean).join(" · ");
 });
 
-criarRecentes($("recentes"), (c) => void abrirPedido(c));
+criarRecentes($("recentes"), (c) => void abrirPedido(c), avisar);
 
 // Pedidos do sistema com o app aberto (Finder, "Abrir com", menu Arquivo › Abrir recente,
 // 2ª instância): o aviso não leva caminho; cada um sai da fila uma vez, numa aba.

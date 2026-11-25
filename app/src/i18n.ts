@@ -221,7 +221,6 @@ const pt = {
     lista: (n: string) => `lista com ${n} ${n === "1" ? "item" : "itens"}`,
     abrirNaArvore: "Enter abre na Árvore",
     invalida: "linha inválida",
-    ajuda: "Setas andam pelas células. No cabeçalho: Enter ordena, F fixa, Delete oculta. Na célula: Enter abre na Árvore.",
     indisponivel: {
       vazio: "Sem registros válidos para montar a tabela.",
       nao_lista: "O arquivo é um valor só, não uma lista de registros.",
@@ -290,6 +289,8 @@ const pt = {
   inicio: "Início",
   recentes: {
     titulo: "Recentes",
+    limpar: "Limpar",
+    limparDica: "Tira todos os arquivos da lista de recentes (os arquivos continuam no disco)",
     sumiu: (nome: string) => `${nome} não existe mais e saiu dos recentes.`,
   },
   busca: {
@@ -660,7 +661,6 @@ const en: Textos = {
     lista: (n: string) => `list with ${n} ${n === "1" ? "item" : "items"}`,
     abrirNaArvore: "Enter opens in Tree",
     invalida: "invalid line",
-    ajuda: "Arrows move between cells. On the header: Enter sorts, F pins, Delete hides. On a cell: Enter opens in Tree.",
     indisponivel: {
       vazio: "No valid records to build a table.",
       nao_lista: "The file is a single value, not a list of records.",
@@ -729,6 +729,8 @@ const en: Textos = {
   inicio: "Home",
   recentes: {
     titulo: "Recent",
+    limpar: "Clear",
+    limparDica: "Removes every file from the Recent list (the files stay on disk)",
     sumiu: (nome: string) => `${nome} no longer exists and was removed from Recent.`,
   },
   busca: {
