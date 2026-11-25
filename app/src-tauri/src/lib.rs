@@ -3133,10 +3133,63 @@ fn comandos<R: Runtime>(b: Builder<R>) -> Builder<R> {
         ])
 }
 
+/// Rótulos do menu nativo. Mesma regra do front (`i18n.ts`): "pt…" → português, resto → inglês.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct Rotulos {
+    editar: &'static str,
+    janela: &'static str,
+    arquivo: &'static str,
+    abrir: &'static str,
+    abrir_url: &'static str,
+    abrir_recente: &'static str,
+    sem_recentes: &'static str,
+    limpar_recentes: &'static str,
+    ir_para_linha: &'static str,
+    alternar_tema: &'static str,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn rotulos(locale: &str) -> Rotulos {
+    if locale.to_lowercase().starts_with("pt") {
+        Rotulos {
+            editar: "Editar",
+            janela: "Janela",
+            arquivo: "Arquivo",
+            abrir: "Abrir…",
+            abrir_url: "Abrir URL…",
+            abrir_recente: "Abrir recente",
+            sem_recentes: "Nenhum arquivo recente",
+            limpar_recentes: "Limpar recentes",
+            ir_para_linha: "Ir para linha…",
+            alternar_tema: "Alternar tema",
+        }
+    } else {
+        Rotulos {
+            editar: "Edit",
+            janela: "Window",
+            arquivo: "File",
+            abrir: "Open…",
+            abrir_url: "Open URL…",
+            abrir_recente: "Open Recent",
+            sem_recentes: "No recent files",
+            limpar_recentes: "Clear Recents",
+            ir_para_linha: "Go to Line…",
+            alternar_tema: "Toggle Theme",
+        }
+    }
+}
+
+/// Idioma do sistema (ex. "pt-BR"); vazio se indisponível, o que cai em inglês.
+#[cfg(target_os = "macos")]
+fn rotulos_do_sistema() -> Rotulos {
+    rotulos(&sys_locale::get_locale().unwrap_or_default())
+}
+
 /// Menu do macOS sem "Fechar janela": lá ⌘W fecharia a janela, e no Jasão ⌘W fecha a aba (no JS).
 #[cfg(target_os = "macos")]
 fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{Menu, PredefinedMenuItem as P, Submenu};
+    let t = rotulos_do_sistema();
     let nome = app.package_info().name.clone();
     let app_menu = Submenu::with_items(
         app,
@@ -3156,7 +3209,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     )?;
     let editar = Submenu::with_items(
         app,
-        "Editar",
+        t.editar,
         true,
         &[
             &P::undo(app, None)?,
@@ -3170,7 +3223,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     )?;
     let janela = Submenu::with_items(
         app,
-        "Janela",
+        t.janela,
         true,
         &[
             &P::minimize(app, None)?,
@@ -3186,6 +3239,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
 #[cfg(target_os = "macos")]
 fn arquivo<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Submenu<R>> {
     use tauri::menu::{IsMenuItem, MenuItem, PredefinedMenuItem, Submenu};
+    let t = rotulos_do_sistema();
     let lista = recentes::descrever(com_recentes(app, recentes::ler).unwrap_or_default());
     let mut itens: Vec<MenuItem<R>> = Vec::new();
     for r in &lista {
@@ -3196,7 +3250,7 @@ fn arquivo<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Submenu
     if itens.is_empty() {
         itens.push(MenuItem::new(
             app,
-            "Nenhum arquivo recente",
+            t.sem_recentes,
             false,
             None::<&str>,
         )?);
@@ -3205,29 +3259,29 @@ fn arquivo<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Submenu
     let limpar = MenuItem::with_id(
         app,
         "recentes:limpar",
-        "Limpar recentes",
+        t.limpar_recentes,
         !lista.is_empty(),
         None::<&str>,
     )?;
     let mut filhos: Vec<&dyn IsMenuItem<R>> = itens.iter().map(|i| i as _).collect();
     filhos.push(&separador);
     filhos.push(&limpar);
-    let abrir = Submenu::with_items(app, "Abrir recente", true, &filhos)?;
+    let abrir = Submenu::with_items(app, t.abrir_recente, true, &filhos)?;
     // Ações da interface (id `ui:<id do botão>`): o front clica o botão de mesmo id.
     let ui = |id: &str, texto: &str, atalho: Option<&str>| {
         MenuItem::with_id(app, format!("ui:{id}"), texto, true, atalho)
     };
     Submenu::with_items(
         app,
-        "Arquivo",
+        t.arquivo,
         true,
         &[
-            &ui("abrir", "Abrir…", Some("CmdOrCtrl+O"))?,
-            &ui("abrir-url", "Abrir URL…", None)?,
+            &ui("abrir", t.abrir, Some("CmdOrCtrl+O"))?,
+            &ui("abrir-url", t.abrir_url, None)?,
             &abrir,
             &PredefinedMenuItem::separator(app)?,
-            &ui("ir-menu", "Ir para linha…", Some("CmdOrCtrl+L"))?,
-            &ui("tema", "Alternar tema", None)?,
+            &ui("ir-menu", t.ir_para_linha, Some("CmdOrCtrl+L"))?,
+            &ui("tema", t.alternar_tema, None)?,
         ],
     )
 }
@@ -3326,6 +3380,16 @@ pub fn run() {
 
 #[cfg(test)]
 mod testes {
+    #[test]
+    fn rotulos_do_menu_seguem_o_idioma() {
+        for pt in ["pt-BR", "pt_PT", "PT"] {
+            assert_eq!(super::rotulos(pt).arquivo, "Arquivo", "{pt}");
+        }
+        for en in ["en-US", "fr", ""] {
+            assert_eq!(super::rotulos(en).arquivo, "File", "{en}");
+        }
+    }
+
     #[test]
     fn diff_valores_compara_o_cru() {
         // O comando precisa de AppHandle/State: confere-se na fonte que ele entrega as ArquivoLinhas
