@@ -92,9 +92,52 @@ pub enum Par {
     Grande,
 }
 
+/// Um lado do diff: `cru` (o arquivo no disco) é o que se compara; `ver` (a cópia mascarada,
+/// mesmo comprimento e mesmas posições, ver `mascara`) é de onde saem as prévias. Assim um
+/// segredo trocado aparece como alterado sem mostrar o valor.
+#[derive(Debug, Clone, Copy)]
+pub struct Lado<'a> {
+    pub cru: &'a [u8],
+    pub ver: &'a [u8],
+}
+
+/// Sem máscara: compara e mostra os mesmos bytes.
+impl<'a> From<&'a [u8]> for Lado<'a> {
+    fn from(d: &'a [u8]) -> Self {
+        Lado { cru: d, ver: d }
+    }
+}
+
+impl<'a> From<&'a crate::linhas::ArquivoLinhas> for Lado<'a> {
+    fn from(a: &'a crate::linhas::ArquivoLinhas) -> Self {
+        Lado {
+            cru: a.cru(),
+            ver: a.bytes(),
+        }
+    }
+}
+
+impl<'a> Lado<'a> {
+    /// O mesmo trecho de `cru` na cópia mascarada.
+    fn mostrar(&self, parte: &[u8]) -> &'a [u8] {
+        let i = parte.as_ptr() as usize - self.cru.as_ptr() as usize;
+        &self.ver[i..i + parte.len()]
+    }
+
+    /// Prévia mascarada de um trecho de `cru`.
+    fn previa(&self, parte: &[u8]) -> String {
+        previa(&String::from_utf8_lossy(self.mostrar(parte)))
+    }
+}
+
 /// Compara dois registros (bytes crus de uma linha ou de um elemento). Bytes iguais (fora o
 /// espaço nas pontas) são iguais sem ler o JSON, mesmo se inválidos ou grandes.
 pub fn par(a: &[u8], b: &[u8]) -> Par {
+    par_em(a, a.into(), b, b.into())
+}
+
+/// `par` com a prévia tirada de `la`/`lb` (os lados de onde `a`/`b` vêm).
+fn par_em(a: &[u8], la: Lado, b: &[u8], lb: Lado) -> Par {
     let (a, b) = (a.trim_ascii(), b.trim_ascii());
     if a == b {
         return Par::Iguais;
@@ -108,6 +151,8 @@ pub fn par(a: &[u8], b: &[u8]) -> Par {
     let mut c = Coleta {
         v: Vec::new(),
         total: 0,
+        la,
+        lb,
     };
     // `validar` limita a profundidade: a recursão de `andar` tem fundo.
     c.andar(x.trim_ascii(), y.trim_ascii(), ".");
@@ -121,20 +166,22 @@ pub fn par(a: &[u8], b: &[u8]) -> Par {
     }
 }
 
-struct Coleta {
+struct Coleta<'a> {
     v: Vec<Diferenca>,
     total: u64,
+    la: Lado<'a>,
+    lb: Lado<'a>,
 }
 
-impl Coleta {
+impl Coleta<'_> {
     fn anotar(&mut self, caminho: String, acao: Acao, a: Option<&str>, b: Option<&str>) {
         self.total += 1;
         if self.v.len() < MAX_POR_REGISTRO {
             self.v.push(Diferenca {
                 caminho,
                 acao,
-                antes: a.map(previa),
-                depois: b.map(previa),
+                antes: a.map(|a| self.la.previa(a.as_bytes())),
+                depois: b.map(|b| self.lb.previa(b.as_bytes())),
             });
         }
     }
@@ -247,14 +294,16 @@ pub struct DiffArquivos {
 
 /// Compara o registro N de `a` com o registro N de `b` (registros como a inferência os lê:
 /// `entrada` de cada um). Progresso a cada ~4 mil pares, em linhas lidas dos dois lados.
-pub fn arquivos(
-    a: &[u8],
+pub fn arquivos<'a>(
+    lado_a: impl Into<Lado<'a>>,
     ea: Entrada,
-    b: &[u8],
+    lado_b: impl Into<Lado<'a>>,
     eb: Entrada,
     cancelar: &AtomicBool,
     mut ao_progresso: impl FnMut(Progresso),
 ) -> DiffArquivos {
+    let (lado_a, lado_b) = (lado_a.into(), lado_b.into());
+    let (a, b) = (lado_a.cru, lado_b.cru);
     let total = linhas(a) + linhas(b);
     let mut r = DiffArquivos::default();
     thread::scope(|s| {
@@ -296,17 +345,16 @@ pub fn arquivos(
                 }
             };
             let inteiro = |acao, a: Option<&[u8]>, b: Option<&[u8]>| {
-                let p = |v: &[u8]| previa(&String::from_utf8_lossy(v.trim_ascii()));
                 vec![Diferenca {
                     caminho: ".".into(),
                     acao,
-                    antes: a.map(p),
-                    depois: b.map(p),
+                    antes: a.map(|v| lado_a.previa(v.trim_ascii())),
+                    depois: b.map(|v| lado_b.previa(v.trim_ascii())),
                 }]
             };
             match (x, y) {
                 (None, None) => break,
-                (Some((_, x)), Some((_, y))) => match par(x, y) {
+                (Some((_, x)), Some((_, y))) => match par_em(x, lado_a, y, lado_b) {
                     Par::Iguais => r.iguais += 1,
                     Par::Invalido => r.invalidos += 1,
                     Par::Grande => r.grandes += 1,
@@ -419,15 +467,17 @@ fn registro<'a>(
 
 /// Compara o registro `na` de `a` com o `nb` de `b` (base 0), no mesmo formato de `arquivos`:
 /// o que falta de um lado conta como só antes/só depois.
-pub fn registros(
-    a: &[u8],
+pub fn registros<'a>(
+    la: impl Into<Lado<'a>>,
     ea: Entrada,
     na: u64,
-    b: &[u8],
+    lb: impl Into<Lado<'a>>,
     eb: Entrada,
     nb: u64,
     cancelar: &AtomicBool,
 ) -> DiffArquivos {
+    let (la, lb) = (la.into(), lb.into());
+    let (a, b) = (la.cru, lb.cru);
     let (x, y) = (registro(a, ea, na, cancelar), registro(b, eb, nb, cancelar));
     let mut r = DiffArquivos {
         registros_antes: u64::from(x.is_some()),
@@ -435,10 +485,10 @@ pub fn registros(
         cancelado: cancelar.load(Relaxed),
         ..DiffArquivos::default()
     };
-    let inteiro = |v: &[u8]| Some(previa(&String::from_utf8_lossy(v.trim_ascii())));
+    let inteiro = |l: &Lado, v: &[u8]| Some(l.previa(v.trim_ascii()));
     let (total, diferencas) = match (x, y) {
         (None, None) => return r,
-        (Some((_, x)), Some((_, y))) => match par(x, y) {
+        (Some((_, x)), Some((_, y))) => match par_em(x, la, y, lb) {
             Par::Iguais => {
                 r.iguais = 1;
                 return r;
@@ -464,7 +514,7 @@ pub fn registros(
                 vec![Diferenca {
                     caminho: ".".into(),
                     acao: Acao::Removido,
-                    antes: inteiro(x),
+                    antes: inteiro(&la, x),
                     depois: None,
                 }],
             )
@@ -477,7 +527,7 @@ pub fn registros(
                     caminho: ".".into(),
                     acao: Acao::Adicionado,
                     antes: None,
-                    depois: inteiro(y),
+                    depois: inteiro(&lb, y),
                 }],
             )
         }
@@ -633,6 +683,54 @@ mod testes {
             &nada,
         );
         assert_eq!((r.grandes, r.diferentes, r.guardados.len()), (1, 0, 0));
+    }
+
+    /// Compara o cru e mostra o mascarado: segredo trocado é diferença, sem vazar o valor.
+    #[test]
+    fn compara_cru_mostra_mascarado() {
+        let (ca, va) = ("{\"t\":\"abc\",\"n\":1}\n", "{\"t\":\"***\",\"n\":1}\n");
+        let (cb, vb) = ("{\"t\":\"xyz\",\"n\":1}\n", "{\"t\":\"***\",\"n\":1}\n");
+        let lado = |c: &'static str, v: &'static str| Lado {
+            cru: c.as_bytes(),
+            ver: v.as_bytes(),
+        };
+        let nada = AtomicBool::new(false);
+        let r = arquivos(
+            lado(ca, va),
+            Entrada::Jsonl,
+            lado(cb, vb),
+            Entrada::Jsonl,
+            &nada,
+            |_| {},
+        );
+        let s = registros(
+            lado(ca, va),
+            Entrada::Jsonl,
+            0,
+            lado(cb, vb),
+            Entrada::Jsonl,
+            0,
+            &nada,
+        );
+        for r in [r, s] {
+            assert_eq!((r.iguais, r.diferentes), (0, 1));
+            let d = &r.guardados[0].diferencas;
+            assert_eq!(d.len(), 1);
+            assert_eq!(d[0].to_string(), "alterado    .t  \"***\" → \"***\"");
+        }
+        // Registro só de um lado: a prévia inteira também sai mascarada.
+        let r = arquivos(
+            lado(ca, va),
+            Entrada::Jsonl,
+            b"".as_slice(),
+            Entrada::Jsonl,
+            &nada,
+            |_| {},
+        );
+        assert_eq!(
+            r.guardados[0].diferencas[0].antes.as_deref(),
+            Some("{\"t\":\"***\",\"n\":1}")
+        );
     }
 
     #[test]

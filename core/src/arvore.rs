@@ -647,12 +647,15 @@ pub(crate) fn previa(raw: &str) -> String {
 pub(crate) fn validar(bytes: &[u8]) -> Result<&str, ErroLinha> {
     let erro = |byte, motivo| ErroLinha { byte, motivo };
     let texto = std::str::from_utf8(bytes).map_err(|e| erro(e.valid_up_to(), Motivo::Utf8))?;
+    // O sonic-rs aceita `\u` sem 4 dígitos hexa e engole os 4 bytes seguintes (até `\"`): aí
+    // `formatar` e `passa_da_profundidade`, que leem a string do jeito certo, divergem dele.
+    if let Some(pos) = escape_u_invalido(bytes) {
+        return Err(erro(pos, Motivo::Unicode));
+    }
     if let Some(pos) = passa_da_profundidade(bytes) {
         return Err(erro(pos, Motivo::Profundidade));
     }
     // IgnoredAny no sonic-rs valida o valor inteiro e o que vem depois dele.
-    // shortcut: não confere os dígitos de `\uXXXX` (ex.: `"\uZZZZ"` passa); validar com
-    // `sonic_rs::Value` se isso aparecer em arquivo real.
     sonic_rs::from_str::<serde::de::IgnoredAny>(texto).map_err(|e| do_sonic(&e))?;
     Ok(texto)
 }
@@ -704,6 +707,27 @@ fn do_sonic(e: &sonic_rs::Error) -> ErroLinha {
         byte: e.offset(),
         motivo,
     }
+}
+
+/// Byte do primeiro `\u` sem 4 dígitos hexa logo depois. Barra invertida só é válida dentro de
+/// texto, e lá vem sempre em par com o caractere escapado: basta pular de par em par.
+fn escape_u_invalido(bytes: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while let Some(p) = memchr::memchr(b'\\', &bytes[i..]) {
+        let j = i + p;
+        if bytes.get(j + 1) == Some(&b'u')
+            && !bytes
+                .get(j + 2..j + 6)
+                .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
+        {
+            return Some(j);
+        }
+        i = j + 2;
+        if i >= bytes.len() {
+            break;
+        }
+    }
+    None
 }
 
 /// Primeiro byte em que o aninhamento passa de `MAX_PROFUNDIDADE`, ignorando o que está em texto.
@@ -1000,6 +1024,22 @@ mod testes {
                 s("", ".[\"\"]", "5"),
             ]
         );
+    }
+
+    #[test]
+    fn escape_u_sem_4_hexa_e_erro_sem_panic_nem_burlar_profundidade() {
+        let erro = |l: &str| validar(l.as_bytes()).err().map(|e| e.motivo);
+        assert_eq!(erro(r#"{"k":"\uABC\"}"#), Some(Motivo::Unicode));
+        assert_eq!(erro(r#""\uZZZZ""#), Some(Motivo::Unicode));
+        assert_eq!(erro(r#""\u12""#), Some(Motivo::Unicode));
+        assert_eq!(erro(r#""\\u""#), None); // `\\` seguido de `u` é só a letra
+        assert_eq!(erro(r#""\u00e9\n""#), None);
+        let n = 5000;
+        let burla = format!("[\"\\uABC\\\",{}1{}]", "[".repeat(n), "]".repeat(n));
+        assert!(validar(burla.as_bytes()).is_err());
+        // Antes: a árvore dava a linha como válida e `formatado` estourava o índice.
+        let a = arvore("{\"k\":\"\\uABC\\\"}\n");
+        assert_eq!(a.janela(0, 1)[0].tipo, Tipo::Erro);
     }
 
     #[test]

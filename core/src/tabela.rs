@@ -290,9 +290,11 @@ impl Tabela {
                 l.erro = arvore::validar(self.arquivo.cru_de(bytes))
                     .err()
                     .or(Some(e));
-                l.previa = Some(
-                    String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_PREVIA)]).into_owned(),
-                );
+                // Folga de 4 bytes: o caractere partido no corte fica além de `MAX_PREVIA` e
+                // `previa` o descarta (sem U+FFFD espúrio), marcando o corte com "…".
+                l.previa = Some(arvore::previa(&String::from_utf8_lossy(
+                    &bytes[..bytes.len().min(MAX_PREVIA + 4)],
+                )));
                 return l;
             }
         };
@@ -746,6 +748,16 @@ mod testes {
         assert_eq!(j[0].previa.as_deref(), Some("{\"a\":tru}"));
         assert_eq!(celulas(&j[1]), ["3"]);
         assert!(t.janela(None, None, 9, 5, &[0]).is_empty());
+    }
+
+    #[test]
+    fn previa_de_linha_invalida_nao_parte_caractere() {
+        let linha = format!("{{\"a\":tru{}é{}}}\n", "x".repeat(191), "y".repeat(50));
+        assert_eq!(linha.find('é'), Some(200 - 1));
+        let t = tabela(format!("{{\"a\":1}}\n{linha}").as_bytes()).unwrap();
+        let p = t.janela(None, None, 1, 1, &[0])[0].previa.clone().unwrap();
+        assert!(!p.contains('\u{fffd}'), "{p:?}");
+        assert!(p.ends_with('…'), "{p:?}");
     }
 
     #[test]

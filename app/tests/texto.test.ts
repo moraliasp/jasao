@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { escAtributo, indiceDe, semInvisiveis, linhaHtml, type Marca, marcado, partir, resumir, visivel } from "../src/texto.ts";
+import { aposSpan, escAtributo, indiceDe, semInvisiveis, linhaHtml, type Marca, marcado, partir, resumir, visivel } from "../src/texto.ts";
 
 test("partir sem marca devolve o token inteiro", () => {
   assert.deepEqual(partir('"abc"', 5, [[0, 2, false]]), [['"abc"', 5, 0]]);
@@ -121,4 +121,17 @@ test("semInvisiveis troca cada invisível pelo código e não escapa nada (vai p
   assert.equal(semInvisiveis("fatura\u202eldt.jsonl"), "fatura<U+202E>ldt.jsonl");
   assert.equal(semInvisiveis("a\u200bb & <c>"), "a<U+200B>b & <c>");
   assert.doesNotMatch(semInvisiveis("x\u2066\u2069\ufeff"), /[\u2066\u2069\ufeff]/);
+});
+
+test("aposSpan: `$` do nome do arquivo não vira padrão do replace", () => {
+  const nome = "<b>a$&b$1$$.json</b> · ";
+  assert.equal(aposSpan("ok <span>3 linhas</span>", nome), `ok <span>${nome}3 linhas</span>`);
+  assert.equal(aposSpan("sem marcador", nome), "sem marcador");
+});
+
+test("exportar.ts monta o status com aposSpan, não com replace de string", () => {
+  // Sem DOM no node: o call site é conferido na fonte (o bug era o `replace` com string no lugar do helper).
+  const fonte = readFileSync(new URL("../src/exportar.ts", import.meta.url), "utf8");
+  assert.match(fonte, /statusEl\.innerHTML = aposSpan\(msg, sobre\);/);
+  assert.doesNotMatch(fonte, /\.replace\(\s*["'`]<span>/);
 });

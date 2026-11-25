@@ -178,7 +178,8 @@ fn versao(base: &Path, e: &fs::DirEntry, nome: &str) -> Option<Achado> {
 
 /// A primeira data do nome, em ms desde 1970 (UTC): `AAAA-MM-DD`, `AAAA_MM_DD`, `AAAA.MM.DD` ou
 /// `AAAAMMDD`, entre 1970 e 2100, com hora opcional (`T`, `_`, `-` ou espaço, e então `HH`,
-/// `HHMM`, `HHMMSS` ou `HH:MM[:SS]`/`HH-MM[-SS]`). Componentes conferidos: `2024-02-30` não vale.
+/// `HHMM`, `HHMMSS` ou `HH:MM[:SS]`/`HH-MM[-SS]`, e fuso `Z`/`±HH:MM`/`±HHMM` opcional depois
+/// da hora). Componentes conferidos: `2024-02-30` não vale.
 /// Dígito colado antes ou depois não vale (id ou EAN não vira data); sufixo numérico depois de
 /// `_` ou `-` vale, e então a data fica sem hora (`2024-01-01_001`).
 pub fn data_no_nome(nome: &str) -> Option<i64> {
@@ -234,6 +235,12 @@ fn data_em(b: &[u8]) -> Option<i64> {
         return None;
     }
     let (seg, depois) = hora(&b[fim..]);
+    // Fuso só depois de uma hora lida.
+    let (seg, depois) = if depois.len() < b.len() - fim {
+        fuso(seg, depois)
+    } else {
+        (seg, depois)
+    };
     let seg = if !depois.first().is_some_and(u8::is_ascii_digit) {
         seg
     } else if matches!(b.get(fim), Some(b'_' | b'-')) {
@@ -257,8 +264,18 @@ fn hora(b: &[u8]) -> (i64, &[u8]) {
     };
     let mut p = 2;
     let mut partes = [h, 0, 0];
+    // O separador dos minutos vale para os segundos: em `10:00-03:00` o `-03:00` é fuso, não
+    // segundos (`10-00-03` continua 10:00:03).
+    let mut sep = None;
     for parte in partes.iter_mut().skip(1) {
-        let s = usize::from(matches!(r.get(p), Some(b':' | b'-')));
+        let c = match r.get(p) {
+            Some(&c @ (b':' | b'-')) => c,
+            _ => 0,
+        };
+        if *sep.get_or_insert(c) != c {
+            break;
+        }
+        let s = usize::from(c != 0);
         match num(&r[(p + s).min(r.len())..], 2).filter(|m| *m < 60) {
             Some(m) => {
                 *parte = m;
@@ -269,6 +286,28 @@ fn hora(b: &[u8]) -> (i64, &[u8]) {
     }
     let [h, m, s] = partes.map(i64::from);
     (h * 3600 + m * 60 + s, &r[p..])
+}
+
+/// `Z` ou `±HH:MM`/`±HHMM` logo depois da hora: leva os segundos para UTC. Sem fuso, a hora
+/// fica como está (tratada como UTC).
+fn fuso(seg: i64, b: &[u8]) -> (i64, &[u8]) {
+    match b.first() {
+        Some(b'Z' | b'z') => (seg, &b[1..]),
+        Some(&c @ (b'+' | b'-')) => {
+            let r = &b[1..];
+            let s = usize::from(r.get(2) == Some(&b':'));
+            let h = num(r, 2).filter(|h| *h < 24);
+            let m = num(&r[(2 + s).min(r.len())..], 2).filter(|m| *m < 60);
+            match (h, m) {
+                (Some(h), Some(m)) => {
+                    let o = i64::from(h * 3600 + m * 60);
+                    (if c == b'-' { seg + o } else { seg - o }, &r[4 + s..])
+                }
+                _ => (seg, b),
+            }
+        }
+        _ => (seg, b),
+    }
 }
 
 /// Dias de 1970-01-01 até a data (algoritmo de Howard Hinnant, `days_from_civil`).
@@ -513,6 +552,20 @@ mod testes {
         assert_eq!(d("export-2024-01-01_001.jsonl"), Some(1_704_067_200));
         assert_eq!(d("export-20240101-7.jsonl"), Some(1_704_067_200));
         assert_eq!(d("2024-01-01-12345.json"), Some(1_704_067_200));
+        // Fuso depois da hora vai para UTC: 10:00 em -03:00 é 13:00Z, depois de 12:00Z.
+        let t = 1_704_067_200;
+        assert_eq!(
+            d("dump-2024-01-01T10:00:00-03:00.json"),
+            Some(t + 13 * 3600)
+        );
+        assert_eq!(d("dump-2024-01-01T12:00:00Z.json"), Some(t + 12 * 3600));
+        assert_eq!(d("dump-2024-01-01T10:00-03:00.json"), Some(t + 13 * 3600));
+        assert_eq!(d("dump-20240101T100000-0300.json"), Some(t + 13 * 3600));
+        assert_eq!(
+            d("dump-2024-01-01T10:00:00+05:30.json"),
+            Some(t + 4 * 3600 + 1800)
+        );
+        assert_eq!(d("dump-2024-01-01T10-00-03.json"), Some(t + 10 * 3600 + 3));
         assert_eq!(d("2024-01-01001.json"), None);
     }
 
