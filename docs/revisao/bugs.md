@@ -6,6 +6,7 @@ Escopo: `core/src/`, `cli/src/main.rs`, `app/src-tauri/src/`, `app/src/*.ts`. Co
 
 | severidade | arquivo:linha | cenário | status |
 |---|---|---|---|
+| alta | core/src/valores.rs (`par`, `arquivos`, `registros`); cli `diff_valores`; app/src-tauri/src/lib.rs:1656 | `diff --valores` comparava os bytes já mascarados: um segredo trocado saía como "iguais" com rc=0, mesmo com `--falha-em qualquer`. Agora compara o cru e mostra a prévia mascarada (`valores::Lado`). O diff passa a revelar *que* o segredo mudou, nunca o valor. Testes: `compara_cru_mostra_mascarado` (núcleo) e `diff_valores_segredo_trocado_e_diferenca_mascarada` (CLI, fail→pass: rc 0 → 1) | corrigido |
 | alta | core/src/arvore.rs:650 | `\u` sem 4 hexadecimais (`"\uABC\""`, `\uZZZZ`, `\u12`) passava na validação e a linha virava "válida". Também furava o limite de profundidade, porque a varredura pulava o escape errado. Teste: `escape_u_sem_4_hexa_e_erro_sem_panic_nem_burlar_profundidade` | corrigido |
 | média | cli/src/main.rs:292, 852 | `jasao transformar x -o -` lia o stdin e gravava a saída no temporário do stdin. Agora o `-` depois de `-o`/`--destino` não conta como stdin, e `-o -` dá erro de uso. Teste: `transformar_com_destino_traco_nao_le_stdin` | corrigido |
 | baixa | cli/src/main.rs:353 | `CURL https://…` era tratado como remoto e depois falhava com a mensagem enganosa "a URL precisa começar com https://". `remoto()` agora aceita só o que `Pedido::interpretar` aceita. Teste: `remoto_reconhece_so_o_que_interpretar_aceita` | corrigido |
@@ -20,7 +21,6 @@ Escopo: `core/src/`, `cli/src/main.rs`, `app/src-tauri/src/`, `app/src/*.ts`. Co
 
 | severidade | arquivo:linha | cenário | status |
 |---|---|---|---|
-| alta | core/src/valores.rs:97; cli `diff_valores`; app/src-tauri/src/lib.rs:1656 | `diff --valores` compara os bytes já mascarados: um segredo rotacionado sai como "iguais" com rc=0, mesmo com `--falha-em qualquer`. Correção proposta: comparar os bytes crus e exibir os mascarados, mas o vazamento por canal lateral (o diff passa a revelar que mudou) é decisão de produto | confirmado, não corrigido |
 | média | core/src/estrutura.rs:767 | `chave_de_segredo` não pega chave concatenada (`ACCESSTOKEN`, `newpassword`). Alargar a heurística muda o que é mascarado | confirmado, não corrigido |
 | média | core/src/mascara.rs:37 | CPF ou cartão guardado como número, sob chave neutra, não é mascarado | confirmado, não corrigido |
 | média | cli/src/main.rs (`supervisionar`, ~706) | No SIGTERM do pai, o filho `jq` fica órfão e sem prazo. A correção (grupo de processos ou handler de sinal) não é mínima | confirmado, não corrigido |

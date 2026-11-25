@@ -1650,7 +1650,8 @@ fn diff_valores<R: Runtime>(
                 emitir(&app, "diff_valores", antes, a);
             }
         };
-        let (a, b) = (fa.bytes(), fb.bytes());
+        // Compara o cru (segredo trocado é diferença), mostra o mascarado.
+        let (a, b) = (&*fa, &*fb);
         let r = match registros {
             Some([na, nb]) => {
                 nucleo::valores::registros(a, ia.entrada, na, b, ib.entrada, nb, &cancelar)

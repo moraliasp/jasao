@@ -1507,10 +1507,11 @@ fn diff_valores(
     use nucleo::valores::{self, MAX_REGISTROS};
     let nada = AtomicBool::new(false);
     let (da, db) = (a.bytes(), b.bytes());
+    // Compara o cru (segredo trocado é diferença), mostra o mascarado.
     let r = valores::arquivos(
-        da,
+        a,
         entrada_provavel(da),
-        db,
+        b,
         entrada_provavel(db),
         &nada,
         |_| {},
@@ -1938,6 +1939,31 @@ mod testes {
         assert!(!rodar(pb, pc, false, FalhaEm::Quebra).1);
         assert!(rodar(pb, pc, false, FalhaEm::Qualquer).1);
         assert!(!rodar(pa, pb, false, FalhaEm::Nunca).1);
+    }
+
+    /// Segredo trocado é diferença (rc 1 com `--falha-em qualquer`), mas a saída só mostra o
+    /// valor mascarado.
+    #[test]
+    fn diff_valores_segredo_trocado_e_diferenca_mascarada() {
+        let a = Temporario::novo("dv-sa", "{\"senha\":\"velha123\"}\n");
+        let b = Temporario::novo("dv-sb", "{\"senha\":\"nova4567\"}\n");
+        let mut t = Terminal {
+            out: Vec::new(),
+            neutralizar: true,
+        };
+        let op = OpcoesDiff {
+            antes: a.0.to_str().unwrap(),
+            depois: b.0.to_str().unwrap(),
+            json: false,
+            falha_em: FalhaEm::Qualquer,
+            valores: true,
+        };
+        assert_eq!(diff(op, &mut t).unwrap(), 1);
+        let texto = String::from_utf8(t.out).unwrap();
+        assert_eq!(
+            texto,
+            "registro 1 (linha 1 → 1)\n  alterado    .senha  \"********\" → \"********\"\n"
+        );
     }
 
     #[test]
