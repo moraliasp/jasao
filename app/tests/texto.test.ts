@@ -128,3 +128,10 @@ test("aposSpan: `$` do nome do arquivo não vira padrão do replace", () => {
   assert.equal(aposSpan("ok <span>3 linhas</span>", nome), `ok <span>${nome}3 linhas</span>`);
   assert.equal(aposSpan("sem marcador", nome), "sem marcador");
 });
+
+test("exportar.ts monta o status com aposSpan, não com replace de string", () => {
+  // Sem DOM no node: o call site é conferido na fonte (o bug era o `replace` com string no lugar do helper).
+  const fonte = readFileSync(new URL("../src/exportar.ts", import.meta.url), "utf8");
+  assert.match(fonte, /statusEl\.innerHTML = aposSpan\(msg, sobre\);/);
+  assert.doesNotMatch(fonte, /\.replace\(\s*["'`]<span>/);
+});

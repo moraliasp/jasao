@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import { eventoVale, porGeracao } from "../src/geracao.ts";
 
 type Ev = { geracao: number; fim: boolean };
@@ -48,4 +49,10 @@ test("consulta: evento de consulta cancelada não vale, nem o `fim` emitido junt
   assert.equal(eventoVale({ ...e, rodando: false }, 2), false); // cancelada
   assert.equal(eventoVale({ ...e, rodando: false }, 3), false);
   assert.equal(eventoVale(undefined, 2), false);
+});
+
+test("consulta.ts filtra o evento de consulta com eventoVale", () => {
+  // Sem Tauri no node: o call site é conferido na fonte (o bug era o guard inline sem `rodando`).
+  const fonte = readFileSync(new URL("../src/consulta.ts", import.meta.url), "utf8");
+  assert.match(fonte, /const e = estados\.get\(p\.id\);\s*if \(!e \|\| !eventoVale\(e, p\.geracao\)\) return;/);
 });
