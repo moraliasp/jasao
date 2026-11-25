@@ -1,6 +1,8 @@
 //! Comandos (o arquivo pode ser JSONL cru, gzip ou zstd). Segredos (senha, token, cpf, cartão…)
 //! saem mascarados em todo comando; `--sem-mascara`, em qualquer posição, mostra como está no
-//! arquivo (ver `nucleo::mascara`):
+//! arquivo (ver `nucleo::mascara`). No lugar de `<arquivo>` vale uma URL `https://…` ou um
+//! comando cURL colado (`"curl -H 'Authorization: …' https://…"`; só GET/POST, -H, -d, -u e
+//! --compressed): baixa para o cache e abre dali. `http://` só com `--http` (ver `nucleo::url`):
 //!   linhas <arquivo>                      conta as linhas e mostra o tempo do índice
 //!   janela <arquivo> <inicio> <quantidade> imprime as linhas cruas pedidas
 //!   buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]
@@ -90,7 +92,8 @@ use nucleo::erros::{self, OpcoesErros};
 use nucleo::transformar::{Fonte, Mascara, Saida, Transformacao};
 use nucleo::{ArquivoLinhas, Busca, Opcoes};
 
-const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra; `-` no lugar do arquivo lê stdin, uma vez; arquivo chamado `-`: ./-):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
+const USO: &str = "uso (segredos saem mascarados; --sem-mascara mostra; `-` no lugar do arquivo lê stdin, uma vez; arquivo chamado `-`: ./-;\n\
+                   <arquivo> pode ser uma URL https:// ou um comando cURL entre aspas; --http aceita http://):\n  linhas <arquivo>\n  janela <arquivo> <inicio> <quantidade>\n  \
                    buscar <arquivo> <padrão> [--regex] [--ignorar-caixa] [--max N]\n  \
                    jq|consultar <filtro> <arquivo> [--documento] [--tempo-max SEG] [--saida jsonl|csv]\n\
                    \x20     [--max-resultados N] [--max-mb N] [--max-memoria-mb N] [--anonimizar]\n  \
@@ -124,6 +127,11 @@ fn main() -> ExitCode {
         args.remove(i);
         SEM_MASCARA.store(true, Relaxed);
     }
+    if let Some(i) = args.iter().position(|a| *a == "--http") {
+        args.remove(i);
+        HTTP.store(true, Relaxed);
+    }
+    let _baixados = Baixados;
     // Vive até o fim do `main`: o `Drop` apaga o temporário, inclusive em erro.
     let entrada = match ler_stdin(&args) {
         Ok(t) => t,
@@ -334,7 +342,83 @@ fn exibido(arquivo: &str) -> &str {
 /// `--sem-mascara`: abre sem a máscara de segredos.
 static SEM_MASCARA: AtomicBool = AtomicBool::new(false);
 
+/// `--http`: aceita URL `http://` (sem cifra), com aviso no stderr.
+static HTTP: AtomicBool = AtomicBool::new(false);
+
+/// URL (`https://…`) ou comando cURL no lugar do arquivo: baixa para o cache (ver `nucleo::url`).
+fn remoto(arquivo: &str) -> bool {
+    let a = arquivo.trim_start();
+    // Os mesmos começos de cURL que `Pedido::interpretar` aceita.
+    ["https://", "http://", "curl ", "curl\t", "curl\\"]
+        .iter()
+        .any(|p| a.len() >= p.len() && a[..p.len()].eq_ignore_ascii_case(p))
+}
+
+/// Temporários dos downloads; vivem até o fim do `main` (ver `Baixados`).
+static BAIXADOS: std::sync::Mutex<Vec<nucleo::entrada::Temporario>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Solta (e assim apaga) os downloads no fim do `main`, inclusive em erro: estático não roda `Drop`.
+struct Baixados;
+
+impl Drop for Baixados {
+    fn drop(&mut self) {
+        BAIXADOS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+fn baixar(entrada: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let pedido = nucleo::url::Pedido::interpretar(entrada)?;
+    nucleo::entrada::apagar_no_sinal();
+    if pedido.inseguro() && HTTP.load(Relaxed) {
+        eprintln!("aviso: http:// não é cifrado; qualquer um no caminho lê e altera o conteúdo");
+    }
+    let mostrou = std::cell::Cell::new(false);
+    let progresso = |lidos: u64, _total: u64| {
+        mostrou.set(true);
+        eprint!("\rbaixando… {} MiB", lidos >> 20);
+    };
+    let op = nucleo::url::Opcoes {
+        permitir_http: HTTP.load(Relaxed),
+        progresso: Some(&progresso),
+        ..nucleo::url::Opcoes::default()
+    };
+    let r = nucleo::url::baixar(&pedido, &op);
+    if mostrou.get() {
+        eprintln!();
+    }
+    let r = r.map_err(|e| {
+        if e.to_string() == nucleo::url::ERRO_HTTP {
+            format!("{e} (use --http)")
+        } else {
+            e.to_string()
+        }
+    })?;
+    let caminho = r.caminho().to_string_lossy().into_owned();
+    BAIXADOS.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+    Ok(caminho)
+}
+
+/// Como a origem aparece (laudo, mensagens): a URL sem consulta, credencial nem cabeçalho;
+/// o caminho, se for arquivo. Nunca a entrada crua de um cURL ou URL.
+fn origem(arquivo: &str) -> String {
+    if remoto(arquivo) {
+        nucleo::url::Pedido::interpretar(arquivo).map_or_else(|_| "(URL)".into(), |p| p.exibir())
+    } else {
+        exibido(arquivo).to_owned()
+    }
+}
+
 fn abrir(arquivo: &str) -> Result<ArquivoLinhas, Box<dyn std::error::Error>> {
+    // A URL pode ter credencial: a mensagem de erro do download já vem limpa e não cita a entrada.
+    let nome = origem(arquivo);
+    let baixado;
+    let arquivo = if remoto(arquivo) {
+        baixado = baixar(arquivo)?;
+        baixado.as_str()
+    } else {
+        arquivo
+    };
     // Progresso só aparece para compactado (o núcleo só chama ao descompactar), em stderr.
     let mostrou = std::cell::Cell::new(false);
     let progresso = |lidos: u64, total: u64| {
@@ -351,7 +435,7 @@ fn abrir(arquivo: &str) -> Result<ArquivoLinhas, Box<dyn std::error::Error>> {
     if mostrou.get() {
         eprintln!();
     }
-    r.map_err(|e| format!("{}: {e}", exibido(arquivo)).into())
+    r.map_err(|e| format!("{nome}: {e}").into())
 }
 
 /// `laudo <arquivo> [--json] [--teto SEG]`, em qualquer ordem.
@@ -375,7 +459,7 @@ fn laudo(arquivo: &str, json: bool, teto: Duration, out: &mut Terminal<impl Writ
     if json {
         writeln!(out, "{}", serde_json::to_string(&l)?)?;
     } else {
-        write!(out, "{}", nucleo::laudo::markdown(&l, exibido(arquivo)))?;
+        write!(out, "{}", nucleo::laudo::markdown(&l, &origem(arquivo)))?;
     }
     Ok(out.flush()?)
 }
@@ -622,6 +706,7 @@ fn supervisionar(op: &OpcoesConsulta, args: &[&str]) -> ExitCode {
         std::process::Command::new(exe)
             .args(args)
             .args(SEM_MASCARA.load(Relaxed).then_some("--sem-mascara"))
+            .args(HTTP.load(Relaxed).then_some("--http"))
             .stdin(std::process::Stdio::null())
             .env(VAR_FILHO, "1")
             .spawn()

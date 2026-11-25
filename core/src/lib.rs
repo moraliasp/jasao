@@ -25,6 +25,7 @@ pub mod resumo;
 pub mod tabela;
 pub mod texto;
 pub mod transformar;
+pub mod url;
 pub mod validar;
 pub mod valores;
 pub mod vivo;

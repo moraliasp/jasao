@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+base64 = "0.22"
+percent-encoding = "2"
 bson = { version = "3.1", features = ["serde", "serde_json-1"] }
 ctrlc = { version = "3.5.3", features = ["termination"] }
 flate2 = "1.1.11"
@@ -19,17 +21,22 @@ memchr = "2.8"
 memmap2 = "0.9"
 rayon = "1"
 regex = "1"
+# Só para reconhecer o erro de TLS que o ureq devolve (é o mesmo crate que ele já usa).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sonic-rs = "0.5.12"
 tempfile = "3"
 toml = { version = "1.2", default-features = false, features = ["parse", "preserve_order", "serde", "std"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+url = "2"
 yaml-rust2 = "0.13"
 zstd = "0.14.4"
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 simd-json = "0.19.0"
 
