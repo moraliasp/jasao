@@ -33,3 +33,31 @@ test("contagemArquivo: linhas enquanto infere, registros quando acaba", () => {
   assert.equal(contagemArquivo(1, 3, fmt), `1 ${t.registros[0]}`);
   assert.equal(contagemArquivo(0, 3, fmt), `0 ${t.registros[1]}`, "inferência acabada com zero registros não volta para linhas");
 });
+
+test("motivos de schema: cada código vira frase PT e EN com os parâmetros; desconhecido cai no texto", async () => {
+  const { en, pt } = await import("../src/i18n.ts");
+  const casos: [string, string, string[]][] = [
+    ["tipo|/a|integer", "/a: ", ["inteiro", "integer"]],
+    ["tipo||integer,null", "", ["inteiro ou nulo", "integer or null"]],
+    ["obrigatoria||nome", "", ["nome", "nome"]],
+    ["enum||[\"x\",\"y\"]", "", ['["x","y"]', '["x","y"]']],
+    ["const||\"x\"", "", ['"x"', '"x"']],
+    ["minimo||5", "", ["5", "5"]],
+    ["maximo||5", "", ["5", "5"]],
+    ["minimo_exclusivo||5", "", ["5", "5"]],
+    ["maximo_exclusivo||5", "", ["5", "5"]],
+    ["tamanho_minimo||9", "", ["9", "9"]],
+    ["tamanho_maximo||2", "", ["2", "2"]],
+    ["pattern||^a%7Cb$", "", ["^a|b$", "^a|b$"]],
+    ["formato||email", "", ["email", "email"]],
+    ["propriedade_extra||x", "", ["x", "x"]],
+  ];
+  for (const [c, pre, [p, e]] of casos) {
+    const pf = motivoDoRust(`jasao:schema_${c}`, pt), ef = motivoDoRust(`jasao:schema_${c}`, en);
+    assert.ok(pf.startsWith(pre) && pf.includes(p) && !pf.includes("jasao:") && !pf.includes("%7C"), pf);
+    assert.ok(ef.startsWith(pre) && ef.includes(e) && !ef.includes("jasao:"), ef);
+    assert.notEqual(pf, ef, c);
+  }
+  assert.equal(motivoDoRust("jasao:schema_tipo|/a%7C%25|string", pt), "/a|%: deve ser do tipo texto");
+  assert.equal(motivoDoRust("jasao:schema_novo|/a|x"), "jasao:schema_novo|/a|x");
+});

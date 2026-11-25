@@ -3,7 +3,7 @@
 /** Atalho escrito com ⌘ vira Ctrl (⌥⌘ → Ctrl+Alt+, ⇧⌘ → Ctrl+Shift+) fora do mac. */
 export const tecla = (x: string, mac = /Mac/.test(navigator.userAgent)) =>
   mac ? x : x.replace(/⌥⌘/g, "Ctrl+Alt+").replace(/⇧⌘/g, "Ctrl+Shift+").replace(/⌘/g, "Ctrl+");
-const pt = {
+export const pt = {
   lang: "pt-BR",
   abrir: "Abrir…",
   url: {
@@ -432,6 +432,21 @@ const pt = {
     exportar: "Exportar schema…",
     comparar: "Comparar…",
   },
+  motivosSchema: {
+    tipo: (t: string) => `deve ser do tipo ${t.split(",").map((x: string) => ({ string: "texto", integer: "inteiro", number: "número", boolean: "booleano", array: "lista", object: "objeto", null: "nulo" })[x] ?? x).join(" ou ")}`,
+    obrigatoria: (p: string) => `falta a propriedade obrigatória "${p}"`,
+    enum: (o: string) => `deve ser um destes valores: ${o}`,
+    const: (v: string) => `deve ser exatamente ${v}`,
+    minimo: (n: string) => `deve ser maior ou igual a ${n}`,
+    maximo: (n: string) => `deve ser menor ou igual a ${n}`,
+    minimo_exclusivo: (n: string) => `deve ser maior que ${n}`,
+    maximo_exclusivo: (n: string) => `deve ser menor que ${n}`,
+    tamanho_minimo: (n: string) => `deve ter no mínimo ${n} caracteres`,
+    tamanho_maximo: (n: string) => `deve ter no máximo ${n} caracteres`,
+    pattern: (r: string) => `não bate com o padrão ${r}`,
+    formato: (f: string) => `não está no formato "${f}"`,
+    propriedade_extra: (p: string) => `propriedade não permitida: ${p}`,
+  },
   motivos: {
     utf8: "UTF-8 inválido",
     profundidade: "aninhamento passa do limite de 1.000 níveis; o registro não abre em árvore",
@@ -457,7 +472,7 @@ const pt = {
 
 export type Textos = typeof pt;
 
-const en: Textos = {
+export const en: Textos = {
   lang: "en",
   abrir: "Open…",
   url: {
@@ -881,6 +896,21 @@ const en: Textos = {
     exportar: "Export schema…",
     comparar: "Compare…",
   },
+  motivosSchema: {
+    tipo: (t) => `must be of type ${t.split(",").join(" or ")}`,
+    obrigatoria: (p) => `missing required property "${p}"`,
+    enum: (o) => `must be one of: ${o}`,
+    const: (v) => `must be exactly ${v}`,
+    minimo: (n) => `must be at least ${n}`,
+    maximo: (n) => `must be at most ${n}`,
+    minimo_exclusivo: (n) => `must be greater than ${n}`,
+    maximo_exclusivo: (n) => `must be less than ${n}`,
+    tamanho_minimo: (n) => `must have at least ${n} characters`,
+    tamanho_maximo: (n) => `must have at most ${n} characters`,
+    pattern: (r) => `does not match the pattern ${r}`,
+    formato: (f) => `is not in the "${f}" format`,
+    propriedade_extra: (p) => `property not allowed: ${p}`,
+  },
   motivos: {
     utf8: "invalid UTF-8",
     profundidade: "nesting exceeds the 1,000-level limit; the record does not open as a tree",
@@ -930,6 +960,13 @@ export function erroDoRust(erro: unknown, x: Textos = t): string {
  * validador); o do schema reprovado vem como texto e passa como veio. */
 export function motivoDoRust(motivo: string, x: Textos = t): string {
   if (!motivo.startsWith("jasao:")) return motivo;
+  if (motivo.startsWith("jasao:schema_")) {
+    // `jasao:schema_<tipo>|<caminho>|<parâmetro>…`, campos com `%` e `|` escapados (`validar.rs`).
+    const [cod, onde, ...ps] = motivo.slice(13).split("|").map((c) => c.replace(/%7C|%25/g, (m) => (m === "%7C" ? "|" : "%")));
+    const f = (x.motivosSchema as Record<string, ((...p: string[]) => string) | undefined>)[cod];
+    if (f && ps.length) return onde ? `${onde}: ${f(...ps)}` : f(...ps);
+    return motivo; // tipo sem frase: o código cru, sem quebrar
+  }
   return (x.motivos as Record<string, string>)[motivo.slice(6)] ?? x.motivos.outro;
 }
 
