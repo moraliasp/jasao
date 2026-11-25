@@ -6,71 +6,113 @@
     <title></title>
     <script type="module" src="/src/main.ts"></script>
     <style>
-      /* Tokens do mockup (docs/mockup-json.html), que vêm do Leve. */
+      /* Tokens do mockup aprovado (docs/mockup-nativo.html): fonte e cores de sistema de cada OS.
+         `data-os` (mac/win/linux) vem do navegador em main.ts; os nomes antigos (--bar-*, --page-bg…) são apelidos. */
       :root {
-        --bar-bg: #f6f8fa; --bar-fg: #1f2328; --bar-muted: #656d76; --border: #d0d7de;
-        --page-bg: #ffffff; --accent: #0969da; --hover: rgba(0,0,0,0.06);
+        --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+        --win: #ffffff; --chrome: #f6f6f6; --side: #f5f5f7; --line: rgba(0,0,0,.09); --line-strong: rgba(0,0,0,.14);
+        --fg: #1d1d1f; --fg2: #6e6e73; --fg3: #76767b; --hover: rgba(0,0,0,.05);
+        --accent: #007aff; --sel: rgba(0,122,255,.12); --seg: rgba(0,0,0,.06); --seg-on: #ffffff; --field: rgba(0,0,0,.05);
         --change: #9a6700; --ok: #1a7f37; --del: #cf222e;
         /* Régua do micronavegador: neutro, as 4 variantes mais frequentes e "outros". */
         --rg-neutro: #eaeef2; --rg-1: #1b7c83; --rg-2: #8250df; --rg-3: #bc4c00; --rg-4: #bf3989; --rg-outros: #8c959f;
-        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        --bar-bg: var(--chrome); --bar-fg: var(--fg); --bar-muted: var(--fg2); --border: var(--line-strong); --page-bg: var(--win);
         color-scheme: light;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+        font-family: var(--sans);
       }
       :root[data-theme="dark"] {
-        --bar-bg: #161b22; --bar-fg: #e6edf3; --bar-muted: #8d96a0; --border: #30363d;
-        --page-bg: #0d1117; --accent: #2f81f7; --hover: rgba(255,255,255,0.08);
+        --win: #1e1e1e; --chrome: #2a2a2a; --side: #252525; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.13);
+        --fg: #f5f5f7; --fg2: #a1a1a6; --fg3: #8e8e93; --hover: rgba(255,255,255,.06);
+        --accent: #0a84ff; --sel: rgba(10,132,255,.22); --seg: rgba(255,255,255,.08); --seg-on: #5a5a5c; --field: rgba(255,255,255,.07);
         --change: #d29922; --ok: #3fb950; --del: #f85149;
         --rg-neutro: #21262d; --rg-1: #39c5cf; --rg-2: #a371f7; --rg-3: #f0883e; --rg-4: #db61a2; --rg-outros: #6e7681;
         color-scheme: dark;
       }
+      :root[data-os="win"] { --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; --mono: "Cascadia Mono", Consolas, ui-monospace, monospace; }
+      :root[data-os="win"]:not([data-theme="dark"]) { --chrome: #f3f3f3; --side: #f9f9f9; --accent: #0067c0; --sel: rgba(0,103,192,.10); }
+      :root[data-os="linux"] { --sans: Cantarell, "Noto Sans", Ubuntu, system-ui, sans-serif; --mono: "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace; }
+      :root[data-os="linux"][data-theme="dark"] { --chrome: #303030; --side: #2a2a2a; --accent: #78aeed; --sel: rgba(53,132,228,.30); --seg-on: rgba(255,255,255,.18); }
       * { box-sizing: border-box; }
       html, body { height: 100%; margin: 0; }
-      body { display: flex; flex-direction: column; background: var(--page-bg); color: var(--bar-fg); font-size: 14px; line-height: 1.5; scrollbar-color: var(--border) transparent; }
+      body { display: flex; flex-direction: column; background: var(--page-bg); color: var(--bar-fg); font-size: 13px; line-height: 1.45; -webkit-font-smoothing: antialiased; scrollbar-color: var(--border) transparent; }
       ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
       button, input { font: inherit; color: inherit; }
       svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 
-      .top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; height: 44px; padding: 0 10px; background: var(--bar-bg); border-bottom: 1px solid var(--border); }
-      .top .side { display: flex; align-items: center; gap: 8px; }
+      /* Barra unificada: título e meta, vistas, busca, jq e inspetor. No Mac a janela não tem título (Overlay):
+         os semáforos ficam sobre os 84px da esquerda e a barra arrasta a janela (data-tauri-drag-region). */
+      .top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; flex: none; height: 52px; padding: 0 12px 0 16px; background: var(--chrome); border-bottom: 1px solid var(--line); -webkit-user-select: none; user-select: none; }
+      :root[data-os="mac"] .top { padding-left: 84px; }
+      .top .side { display: flex; align-items: center; gap: 6px; min-width: 0; }
       .top .side.end { justify-content: flex-end; }
-      .top .name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .ttl { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+      .ttl b { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+      .ttl span { overflow: hidden; font-size: 11px; color: var(--fg2); text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      /* Windows e Linux: moldura nativa com o título; a barra fica em 44px só com as vistas, e a meta desce para a status bar. */
+      :root:not([data-os="mac"]) .top { grid-template-columns: 0 1fr auto; height: 44px; padding-left: 8px; }
+      :root:not([data-os="mac"]) .ttl { display: none; }
+      :root:not([data-os="mac"]) .seg { justify-self: start; }
+      :root[data-os="mac"] #mais, :root[data-os="mac"] .so-fora-mac { display: none; }
+      .seg { display: flex; gap: 1px; padding: 2px; border-radius: 7px; background: var(--seg); }
+      .seg button { padding: 5px 11px; border: 0; border-radius: 5px; background: none; color: var(--fg); font: 12px/1 var(--sans); white-space: nowrap; }
+      .seg button[aria-selected="true"] { background: var(--seg-on); box-shadow: 0 .5px 1.5px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.04); font-weight: 500; }
+      :root[data-os="win"] .seg { gap: 2px; padding: 0; background: none; }
+      :root[data-os="win"] .seg button { position: relative; padding: 7px 10px; border-radius: 4px; color: var(--fg2); font-size: 13px; }
+      :root[data-os="win"] .seg button[aria-selected="true"] { background: var(--hover); box-shadow: none; color: var(--fg); font-weight: 600; }
+      :root[data-os="win"] .seg button[aria-selected="true"]::after { content: ""; position: absolute; left: 50%; bottom: 2px; width: 16px; height: 3px; margin-left: -8px; border-radius: 2px; background: var(--accent); }
+      :root[data-os="linux"] .seg { padding: 3px; border-radius: 9px; }
+      :root[data-os="linux"] .seg button { padding: 5px 12px; border-radius: 6px; }
+      :root[data-os="linux"] .seg button[aria-selected="true"] { box-shadow: none; font-weight: 700; }
+      .top .ib { width: 30px; }
+      .top .ib[aria-pressed="true"] { background: var(--sel); color: var(--accent); }
       .ib { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: none; color: var(--bar-muted); cursor: pointer; }
       .ib:hover { background: var(--hover); color: var(--bar-fg); }
-      .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); font-size: 13px; cursor: pointer; white-space: nowrap; }
-      .btn:hover { background: var(--hover); }
+      .btn { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: 0; border-radius: 6px; background: var(--win); box-shadow: 0 0 0 .5px var(--line-strong), 0 .5px 1px rgba(0,0,0,.08); font-size: 12px; cursor: pointer; white-space: nowrap; }
+      .btn:hover { background: color-mix(in srgb, var(--win) 92%, var(--fg)); }
       .btn:active { transform: translateY(1px); }
       .btn:disabled { opacity: .5; cursor: default; }
+      .btn.pri { background: var(--accent); box-shadow: none; color: #fff; }
+      .btn.pri:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+      :root[data-os="win"] .ib, :root[data-os="win"] .btn { border-radius: 4px; }
+      /* Busca: contagem e ↑↓ dentro do campo; Aa e .* aparecem com o foco (ou ligados). */
+      .search { display: flex; align-items: center; gap: 4px; width: 230px; height: 28px; padding: 0 3px 0 8px; border-radius: 7px; background: var(--field); color: var(--fg3); }
+      .search:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), inset 0 0 0 1px var(--accent); }
+      :root[data-os="win"] .search { width: 250px; border-radius: 4px; background: var(--win); box-shadow: inset 0 0 0 1px var(--line-strong); }
+      :root[data-os="linux"] .search { border-radius: 6px; }
+      .search input { flex: 1; min-width: 0; height: 26px; padding: 0; border: 0; background: none; color: var(--fg); font-size: 13px; }
+      .search input::placeholder { color: var(--fg3); }
+      .search input:focus-visible { outline: 0; }
+      .search input::-webkit-search-cancel-button { display: none; }
+      .search .info { overflow: hidden; max-width: 11ch; font-size: 11px; color: var(--fg2); text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .search .info:empty, .search .ib:disabled { display: none; }
+      .search .ib { width: 20px; height: 22px; border-radius: 4px; }
+      .search .alt { display: none; width: 22px; font: 11px/1 var(--mono); }
+      .search:focus-within .alt, .search .alt[aria-pressed="true"] { display: grid; }
+      .alt[aria-pressed="true"] { background: var(--sel); color: var(--accent); }
 
       main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-      .views { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--border); }
-      .views button { padding: 10px 10px 9px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--bar-muted); font-size: 13px; }
-      .views button[aria-selected="true"] { color: var(--bar-fg); font-weight: 600; border-bottom-color: var(--accent); }
-      .pane { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px 24px 16px; }
-      .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 10px; font-size: 13px; }
-      .tools form { display: flex; align-items: center; gap: 6px; color: var(--bar-muted); }
-      .tools input { width: 110px; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); font-variant-numeric: tabular-nums; }
-      .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; font: 12.5px/1.5 var(--mono); color: var(--bar-muted); }
-      .crumbs li + li::before { content: "›"; margin: 0 6px; }
-      .crumbs li:last-child { color: var(--bar-fg); }
-      .tools .acts { margin-left: auto; }
-      /* Barra de busca (mockup: .busca). */
-      .barra { gap: 8px; }
-      .busca { display: flex; align-items: center; gap: 4px; }
-      .busca .campo { display: flex; align-items: center; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); }
-      .busca .campo:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
-      .busca input { width: 240px; height: 26px; padding: 0 10px; border: 0; background: none; font-variant-numeric: normal; }
-      .busca input:focus-visible { outline: 0; }
-      .busca .alt { width: 26px; height: 22px; margin-right: 2px; font: 12px/1 var(--mono); }
-      .busca .alt[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
-      .consulta { flex: 1; min-width: 0; }
-      .consulta .campo { flex: 1; min-width: 160px; max-width: 520px; }
-      .consulta input { width: 100%; font-family: var(--mono); font-size: 12.5px; }
-      .consulta .campo:has(input[aria-invalid="true"]) { border-color: var(--del); }
-      .busca .ib:disabled { opacity: .4; cursor: default; }
-      .busca .info { min-width: 9ch; color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .busca .info.err { color: var(--del); white-space: normal; }
+      .corpo { flex: 1; display: flex; min-height: 0; }
+      .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+      .pane .tree { border: 0; border-radius: 0; }
+      .crumbs { display: flex; align-items: center; min-width: 0; margin: 0; padding: 0; list-style: none; overflow: hidden; font: 11px/1.5 var(--mono); color: var(--fg); white-space: nowrap; }
+      .crumbs li + li::before { content: "›"; margin: 0 5px; color: var(--fg3); }
+      /* Barra do filtro jq: só com ⌘J, o botão do funil ou um filtro ativo. */
+      .scope { flex: none; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--win); font-size: 12px; color: var(--fg2); }
+      .scope .chip { display: flex; flex: 0 1 520px; align-items: center; gap: 2px; min-width: 160px; height: 22px; padding: 0 2px 0 8px; border-radius: 6px; background: var(--sel); color: var(--fg); }
+      .scope .chip:focus-within { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+      .scope .chip:has(input[aria-invalid="true"]) { box-shadow: inset 0 0 0 1px var(--del); }
+      .scope .chip > svg.i { width: 12px; height: 12px; color: var(--fg2); }
+      .scope input { flex: 1; min-width: 0; height: 22px; padding: 0 0 0 4px; border: 0; background: none; color: var(--fg); font: 12px var(--mono); }
+      .scope input:focus-visible { outline: 0; }
+      .scope .ib { width: 20px; height: 20px; border-radius: 4px; }
+      .scope .ib svg.i { width: 12px; height: 12px; }
+      .scope .alt { width: auto; padding: 0 4px; font: 11px/1 var(--mono); }
+      .scope .info { white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .scope .btn { height: 22px; }
+      .scope .lk { margin-left: auto; }
+      .info.err { color: var(--del); }
       .rot180 { transform: rotate(180deg); }
       .ac { background: color-mix(in srgb, var(--change) 28%, transparent); color: inherit; border-radius: 2px; }
       .menu { position: fixed; z-index: 20; min-width: 210px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
@@ -79,7 +121,17 @@
       .menu button:hover, .menu button:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); outline: 0; }
       .menu kbd { color: var(--bar-muted); font: inherit; }
       .ac.at { background: color-mix(in srgb, var(--change) 60%, transparent); box-shadow: 0 0 0 1px var(--change); }
-      .status { color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; } /* rótulo longo de filtro não invade a barra */
+      /* Status bar: caminho, tempo de abertura, avisos da abertura e, à direita, por que a vista foi sugerida. */
+      .sb { flex: none; display: flex; align-items: center; gap: 14px; height: 26px; padding: 0 12px 0 16px; overflow: hidden; border-top: 1px solid var(--line); background: var(--chrome); font-size: 11px; color: var(--fg2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .sb .sp { margin-left: auto; }
+      .sb .btn { height: 20px; padding: 0 8px; font-size: 11px; }
+      .sb .ib { width: 22px; height: 20px; border-radius: 4px; }
+      .sb .ib svg.i { width: 13px; height: 13px; }
+      .sb form { display: flex; align-items: center; gap: 6px; }
+      .sb input { width: 9ch; height: 18px; padding: 0 6px; border: 0; border-radius: 4px; background: var(--field); font-size: 11px; font-variant-numeric: tabular-nums; }
+      .sug { display: inline-flex; align-items: center; gap: 6px; }
+      .sug svg.i { width: 12px; height: 12px; color: var(--accent); }
+      .status { min-width: 0; overflow: hidden; text-overflow: ellipsis; } /* rótulo longo de filtro não invade a barra */
 
       /* Árvore virtualizada: só as linhas visíveis existem no DOM. */
       .tree { position: relative; flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.5 var(--mono); }
@@ -106,7 +158,6 @@
       .row .cp svg { width: 13px; height: 13px; }
       .row:hover .cp { opacity: 1; }
       @media (hover: none) { .row .cp { opacity: 1; } }
-      .views kbd { margin-left: 6px; font: 11px var(--mono); color: var(--bar-muted); font-weight: 400; }
       /* Valores inteligentes: selo na linha e painel do valor selecionado. */
       .smart { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 0 6px; height: 18px; border-radius: 9px; font: 11px var(--mono); color: var(--bar-muted); background: var(--hover); }
       .smart .i { width: 12px; height: 12px; }
@@ -114,7 +165,7 @@
       .lk { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; font: inherit; color: var(--accent); cursor: pointer; }
       .lk:hover span, .lk:focus-visible span { text-decoration: underline; }
       .lk .i { width: 12px; height: 12px; flex: none; }
-      .detalhe { flex: none; max-height: 40%; overflow: auto; margin-top: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.5 var(--mono); }
+      .detalhe { flex: none; max-height: 40%; overflow: auto; padding: 8px 16px; border-top: 1px solid var(--line); font: 12.5px/1.5 var(--mono); }
       .detalhe .rot { font: 600 11px var(--mono); color: var(--bar-muted); text-transform: uppercase; letter-spacing: .04em; margin: 4px 0; }
       .detalhe pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
       .detalhe .lk { word-break: break-all; text-align: left; }
@@ -130,7 +181,7 @@
       .texto .rows { overflow-x: visible; overflow-y: clip; width: max-content; min-width: 100%; }
       .tl { display: flex; height: 20px; line-height: 20px; white-space: pre; cursor: text; }
       .tl[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 7%, transparent); }
-      .tl .nl { position: sticky; left: 0; flex: none; padding-right: 12px; text-align: right; color: var(--bar-muted); background: var(--page-bg); user-select: none; }
+      .tl .nl { position: sticky; left: 0; flex: none; box-sizing: content-box; padding: 0 12px 0 16px; text-align: right; color: var(--bar-muted); background: var(--page-bg); user-select: none; }
       .tl[aria-selected="true"] .nl { color: var(--bar-fg); box-shadow: inset 2px 0 var(--accent); }
       .tl .tx { padding-right: 16px; }
       .tl .k { color: var(--accent); }
@@ -138,14 +189,14 @@
       .tl .n, .tl .l { color: var(--change); }
       .tl .p { color: var(--bar-muted); }
       .tl .hl { background: color-mix(in srgb, var(--accent) 22%, transparent); }
-      .estr .eres { position: sticky; top: 0; margin: 0; padding: 6px 8px; background: var(--page-bg); border-bottom: 1px solid var(--border); color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
+      .estr .eres { position: sticky; top: 0; margin: 0; padding: 6px 16px; background: var(--page-bg); border-bottom: 1px solid var(--border); color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
       .estr .row { gap: 16px; }
       .estr .ec { flex: none; width: 34%; overflow: hidden; text-overflow: ellipsis; }
       .estr .et { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--change); }
       .estr .ep { flex: none; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
       .estr .ep.op { color: var(--bar-fg); }
       .estr .ea { margin-left: 6px; padding: 0 5px; border-radius: 3px; background: color-mix(in srgb, var(--change) 14%, transparent); color: var(--bar-fg); font: 11px/1.6 system-ui, sans-serif; }
-      .eperf { flex: none; width: min(320px, 34%); max-height: none; margin-top: 0; }
+      .eperf { flex: none; width: min(320px, 34%); max-height: none; border-top: 0; border-left: 1px solid var(--line); }
       .eperf p { margin: 2px 0 6px; }
       .eperf .pm { color: var(--bar-muted); font-family: system-ui, sans-serif; text-transform: none; letter-spacing: 0; }
       /* Faixas e valores comuns são botões: filtram a Tabela. */
@@ -162,7 +213,7 @@
       .vista:has(.estr:not([hidden]), .exp:not([hidden])) .regua { display: none; }
       /* Tabela: grade virtual; cabeçalho e colunas fixadas grudam, o resto rola. */
       .tabw { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
-      .tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
+      .tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 6px 16px 0; color: var(--bar-muted); font: 12px/1.5 system-ui, sans-serif; }
       .tocultas { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
       .tocultas .chip, .tfiltro .chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; background: none; color: var(--bar-fg); font: 11.5px var(--mono); overflow: hidden; white-space: nowrap; cursor: pointer; unicode-bidi: isolate; }
       .tfiltro .chip { cursor: default; max-width: 420px; }
@@ -182,6 +233,7 @@
       .grade .tbody .tr:hover > * { background-color: var(--hover); }
       .grade .th, .grade .td { min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 26px; border-right: 1px solid color-mix(in srgb, var(--border) 60%, transparent); background: var(--page-bg); cursor: default; }
       .grade .th { position: relative; display: flex; flex-direction: column; justify-content: center; line-height: 1.35; font-weight: 600; }
+      .grade .tr > :first-child { padding-left: 16px; }
       .grade .th .nm { overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; }
       .grade .th .seta { margin-left: 4px; color: var(--accent); }
       .grade .th .dt { overflow: hidden; text-overflow: ellipsis; color: var(--bar-muted); font: 400 10.5px/1.35 system-ui, sans-serif; }
@@ -206,7 +258,7 @@
       .grade .td.erro .err { flex: none; color: var(--del); }
       .grade .td.erro .cru { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bar-muted); }
       .vista:has(.tabw:not([hidden])) .regua { display: none; }
-            .exp { display: flex; flex-direction: column; padding: 0 12px 12px; font: 13px/1.5 system-ui, sans-serif; }
+            .exp { display: flex; flex-direction: column; padding: 0 16px 12px; font: 13px/1.5 system-ui, sans-serif; }
       .exp .tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; margin: 12px 0 10px; }
       .exp .tools label { display: grid; gap: 4px; font-size: 12px; color: var(--bar-muted); }
       .exp .tools select { height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); color: var(--bar-fg); font-size: 13px; }
@@ -263,9 +315,9 @@
       .vazio { margin: 24px; color: var(--bar-muted); }
 
       /* Micronavegador: régua do arquivo inteiro ao lado das visões. */
-      .vista { flex: 1; display: flex; gap: 8px; min-height: 0; }
+      .vista { flex: 1; display: flex; min-height: 0; }
       .vista > .tree { min-width: 0; }
-      .regua { position: relative; flex: none; width: 44px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--rg-neutro); cursor: pointer; touch-action: none; }
+      .regua { position: relative; flex: none; width: 44px; border-left: 1px solid var(--line); overflow: hidden; background: var(--rg-neutro); cursor: pointer; touch-action: none; }
       .regua canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
       .regua .rc { opacity: 0; }
       .regua .rc.pronta { opacity: 1; }
@@ -280,56 +332,54 @@
       .legenda code { font: 12px var(--mono); color: var(--bar-fg); }
       .legenda ul { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; }
       .legenda li { display: inline-flex; align-items: center; gap: 5px; font: 12px var(--mono); color: var(--bar-fg); }
-      .top .faixa { margin-left: 10px; font-weight: 400; color: var(--bar-muted); font-variant-numeric: tabular-nums; }
 
-      /* Painel de entrada: não modal, ocupa o lugar do conteúdo até escolher um modo. */
-      .painel { flex: 1; overflow: auto; padding: 32px 24px; }
-      .painel > div { max-width: 760px; margin: 0 auto; }
-      .pc { display: flex; align-items: center; gap: 12px; }
-      .pc .pi { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 8px; background: var(--bar-bg); color: var(--accent); flex: none; }
-      .pc .pi svg { width: 20px; height: 20px; }
-      .pc > div { min-width: 0; flex: 1; }
-      .pc h1 { margin: 0; font: 600 15px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .pc p { margin: 0; color: var(--bar-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-      .selo { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: 1px solid var(--border); border-radius: 12px; color: var(--bar-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .selo.fim { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-      .selo svg { width: 13px; height: 13px; }
-      .indic { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 24px 0 28px; }
-      .indic div { padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; }
-      .indic dt { color: var(--bar-muted); font-size: 12px; }
-      .indic dd { margin: 2px 0 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-      .indic .aviso { border-color: color-mix(in srgb, var(--change) 45%, transparent); background: color-mix(in srgb, var(--change) 7%, transparent); }
-      .indic .aviso dd { color: var(--change); }
-      .painel h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
-      .laudo { margin: 0 0 28px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
-      .laudo h3 { margin: 12px 0 4px; font-size: 12px; font-weight: 600; color: var(--bar-muted); }
-      .laudo ul { margin: 0; padding-left: 18px; }
-      .laudo li { margin: 2px 0; }
-      .laudo code { font: 12.5px var(--mono); }
-      .laudo .lk { display: inline; text-align: left; }
-      .laudo .lk:hover, .laudo .lk:focus-visible { text-decoration: underline; }
-      .laudo .pm { margin: 0; color: var(--bar-muted); }
-      .laudo .aviso { margin: 0 0 6px; color: var(--change); }
-      .laudo .passos { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
-      .modos { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-      .modo { position: relative; display: grid; grid-template-columns: auto 1fr; align-content: start; gap: 4px 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--page-bg); text-align: left; cursor: pointer; }
-      .modo:hover { background: var(--hover); }
-      .modo svg { grid-row: span 2; width: 22px; height: 22px; color: var(--bar-muted); }
-      .modo b { font-size: 14px; }
-      .modo span { color: var(--bar-muted); font-size: 12.5px; }
-      .modo kbd { position: absolute; top: 10px; right: 12px; font: 11px var(--mono); color: var(--bar-muted); }
-      .modo.sugerido { border: 2px solid var(--accent); padding: 13px; }
-      .modo.sugerido svg { color: var(--accent); }
-      .modo em { grid-column: 2; font-style: normal; font-size: 11.5px; font-weight: 600; color: var(--accent); }
-      .pf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--bar-muted); font-size: 12.5px; }
-      .pf select { height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-bg); color: var(--bar-fg); font: inherit; }
-      @media (max-width: 700px) { .views, .pane, .painel { padding-left: 16px; padding-right: 16px; } }
+      /* Inspetor: o laudo do arquivo, ao lado da vista (⌥⌘I). Os formatos servem de legenda da régua. */
+      #legenda { display: none !important; }
+      .insp { flex: none; width: 296px; overflow: auto; padding: 16px; border-left: 1px solid var(--line); background: var(--side); font-size: 12px; }
+      .insp .ih { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+      .insp .meta { margin: 0; font: 12px/1.6 var(--mono); font-variant-numeric: tabular-nums; }
+      .insp .bad { color: var(--del); font-weight: 500; }
+      .insp h4 { margin: 18px 0 8px; font-size: 11px; font-weight: 600; color: var(--fg2); }
+      .insp h4 code { font: 11px var(--mono); }
+      .insp .more { margin: 0; color: var(--fg2); font-size: 11px; }
+      .insp .aviso { margin: 12px 0 0; color: var(--change); }
+      .insp .lk { color: var(--fg); text-align: left; }
+      .insp .lk:hover code, .insp .lk:focus-visible code { text-decoration: underline; }
+      .fmt { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 4px 8px; }
+      .fmt .sw { width: 8px; height: 8px; border-radius: 2px; box-shadow: none; }
+      .fmt .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .fmt code { font: 12px var(--mono); }
+      .fmt .n { color: var(--fg2); font-size: 11px; font-variant-numeric: tabular-nums; }
+      .fmt .bar { grid-column: 2 / 4; height: 3px; margin: -1px 0 5px; overflow: hidden; border-radius: 2px; background: var(--line); }
+      .fmt .bar .pt { display: block; height: 100%; border-radius: 2px; }
+      .find { margin: 0; padding: 0; list-style: none; }
+      .find li { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+      .find li:last-child { border: 0; }
+      .find .lk { align-items: baseline; gap: 8px; }
+      .find code { font: 11.5px var(--mono); color: var(--fg); }
+      .find span { color: var(--fg2); }
+      .find .bad { color: var(--del); }
+      .insp .acts { display: flex; gap: 8px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+      .pf { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--fg2); font-size: 11px; }
+      .pf select { height: 22px; padding: 0 6px; border: 0; border-radius: 6px; background: var(--win); box-shadow: 0 0 0 .5px var(--line-strong); color: var(--fg); font: inherit; }
+      /* Diff sem segundo arquivo: estado vazio com ação. */
+      .empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 24px 24px 64px; text-align: center; font: 13px/1.45 var(--sans); }
+      .empty > svg.i { width: 40px; height: 40px; color: var(--fg3); }
+      .empty h3 { margin: 6px 0 0; font-size: 15px; font-weight: 600; }
+      .empty p { max-width: 44ch; margin: 0; color: var(--fg2); }
+      .empty .btn { margin-top: 8px; }
+      .empty .recent { margin-top: 18px; font-size: 12px; color: var(--fg2); }
+      .empty .recent h2 { display: inline; margin: 0; font: inherit; }
+      .empty .recent li button { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+      .empty .recent .pasta { display: none; }
+      .empty .recent ul { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; margin: 6px 0 0; padding: 0; list-style: none; }
+      @media (max-width: 760px) { .insp { display: none; } }
       @media (prefers-reduced-motion: no-preference) {
         .ib, .btn { transition: background-color .15s, color .15s; }
         .regua .rc { transition: opacity .4s ease-out; }
         .balao { animation: pulsar 1.2s ease-out 3; }
       }
-      .arquivos { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bar-bg); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+      .arquivos { flex: none; display: flex; align-items: flex-end; gap: 2px; padding: 3px 8px 0; font-size: 12px; background: var(--bar-bg); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
       .arquivos [role="tablist"] { display: flex; gap: 2px; min-width: 0; }
       .arquivos .arq { display: flex; align-items: center; max-width: 220px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--bar-muted); }
       .arquivos .arq:hover { background: var(--hover); }
@@ -363,7 +413,6 @@
       <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
       <symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
       <symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
-      <symbol id="home" viewBox="0 0 24 24"><path d="M5 12H3l9-9 9 9h-2"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/><path d="M9 21v-6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v6"/></symbol>
       <symbol id="binary-tree" viewBox="0 0 24 24"><path d="M6 20a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M16 4a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M16 20a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M11 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="M21 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0z"/><path d="m5.058 18.306 2.88-4.606"/><path d="m10.061 10.303 2.877-4.604"/><path d="m10.065 13.705 2.876 4.6"/><path d="m15.063 5.7 2.881 4.61"/></symbol>
       <symbol id="file-text" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><path d="M9 9h1"/><path d="M9 13h6"/><path d="M9 17h6"/></symbol>
       <symbol id="list-tree" viewBox="0 0 24 24"><path d="M9 6h11"/><path d="M12 12h8"/><path d="M15 18h5"/><path d="M5 6v.01"/><path d="M8 12v.01"/><path d="M11 18v.01"/></symbol>
@@ -375,16 +424,47 @@
       <symbol id="key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></symbol>
       <symbol id="image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></symbol>
       <symbol id="alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+      <symbol id="mag" viewBox="0 0 16 16" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></symbol>
+      <symbol id="funnel" viewBox="0 0 16 16" stroke-width="1.5"><path d="M2.5 3h11l-4.2 5v4.5l-2.6 1.2V8z"/></symbol>
+      <symbol id="side" viewBox="0 0 16 16" stroke-width="1.5"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/><path d="M10 2.75v10.5"/></symbol>
+      <symbol id="up16" viewBox="0 0 16 16" stroke-width="1.5"><path d="M4 10l4-4 4 4"/></symbol>
+      <symbol id="down16" viewBox="0 0 16 16" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></symbol>
+      <symbol id="x16" viewBox="0 0 16 16" stroke-width="1.5"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></symbol>
+      <symbol id="spark" viewBox="0 0 16 16" stroke-width="1.5"><path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3M3.4 3.4l2 2M10.6 10.6l2 2M3.4 12.6l2-2M10.6 5.4l2-2"/></symbol>
+      <symbol id="more" viewBox="0 0 16 16" stroke-width="2"><circle cx="3.5" cy="8" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="12.5" cy="8" r=".6"/></symbol>
+      <symbol id="comparar" viewBox="0 0 40 40" stroke-width="1.2"><rect x="4" y="7" width="13" height="26" rx="2.5"/><rect x="23" y="7" width="13" height="26" rx="2.5"/><path d="M8 14h5M8 19h5M27 14h5M27 19h3M27 24h5M8 24h3"/></symbol>
     </svg>
-    <header class="top">
-      <div class="side"><button class="btn" id="inicio" type="button" aria-keyshortcuts="Meta+0 Control+0" disabled><svg class="i"><use href="#home"/></svg><span>Início</span></button><span id="status" class="status" role="status" aria-live="polite"></span><button class="btn" id="cancelar-abertura" type="button" hidden></button><button class="btn" id="seguir" type="button" aria-pressed="false" hidden></button><button class="btn" id="novas" type="button" hidden></button></div>
-      <div class="name"><span id="nome"></span><span class="faixa" id="faixa"></span></div>
-      <div class="side end">
-        <button class="ib" id="tema" type="button" aria-label="Alternar tema claro e escuro"><svg class="i"><use href="#moon"/></svg></button>
-        <button class="btn" id="abrir-url" type="button">Abrir URL…</button>
-        <button class="btn" id="abrir" type="button">Abrir…</button>
+    <header class="top" data-tauri-drag-region>
+      <div class="side" data-tauri-drag-region><div class="ttl" data-tauri-drag-region><b id="nome" data-tauri-drag-region></b><span id="meta" data-tauri-drag-region></span></div></div>
+      <div class="seg" role="tablist" id="abas" aria-label="Valores">
+          <button role="tab" aria-selected="true" aria-controls="arvore" type="button" id="aba-arvore" aria-keyshortcuts="Alt+Meta+1 Alt+Control+1" data-tecla="⌥⌘1">Árvore</button>
+          <button role="tab" aria-selected="false" aria-controls="texto" type="button" id="aba-texto" tabindex="-1" aria-keyshortcuts="Alt+Meta+2 Alt+Control+2" data-tecla="⌥⌘2">Texto</button>
+          <button role="tab" aria-selected="false" aria-controls="estrutura" type="button" id="aba-estrutura" tabindex="-1" aria-keyshortcuts="Alt+Meta+3 Alt+Control+3" data-tecla="⌥⌘3">Estrutura</button>
+          <button role="tab" aria-selected="false" aria-controls="tabela" type="button" id="aba-tabela" tabindex="-1" aria-keyshortcuts="Alt+Meta+4 Alt+Control+4" data-tecla="⌥⌘4">Tabela</button>
+          <button role="tab" aria-selected="false" aria-controls="exportar" type="button" id="aba-exportar" tabindex="-1" aria-keyshortcuts="Alt+Meta+5 Alt+Control+5" data-tecla="⌥⌘5">Exportar</button>
+          <button role="tab" aria-selected="false" aria-controls="diff" type="button" id="aba-diff" tabindex="-1" aria-keyshortcuts="Alt+Meta+6 Alt+Control+6" data-tecla="⌥⌘6">Diff</button>
+      </div>
+      <div class="side end" data-tauri-drag-region>
+        <form class="search" id="busca" role="search">
+          <svg class="i" aria-hidden="true"><use href="#mag"/></svg>
+          <input type="search" autocomplete="off" spellcheck="false" aria-keyshortcuts="Meta+F Control+F" />
+          <span class="info" role="status" aria-live="polite"></span>
+          <button class="ib alt" type="button" data-caixa aria-pressed="false">Aa</button>
+          <button class="ib alt" type="button" data-regex aria-pressed="false">.*</button>
+          <button class="ib" type="button" data-anterior aria-keyshortcuts="Meta+Shift+G Control+Shift+G" disabled><svg class="i"><use href="#up16"/></svg></button>
+          <button class="ib" type="button" data-proximo aria-keyshortcuts="Meta+G Control+G" disabled><svg class="i"><use href="#down16"/></svg></button>
+        </form>
+        <button class="ib" id="jq" type="button" aria-pressed="false" aria-keyshortcuts="Meta+J Control+J"><svg class="i"><use href="#funnel"/></svg></button>
+        <button class="ib" id="inspetor" type="button" aria-pressed="true" aria-controls="painel" aria-keyshortcuts="Alt+Meta+I Alt+Control+I"><svg class="i"><use href="#side"/></svg></button>
+        <button class="ib" id="mais" type="button" aria-haspopup="menu" aria-controls="acoes"><svg class="i"><use href="#more"/></svg></button>
       </div>
     </header>
+    <div class="menu" id="acoes" role="menu" hidden>
+      <button type="button" role="menuitem" tabindex="-1" id="abrir"></button>
+      <button type="button" role="menuitem" tabindex="-1" id="abrir-url"></button>
+      <button type="button" role="menuitem" tabindex="-1" id="ir-menu"></button>
+      <button type="button" role="menuitem" tabindex="-1" id="tema"></button>
+    </div>
     <div class="arquivos" id="arquivos">
       <div role="tablist" id="arquivos-lista" aria-label="Arquivos abertos"></div>
       <button class="ib" id="nova-aba" type="button" aria-keyshortcuts="Meta+T Control+T" aria-label="Nova aba"><svg class="i"><use href="#plus"/></svg></button>
@@ -398,67 +478,25 @@
     </section>
     <div class="soltar" id="soltar" hidden></div>
     <main id="area" role="tabpanel">
-      <div class="views" role="tablist" id="abas" aria-label="Valores">
-        <button role="tab" aria-selected="true" aria-controls="arvore" type="button" id="aba-arvore" aria-keyshortcuts="Alt+Meta+1 Alt+Control+1">Árvore<kbd>⌥⌘1</kbd></button>
-        <button role="tab" aria-selected="false" aria-controls="texto" type="button" id="aba-texto" tabindex="-1" aria-keyshortcuts="Alt+Meta+2 Alt+Control+2">Texto<kbd>⌥⌘2</kbd></button>
-        <button role="tab" aria-selected="false" aria-controls="estrutura" type="button" id="aba-estrutura" tabindex="-1" aria-keyshortcuts="Alt+Meta+3 Alt+Control+3">Estrutura<kbd>⌥⌘3</kbd></button>
-        <button role="tab" aria-selected="false" aria-controls="tabela" type="button" id="aba-tabela" tabindex="-1" aria-keyshortcuts="Alt+Meta+4 Alt+Control+4">Tabela<kbd>⌥⌘4</kbd></button>
-        <button role="tab" aria-selected="false" aria-controls="exportar" type="button" id="aba-exportar" tabindex="-1" aria-keyshortcuts="Alt+Meta+5 Alt+Control+5">Exportar<kbd>⌥⌘5</kbd></button>
-        <button role="tab" aria-selected="false" aria-controls="diff" type="button" id="aba-diff" tabindex="-1" aria-keyshortcuts="Alt+Meta+6 Alt+Control+6">Diff<kbd>⌥⌘6</kbd></button>
-      </div>
-      <section class="painel" id="painel" aria-labelledby="painel-nome" hidden>
-        <div>
-          <header class="pc">
-            <span class="pi"><svg class="i"><use href="#braces"/></svg></span>
-            <div><h1 id="painel-nome"></h1><p id="painel-sub"></p></div>
-            <span class="selo" id="painel-selo" role="status" aria-live="polite"></span>
-          </header>
-          <dl class="indic" id="painel-indic"></dl>
-          <section class="laudo" id="painel-laudo" aria-live="polite"></section>
-          <h2 id="painel-pergunta">O que você quer fazer?</h2>
-          <div class="modos" id="painel-modos" role="group" aria-labelledby="painel-pergunta"></div>
-          <footer class="pf"><label for="painel-pref" id="painel-rotulo">Ao abrir um arquivo</label><select id="painel-pref"></select></footer>
+      <form class="scope" id="consulta" hidden>
+        <div class="chip">
+          <svg class="i" aria-hidden="true"><use href="#funnel"/></svg>
+          <input type="text" autocomplete="off" spellcheck="false" list="filtros-salvos" aria-keyshortcuts="Meta+J Control+J" />
+          <datalist id="filtros-salvos"></datalist>
+          <button class="ib alt" type="button" data-salvar aria-pressed="false" disabled>★</button>
+          <button class="ib alt" type="button" data-anonimizar aria-pressed="false">anon</button>
+          <button class="ib" type="button" id="consulta-fechar"><svg class="i"><use href="#x16"/></svg></button>
         </div>
-      </section>
+        <span class="info" role="status" aria-live="polite"></span>
+        <button class="btn" type="button" data-cancelar hidden></button>
+        <button class="btn" type="button" data-voltar hidden></button>
+        <button class="btn" type="button" data-exportar="jsonl" hidden></button>
+        <button class="btn" type="button" data-exportar="csv" hidden></button>
+        <button class="lk" type="button" id="salvar-como-abrir"></button>
+      </form>
+      <div class="corpo">
       <div class="pane" id="conteudo">
-        <div class="tools barra">
-          <form class="busca" id="busca" role="search">
-            <div class="campo">
-              <input type="search" autocomplete="off" spellcheck="false" aria-keyshortcuts="Meta+F Control+F" />
-              <button class="ib alt" type="button" data-caixa aria-pressed="false">Aa</button>
-              <button class="ib alt" type="button" data-regex aria-pressed="false">.*</button>
-            </div>
-            <span class="info" role="status" aria-live="polite"></span>
-            <button class="ib" type="button" data-anterior aria-keyshortcuts="Meta+Shift+G Control+Shift+G" disabled><svg class="i rot180"><use href="#chev"/></svg></button>
-            <button class="ib" type="button" data-proximo aria-keyshortcuts="Meta+G Control+G" disabled><svg class="i"><use href="#chev"/></svg></button>
-          </form>
-          <form class="busca consulta" id="consulta">
-            <div class="campo">
-              <input type="text" autocomplete="off" spellcheck="false" list="filtros-salvos" aria-keyshortcuts="Meta+J Control+J" />
-              <datalist id="filtros-salvos"></datalist>
-              <button class="ib alt" type="button" data-salvar aria-pressed="false" disabled>★</button>
-              <button class="ib alt" type="button" data-anonimizar aria-pressed="false">anon</button>
-            </div>
-            <span class="info" role="status" aria-live="polite"></span>
-            <button class="btn" type="button" data-cancelar hidden></button>
-            <button class="btn" type="button" data-voltar hidden></button>
-            <button class="btn" type="button" data-exportar="jsonl" hidden></button>
-            <button class="btn" type="button" data-exportar="csv" hidden></button>
-            <button class="btn" type="button" id="salvar-como-abrir"></button>
-          </form>
-        </div>
-        <div class="tools">
-          <form id="ir">
-            <label for="linha" id="rotulo-linha">Ir para linha</label>
-            <input id="linha" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" />
-          </form>
-          <ol class="crumbs" id="migalhas" aria-label="Caminho do nó selecionado"></ol>
-          <div class="legenda" id="legenda" hidden></div>
-          <div class="acts">
-            <button class="btn" id="ver-formatado" type="button" disabled><svg class="i"><use href="#braces"/></svg><span>Ver formatado</span></button>
-            <button class="btn" id="copiar" type="button" aria-keyshortcuts="Meta+Shift+C Control+Shift+C" disabled><svg class="i"><use href="#copy"/></svg><span>Copiar caminho</span></button>
-          </div>
-        </div>
+        <div class="legenda" id="legenda" hidden></div>
         <div class="vista">
         <div class="tree" id="arvore" role="tree" tabindex="0" aria-label="Valores do arquivo">
           <div class="rows" id="linhas" role="presentation"></div>
@@ -491,7 +529,30 @@
         </div>
         <section class="detalhe" id="detalhe" aria-label="Valor selecionado" aria-live="polite" hidden></section>
       </div>
+      <aside class="insp" id="painel" aria-labelledby="painel-titulo">
+        <h2 class="ih" id="painel-titulo"></h2>
+        <p class="meta" id="painel-meta" role="status" aria-live="polite"></p>
+        <section id="painel-laudo" aria-live="polite"></section>
+        <footer class="pf"><label for="painel-pref" id="painel-rotulo">Ao abrir um arquivo</label><select id="painel-pref"></select></footer>
+      </aside>
+      </div>
     </main>
+    <footer class="sb" id="barra-status">
+      <ol class="crumbs" id="migalhas" aria-label="Caminho do nó selecionado"></ol>
+      <span id="aberto-ms"></span>
+      <span class="so-fora-mac" id="meta-st"></span>
+      <span id="faixa"></span>
+      <span id="status" class="status" role="status" aria-live="polite"></span>
+      <button class="btn" id="cancelar-abertura" type="button" hidden></button><button class="btn" id="seguir" type="button" aria-pressed="false" hidden></button><button class="btn" id="novas" type="button" hidden></button>
+      <form id="ir" hidden>
+        <label for="linha" id="rotulo-linha">Ir para linha</label>
+        <input id="linha" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" />
+      </form>
+      <span class="sp"></span>
+      <button class="ib" id="ver-formatado" type="button" disabled><svg class="i"><use href="#braces"/></svg></button>
+      <button class="ib" id="copiar" type="button" aria-keyshortcuts="Meta+Shift+C Control+Shift+C" disabled><svg class="i"><use href="#copy"/></svg></button>
+      <span class="sug" id="sugestao"></span>
+    </footer>
     <div class="menu" id="menu" role="menu" hidden>
       <button type="button" role="menuitem" tabindex="-1" data-formato="jq"><span></span><kbd>⇧⌘C</kbd></button>
       <button type="button" role="menuitem" tabindex="-1" data-formato="jsonpath"><span></span></button>

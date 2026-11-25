@@ -36,11 +36,17 @@ export interface Opcoes {
   abrir: (caminhos: string[]) => Promise<(number | null)[]>;
   /** Volta para a vista Diff (abrir uma aba troca de vista). */
   irParaDiff: () => void;
+  /** Botão do estado vazio (só uma aba): abre outro arquivo para comparar. */
+  abrirOutro: () => void;
 }
 
 export function criarDiff(el: HTMLElement, o: Opcoes) {
   const x = t.diff;
-  el.innerHTML = `<div class="tools">
+  const v = t.diffVazio;
+  el.innerHTML = `<section class="empty" id="df-vazio" hidden>${o.icone("comparar")}<h3>${v.titulo}</h3><p>${v.texto}</p>
+      <button class="btn pri" id="df-abrir" type="button">${v.abrir}</button><div class="recent" id="df-recentes"></div>
+      <button class="lk" id="df-ir-linha" type="button">${x.linhaDoTempo}…</button></section>
+    <div class="tools">
       <label class="df-par">${x.antes}<select id="df-antes"></select></label>
       <label class="df-par">${x.depois}<select id="df-depois"></select></label>
       <label>${x.tipo}<select id="df-tipo"><option value="estrutura">${x.estrutura}</option><option value="valores">${x.valores}</option><option value="linha">${x.linhaDoTempo}</option></select></label>
@@ -62,6 +68,9 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
   const resEl = q("df-res");
   const linhaEl = q("df-linha");
   const marcadosEl = q<HTMLButtonElement>("df-marcados");
+  const vazioEl = q("df-vazio");
+  const toolsEl = el.querySelector<HTMLElement>(".tools")!;
+  q("df-abrir").addEventListener("click", o.abrirOutro);
   /** Última linha do tempo recebida e os pontos marcados nela (índices de `passos`). */
   let linha: Linha | null = null;
   let marcados: number[] = [];
@@ -74,7 +83,11 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
 
   /** Refaz as listas de arquivos, mantendo a escolha que ainda existe; padrão: ativa × outra. */
   function opcoes(): boolean {
-    if (tipoEl.value === "linha") return true;
+    if (tipoEl.value === "linha") {
+      vazioEl.hidden = true;
+      toolsEl.hidden = statusEl.hidden = resEl.hidden = false;
+      return true;
+    }
     const abas = o.abas();
     const ops = abas.map((a) => `<option value="${a.doc}">${escAtributo(a.nome)}</option>`).join("");
     const [va, vd] = [antesEl.value, depoisEl.value];
@@ -86,10 +99,9 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
     depoisEl.value = tem(vd) && vd !== antesEl.value ? vd : String(outra?.doc ?? antesEl.value);
     const ok = abas.length > 1;
     comparar.disabled = !ok;
-    if (!ok) {
-      resEl.innerHTML = "";
-      estado(`<span>${x.precisaDuas}</span>`);
-    }
+    vazioEl.hidden = ok;
+    toolsEl.hidden = statusEl.hidden = resEl.hidden = !ok;
+    if (!ok) resEl.innerHTML = "";
     return ok;
   }
 
@@ -219,6 +231,12 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
   antesEl.addEventListener("change", mudouPar);
   depoisEl.addEventListener("change", mudouPar);
   tipoEl.addEventListener("change", () => {
+    modoTipo();
+    mudouPar();
+  });
+  q("df-ir-linha").addEventListener("click", () => {
+    tipoEl.value = "linha";
+    opcoes();
     modoTipo();
     mudouPar();
   });
