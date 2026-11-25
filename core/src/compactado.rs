@@ -501,22 +501,24 @@ impl<W: Write> Write for Reserva<'_, W> {
     }
 }
 
+/// Outra abertura pode apagar a entrada entre listar e ler: sumiu vira `None` (pula); outro erro sobe.
+fn sumiu_pula<T>(r: io::Result<T>) -> io::Result<Option<T>> {
+    match r {
+        Err(x) if x.kind() == io::ErrorKind::NotFound => Ok(None),
+        r => r.map(Some),
+    }
+}
+
 /// Tira do cache os arquivos usados há mais tempo até a soma caber em `teto`. Nunca tira
 /// `manter`. Parciais com mais de um dia (sobra de processo que morreu) também saem.
 fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
     let agora = SystemTime::now();
     let mut entradas = Vec::new();
     for e in fs::read_dir(dir)? {
-        // Outra abertura pode apagar a entrada entre listar e ler: sumiu, pula; outro erro sobe.
-        let sumiu = |x: &io::Error| x.kind() == io::ErrorKind::NotFound;
-        let e = match e {
-            Err(x) if sumiu(&x) => continue,
-            r => r?,
-        };
+        let Some(e) = sumiu_pula(e)? else { continue };
         let caminho = e.path();
-        let meta = match e.metadata() {
-            Err(x) if sumiu(&x) => continue,
-            r => r?,
+        let Some(meta) = sumiu_pula(e.metadata())? else {
+            continue;
         };
         let quando = meta.modified()?;
         match caminho.extension().and_then(|x| x.to_str()) {
@@ -553,6 +555,16 @@ fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn sumiu_pula_so_engole_not_found() {
+        let nf = io::Error::from(io::ErrorKind::NotFound);
+        assert!(matches!(sumiu_pula::<u8>(Err(nf)), Ok(None)));
+        let pd = io::Error::from(io::ErrorKind::PermissionDenied);
+        let e = sumiu_pula::<u8>(Err(pd)).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        assert!(matches!(sumiu_pula(Ok(7)), Ok(Some(7))));
+    }
 
     #[test]
     fn limpar_nao_falha_com_arquivo_sumindo_no_meio() {
