@@ -2879,6 +2879,9 @@ async fn salvar_como<R: Runtime>(
                 Ok(()) => fim.arquivo = Some(destino.to_string_lossy().into_owned()),
                 Err(e) => fim.falha = Some(e),
             }
+        } else {
+            // Antes do aviso: quem recebe o fim já não acha o temporário na pasta.
+            drop(tmp);
         }
         fim.geracao = geracao;
         avisar(fim);
