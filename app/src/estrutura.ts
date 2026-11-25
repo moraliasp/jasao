@@ -121,7 +121,10 @@ const curto = (v: string) => visivel(corte(v));
 /** Faixa de grandeza: `0`, `1e2…1e3`, `−1e0…1e1`. */
 export function faixa(f: { negativo: boolean; expoente: number | null }): string {
   if (f.expoente === null) return "0";
-  return `${f.negativo ? "−" : ""}1e${f.expoente}…1e${f.expoente + 1}`;
+  // Nas pontas (±30) o perfil junta tudo o que passa: a faixa fica aberta desse lado.
+  const de = f.expoente <= -30 ? "" : `1e${f.expoente}`;
+  const ate = f.expoente >= 30 ? "" : `1e${f.expoente + 1}`;
+  return `${f.negativo ? "−" : ""}${de}…${ate}`;
 }
 
 /** Linhas (base 0) como botões `data-l` (a Árvore abre o registro), 1ª linha = 1, e o botão
