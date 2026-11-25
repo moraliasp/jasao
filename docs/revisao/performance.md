@@ -10,16 +10,27 @@ frentes de revisão; aqui só aparecem anotados.
   (perfil do repo: LTO, `codegen-units = 1`).
 - Amostras de `scripts/medir.sh`: `target/medir/1024mb.jsonl` (1 GB, 6.456.439 registros) e
   `1024mb.formatado.json`.
-- A máquina é compartilhada (runner de CI e outras sessões). A carga variou de 8 a 157 durante a
-  medição. Por isso a comparação é **A/B intercalada**: binários de cada versão rodam em
-  sequência, várias voltas, mediana de 5 rodadas por medida. Com carga alta, o número absoluto
-  sobe. A comparação vale dentro da mesma volta.
+- A máquina é compartilhada (runner de CI e outras sessões compilando). A carga variou de 8 a 157
+  durante a revisão. Por isso a comparação é **A/B intercalada, trocando o binário a cada
+  rodada**: `base` → `A` → `B` → `C` → `base` … Assim a carga de um momento cai sobre todas as
+  versões, e a mediana é por versão. As tabelas dos achados usam essa medição.
+  Binários:
+  - `base` = f5fa2e0;
+  - `A` = só o achado 1;
+  - `B` = A + foldhash na estrutura;
+  - `C` = head do PR (A + achados 2 e 3 completos).
+- **Pico alocado** = `peak memory footprint` do `/usr/bin/time -l` (o *phys_footprint* do macOS,
+  a mesma coluna "Pico alocado" do `scripts/medir.sh`). Não é RSS: o arquivo mapeado (mmap)
+  não entra.
 - Perfil: `sample` do macOS num build com LTO, `strip=false` e `debug=line-tables-only`. Sem LTO
   o memchr não é inlinado e o perfil engana.
-- Reproduzir: `scripts/medir.sh` (tabela de metas). Para o A/B, compile cada commit, copie o
-  `target/release/jasao` e alterne os binários com `/usr/bin/time -l`.
+- Reproduzir:
+  1. compile cada commit e copie o `target/release/jasao` como `jasao-<versão>`;
+  2. alterne os binários num laço, com `/usr/bin/time -l` (ou `-p`) em cada chamada.
 
-## Linha de base (f5fa2e0, carga 7,9)
+  `scripts/medir.sh` dá a tabela de metas de uma versão só.
+
+## Linha de base (f5fa2e0, `scripts/medir.sh`, carga 7,9)
 
 | Medida | Mediana | Meta |
 |---|---|---|
@@ -34,80 +45,115 @@ frentes de revisão; aqui só aparecem anotados.
 Em 24/11 (`docs/decisoes.md`), `inferir` media 2,1 s e exportar+validar 3,3–3,5 s. Havia
 regressão.
 
-Perfil do `inferir` (amostras no topo da pilha): SipHash (`write` + `hash_one`) ≈ 3.100,
-`mascara::Lexico::linha` 1.008, memcmp 849, `IndiceLinhas::construir` 832, malloc/free ≈ 960,
-`memoria::reservar` 377.
+Perfil do `inferir` (amostras no topo da pilha):
 
-## Achados
+| Símbolo | Amostras |
+|---|---|
+| SipHash (`write` + `hash_one`) | ≈ 3.100 |
+| `mascara::Lexico::linha` | 1.008 |
+| malloc/free | ≈ 960 |
+| memcmp | 849 |
+| `IndiceLinhas::construir` | 832 |
+| `memoria::reservar` | 377 |
+
+## `inferir`, 1 GB: os três achados aplicados
+
+Mediana de 7 rodadas, binário trocado a cada rodada, carga 26–46.
+
+| Versão | Rodadas (s) | Mediana | vs. anterior | Pico alocado |
+|---|---|---|---|---|
+| base | 3,66 4,34 4,38 4,49 4,66 4,78 5,70 | 4,49 s | — | 60–65 MB |
+| A (achado 1) | 1,22 1,29 1,68 1,71 1,81 1,82 1,88 | 1,71 s | −62% | 61–64 MB |
+| B (+ foldhash na estrutura) | 1,04 1,26 1,38 1,46 1,50 1,80 1,91 | 1,46 s | −15% | 60–63 MB |
+| C (head: + foldhash na máscara, achado 3) | 0,99 1,19 1,27 1,27 1,33 1,35 1,42 | 1,27 s | −13% | 59–61 MB |
+
+`inferir --json` dá a mesma saída nas quatro versões; só a linha de tempo difere. Com a linha de
+tempo removida, o md5 de B e C é idêntico.
 
 ### 1. Contador do alocador global disputando uma linha de cache: aplicado
 
-- `core/src/memoria.rs:27-53` (`contando`, `reservar`, `liberar`) e o `GlobalAlloc` logo abaixo.
+- `core/src/memoria.rs:27-53` (`contando`, `liberar`, `reservar`) e o `GlobalAlloc` logo abaixo.
 - Hipótese: `Contador` fazia `fetch_add`/`fetch_sub` num único `AtomicUsize` em toda alocação, de
   toda thread, mesmo sem teto. Com 18 threads do rayon alocando chaves, a linha de cache fica
   pulando entre núcleos. O teto só é ligado (`limitar`) no processo filho do jq e no `consultar`
   da CLI.
-- Mudança: sem teto, nada é contado (uma leitura de `TETO`, que ninguém escreve). Com teto, a
-  conta é a mesma de antes. `liberar` satura em zero, porque o que foi alocado antes de `limitar`
-  e liberado depois não foi somado. O teste `cli/tests/jq.rs` (`teto_de_memoria_*`) passa.
-- `inferir`, 1 GB, mediana de 3, intercalado (carga 33–83):
-
-  | Volta | base | com a mudança |
-  |---|---|---|
-  | 1 | 4,13 s | 1,89 s |
-  | 2 | 3,97 s | 1,55 s |
-  | 3 | 6,55 s | 3,23 s |
-
-  Saída de `inferir --json` idêntica (só a linha de tempo difere).
+- Mudança: sem teto, nada é contado (uma leitura de `TETO`, que ninguém escreve). Com teto, cada
+  alocação e liberação é contada como antes.
+- **O teto ficou um pouco mais frouxo.** O heap que o processo alocou antes de `limitar` e que
+  continua vivo não entra mais na conta. Antes, ele entrava. Hoje `limitar` é chamado logo no
+  começo, depois de ler args, variáveis de ambiente e opções. Na CLI, isso inclui o que a
+  abertura de stdin/URL deixou vivo no heap. A folga é desse tamanho; não foi medida.
+- Por isso `liberar` satura em zero: liberar algo de antes de `limitar` não pode fazer o contador
+  dar a volta. Teste: `memoria::testes::alocado_antes_de_limitar_e_liberado_depois_nao_passa_de_zero`.
+  Ele falha se `liberar` voltar a ser `fetch_sub`. O teste `cli/tests/jq.rs`
+  (`teto_de_memoria_*`) passa.
 
 ### 2. SipHash nos mapas da inferência e da máscara: aplicado
 
-- `core/src/estrutura.rs:16`: alias `HashMap` com `foldhash::fast::RandomState` para `No::filhos`,
-  `Candidato::valores`, `Variante::chaves` e `Resumo::candidatos`. Também
-  `core/src/mascara.rs:161`, o cache `Estado::chaves`.
+- Onde mudou:
+  - `core/src/estrutura.rs:16`: alias `HashMap` com `foldhash::fast::RandomState` para
+    `No::filhos`, `Candidato::valores`, `Variante::chaves` e `Resumo::candidatos`;
+  - `core/src/mascara.rs:161`: o cache `Estado::chaves`.
 - Hipótese: o hash é o maior item do perfil. As chaves são curtas e repetidas, e para isso o
   SipHash é caro. foldhash já estava no `Cargo.lock` (via hashbrown); só virou dependência direta.
-  A semente é aleatória por processo, então a resistência a HashDoS (chaves vêm de arquivo não
-  confiável) fica parecida. Não se usou Fx/hash fixo.
+- A semente é aleatória por processo, então a resistência a HashDoS (chaves vêm de arquivo não
+  confiável) fica parecida. Não se usou Fx nem hash fixo.
 - A ordem de iteração já era aleatória com o std. A saída é ordenada depois, então nada muda.
-- `inferir`, 1 GB, mediana de 3, intercalado contra o achado 1 sozinho:
-
-  | Volta | só achado 1 | + foldhash |
-  |---|---|---|
-  | 1 | 1,89 s | 1,58 s |
-  | 2 | 1,55 s | 1,33 s |
-  | 3 | 3,23 s | 2,51 s |
 
 ### 3. `Box<[u8]>` por chave por registro em `Candidato::ver`: aplicado
 
 - `core/src/estrutura.rs:486`: `v.chaves.entry(k.into())` alocava um `Box` para cada chave de cada
   registro, mesmo quando a chave já estava no mapa. Agora é `get_mut`, e o `Box` só nasce na 1ª
   vez que a chave aparece.
-- `inferir`, 1 GB, mediana de 3, intercalado contra o achado 2 (carga 39–81, mesma ordem de
-  grandeza do ruído, mas venceu nas 3 voltas): 2,88 → 2,20 · 2,38 → 2,28 · 3,42 → 2,36 s
-  (junto com o foldhash na máscara). Saída de `inferir --json` com md5 idêntico.
-- Teste de equivalência: a contagem é a mesma por construção (+1 ou insere 1). O teste
-  `discriminador_no_gerador` (`estrutura.rs`) cobre a contagem: obrigatória = chave contada em
-  todos os registros da variante, e a saída de 1 GB foi comparada
-  byte a byte.
+- Equivalência: a contagem é a mesma por construção (+1, ou insere 1). Duas provas:
+  - o teste `discriminador_no_gerador` (`estrutura.rs`) cobre a contagem: obrigatória = chave
+    contada em todos os registros da variante;
+  - a saída de 1 GB é idêntica.
+- O ganho de B para C (−13%) é a soma do achado 3 com o foldhash na máscara. Os dois não foram
+  separados.
 
-### 4. Resultado conjunto (base × achados 1+2+3): mediana de 5, duas voltas intercaladas
+## Busca: sem regressão
 
-| Medida | base v1 | nova v1 | base v2 | nova v2 | Decisão |
-|---|---|---|---|---|---|
-| primeira tela | 0,46 s | 0,22 s | 0,25 s | 0,25 s | ruído; sem perda |
-| primeira tela, formatado | 0,75 s | 0,66 s | 2,72 s | 0,93 s | ruído; pico 397 MB igual |
-| índice de linhas | 0,23 s | 0,22 s | 0,51 s | 0,34 s | sem mudança esperada |
-| **`inferir`** | **4,68 s** | **1,32 s** | **7,78 s** | **3,89 s** | **−50 a −72%** |
-| busca literal | 0,55 s | 0,55 s | 0,91 s | 1,19 s | ruído (carga 85→130) |
-| busca regex | 0,50 s | 1,05 s | 0,92 s | 1,91 s | ruído: rodadas de 0,46 a 2,16 s |
-| **exportar + validar** | **8,77 s** | **5,18 s** | **11,32 s** | **7,11 s** | **−37 a −41%** |
-| pico alocado `inferir` | 62 MB | 61 MB | 62 MB | 61 MB | igual |
+A 1ª medição, em blocos de 5 rodadas por versão, mostrou a regex 2× mais lenta no head:
+0,50 → 1,05 s e 0,92 → 1,91 s. A carga subiu de 56 para 157 durante aqueles blocos. Como a
+máscara (`linhas.rs::bytes()`) passa pelo `Estado::chaves`, que mudou de hasher, refiz a medição
+trocando o binário a cada rodada. 9 rodadas, carga 32–42, CI na fila e nenhum job rodando:
 
-Carga na volta 1: 56–82. Na volta 2: 82–157. A busca não toca nos mapas mudados, e a máscara só
-mudou no cache de chaves. A diferença na regex acompanha a subida da carga dentro da volta 2: a
-volta 1 tinha rodadas da nova em 0,46 s, igual à base. `inferir` voltou a bater a meta de < 5 s
-mesmo com carga 125.
+| Medida | Versão | Real (mediana) | CPU de usuário (mediana) |
+|---|---|---|---|
+| busca literal ausente | base | 0,43 s | 2,76 s |
+| | A | 0,43 s | 2,78 s |
+| | B | 0,48 s | 3,18 s |
+| | C (head) | **0,42 s** | **2,70 s** |
+| busca regex `"qtd":\d{3}` | base | 0,47 s | 3,23 s |
+| | A | 0,44 s | 2,80 s |
+| | B | 0,46 s | 3,14 s |
+| | C (head) | **0,40 s** | **2,44 s** |
+
+- O head não é mais lento que a base em nenhuma das duas buscas.
+- Na regex, o head é 15% mais rápido em tempo real e 24% em CPU de usuário. O foldhash no cache de
+  chaves da máscara explica isso.
+- A "regressão" da 1ª medição era carga.
+
+## Medição conjunta em blocos (1ª rodada, para registro)
+
+Mediana de 5 rodadas por versão, uma versão por bloco, duas voltas (carga 56–82 na 1ª e 82–157
+na 2ª).
+
+| Medida | base v1 | head v1 | base v2 | head v2 |
+|---|---|---|---|---|
+| primeira tela | 0,46 s | 0,22 s | 0,25 s | 0,25 s |
+| primeira tela, formatado | 0,75 s | 0,66 s | 2,72 s | 0,93 s |
+| índice de linhas | 0,23 s | 0,22 s | 0,51 s | 0,34 s |
+| `inferir` | 4,68 s | 1,32 s | 7,78 s | 3,89 s |
+| busca literal | 0,55 s | 0,55 s | 0,91 s | 1,19 s |
+| busca regex | 0,50 s | 1,05 s | 0,92 s | 1,91 s |
+| exportar + validar | 8,77 s | 5,18 s | 11,32 s | 7,11 s |
+
+- **Busca:** os números são carga. A seção anterior mostra isso com o binário trocado a cada
+  rodada.
+- **exportar + validar:** caiu 37 a 41% nas duas voltas, mas não foi refeito trocando o binário a
+  cada rodada.
 
 ## Descartados ou propostos
 

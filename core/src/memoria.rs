@@ -117,3 +117,32 @@ unsafe impl GlobalAlloc for Contador {
         q
     }
 }
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    // O binário de teste do núcleo não usa o `Contador` como alocador global: só este teste
+    // mexe em `USADO`/`TETO`.
+    #[test]
+    fn alocado_antes_de_limitar_e_liberado_depois_nao_passa_de_zero() {
+        let l = Layout::from_size_align(4096, 8).unwrap();
+        // SAFETY: `l` tem tamanho não nulo; o ponteiro volta ao mesmo alocador com o mesmo `l`.
+        let p = unsafe { Contador.alloc(l) };
+        assert!(!p.is_null());
+        assert_eq!(USADO.load(Relaxed), 0, "sem teto não se conta");
+        limitar(1 << 20);
+        let q = unsafe { Contador.alloc(Layout::from_size_align(100, 8).unwrap()) };
+        assert_eq!(USADO.load(Relaxed), 100);
+        unsafe { Contador.dealloc(p, l) };
+        // Com `fetch_sub` sem saturar, daria a volta e toda alocação seguinte seria recusada.
+        assert_eq!(USADO.load(Relaxed), 0);
+        let r = unsafe { Contador.alloc(Layout::from_size_align(100, 8).unwrap()) };
+        assert!(!r.is_null(), "o contador não pode ter dado a volta");
+        unsafe {
+            Contador.dealloc(q, Layout::from_size_align(100, 8).unwrap());
+            Contador.dealloc(r, Layout::from_size_align(100, 8).unwrap());
+        }
+        TETO.store(usize::MAX, Relaxed);
+    }
+}
