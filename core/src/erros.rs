@@ -3,8 +3,9 @@
 //!
 //! - Linhas nas regras de `linhas.rs` (BOM fora, `\r` de CRLF fora). Linha vazia ou só com
 //!   espaço em branco do JSON (espaço, tab, `\r`) não é erro: conta à parte.
-//! - Validador próprio, sem montar o valor e sem recursão (pilha explícita): a profundidade não
-//!   tem limite e a memória é a da pilha de `{`/`[` abertos. Segue a gramática da RFC 8259;
+//! - Validador próprio, sem montar o valor e sem recursão (pilha explícita): passar de
+//!   `estrutura::PROFUNDIDADE_MAX` níveis é erro (o mesmo corte da Estrutura, do card e do
+//!   Exportar) e a memória é a da pilha de `{`/`[` abertos. Segue a gramática da RFC 8259;
 //!   chave duplicada e `\ud800` solto passam (são sintaxe válida; o app mostra como estão).
 //! - Primeiro problema de cada linha, com a coluna em bytes. UTF-8 inválido conta se vier antes
 //!   do primeiro erro de sintaxe (ou se a sintaxe estiver boa).
@@ -35,6 +36,7 @@ pub enum Motivo {
     ConteudoDepois,
     Utf8Invalido,
     Truncada,
+    Aninhamento,
 }
 
 impl Motivo {
@@ -55,6 +57,7 @@ impl Motivo {
             Self::ConteudoDepois => "conteudo_depois",
             Self::Utf8Invalido => "utf8_invalido",
             Self::Truncada => "linha_truncada",
+            Self::Aninhamento => "aninhamento",
         }
     }
 }
@@ -84,6 +87,11 @@ impl fmt::Display for Motivo {
             ),
             Self::Utf8Invalido => write!(f, "UTF-8 inválido"),
             Self::Truncada => write!(f, "linha truncada: termina antes de fechar o valor"),
+            Self::Aninhamento => write!(
+                f,
+                "aninhamento além de {} níveis",
+                crate::estrutura::PROFUNDIDADE_MAX
+            ),
         }
     }
 }
@@ -291,6 +299,9 @@ fn sintaxe(l: &[u8], pilha: &mut Vec<u8>) -> Result<bool, (usize, Motivo)> {
         };
         match c {
             b'{' | b'[' => {
+                if pilha.len() >= crate::estrutura::PROFUNDIDADE_MAX {
+                    return Err((i, Aninhamento));
+                }
                 let fecho = if c == b'{' { b'}' } else { b']' };
                 i += 1;
                 pular(&mut i);
@@ -470,8 +481,30 @@ mod testes {
         ] {
             assert_eq!(v(l), Ok(true), "{l}");
         }
-        let fundo = "[".repeat(200_000) + &"]".repeat(200_000);
-        assert_eq!(v(&fundo), Ok(true));
+    }
+
+    #[test]
+    fn corta_no_mesmo_nivel_da_inferencia() {
+        let max = crate::estrutura::PROFUNDIDADE_MAX;
+        for n in [max - 1, max, max + 1, max + 50, 200_000] {
+            // Só `[` (vazio no fundo), e `{"a":` e `[` alternados (valor no fundo).
+            let listas = format!("{}{}", "[".repeat(n), "]".repeat(n));
+            let mut misto = String::new();
+            for k in 0..n {
+                misto.push_str(if k % 2 == 0 { "{\"a\":" } else { "[" });
+            }
+            misto.push('1');
+            for k in (0..n).rev() {
+                misto.push(if k % 2 == 0 { '}' } else { ']' });
+            }
+            for l in [listas, misto] {
+                let corte = crate::arvore::passa_da_profundidade(l.as_bytes(), max);
+                match v(&l) {
+                    Err((c, Aninhamento)) => assert_eq!(Some(c), corte, "{n} níveis"),
+                    r => assert!(r == Ok(true) && corte.is_none(), "{n} níveis: {r:?}"),
+                }
+            }
+        }
     }
 
     #[test]
