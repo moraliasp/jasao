@@ -135,3 +135,8 @@ test("exportar.ts monta o status com aposSpan, não com replace de string", () =
   assert.match(fonte, /statusEl\.innerHTML = aposSpan\(msg, sobre\);/);
   assert.doesNotMatch(fonte, /\.replace\(\s*["'`]<span>/);
 });
+
+test("U+2028/U+2029 viram invisível marcado, sem sumir do DOM", () => {
+  assert.equal(visivel("a\u2028b"), 'a<span class="inv" data-u="2028">\u2028</span>b');
+  assert.equal(semInvisiveis("a\u2029b"), "a<U+2029>b");
+});

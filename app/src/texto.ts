@@ -21,8 +21,9 @@ export function decodificar(inicio: number, buf: ArrayBuffer): JanelaTexto {
   return { inicio, tamanhos, linhas: linhas.slice(0, tamanhos.length) };
 }
 
-// Controles bidi (U+061C, U+200E/F, U+202A–E, U+2066–9) e de largura zero (U+200B–D, U+2060, U+FEFF).
-const INVISIVEIS = /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+// Controles bidi (U+061C, U+200E/F, U+202A–E, U+2066–9), de largura zero (U+200B–D, U+2060, U+FEFF)
+// e separadores de linha/parágrafo (U+2028/9), que quebrariam a linha mesmo com `white-space: pre`.
+const INVISIVEIS = /[\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/g;
 
 /** Texto do arquivo como HTML: escapado e com cada invisível num `.inv` que mostra o código (CSS)
  * e o isola. O caractere continua no DOM: seleção, posição em bytes e cópia ficam iguais. */

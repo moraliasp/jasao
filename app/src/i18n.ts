@@ -1,4 +1,8 @@
 // Textos da interface em pt-BR e inglês; o idioma vem do sistema (navigator.language).
+
+/** Atalho escrito com ⌘ vira Ctrl (⌥⌘ → Ctrl+Alt+, ⇧⌘ → Ctrl+Shift+) fora do mac. */
+export const tecla = (x: string, mac = /Mac/.test(navigator.userAgent)) =>
+  mac ? x : x.replace(/⌥⌘/g, "Ctrl+Alt+").replace(/⇧⌘/g, "Ctrl+Shift+").replace(/⌘/g, "Ctrl+");
 const pt = {
   lang: "pt-BR",
   abrir: "Abrir…",
@@ -206,13 +210,13 @@ const pt = {
       achados: (n: string, m: string) => `${n} de ${m} registros`,
       filtrando: (r: string, pct: string) => `Filtrando ${r}: ${pct}%`,
       limpar: "Tirar o filtro",
-      filtrados: (r: string, n: string) => `Filtro ${r}: ${n} ${n === "1" ? "registro" : "registros"} · ⌘↓/⌘↑ anda entre eles na Árvore`,
+      filtrados: (r: string, n: string) => tecla(`Filtro ${r}: ${n} ${n === "1" ? "registro" : "registros"} · ⌘↓/⌘↑ anda entre eles na Árvore`),
       falha: {
         cancelada: "Filtro cancelado; vale o anterior.",
         // Teto `MAX_FILTRADOS` do núcleo (core/src/filtro.rs).
         grande: "Registros demais no filtro (acima de 50 milhões); vale o anterior.",
       } as Record<string, string>,
-      navegar: (k: string, m: string) => `Filtrado ${k} de ${m} · ⌘↓/⌘↑ anda entre eles`,
+      navegar: (k: string, m: string) => tecla(`Filtrado ${k} de ${m} · ⌘↓/⌘↑ anda entre eles`),
       semFiltro: "Sem filtro: na Estrutura, F filtra os registros do caminho ou do formato.",
     },
     ausente: "campo ausente (diferente de null)",
@@ -651,12 +655,12 @@ const en: Textos = {
       achados: (n: string, m: string) => `${n} of ${m} records`,
       filtrando: (r: string, pct: string) => `Filtering ${r}: ${pct}%`,
       limpar: "Clear filter",
-      filtrados: (r: string, n: string) => `Filter ${r}: ${n} ${n === "1" ? "record" : "records"} · ⌘↓/⌘↑ steps through them in Tree`,
+      filtrados: (r: string, n: string) => tecla(`Filter ${r}: ${n} ${n === "1" ? "record" : "records"} · ⌘↓/⌘↑ steps through them in Tree`),
       falha: {
         cancelada: "Filter cancelled; the previous one stays.",
         grande: "Too many records in the filter (over 50 million); the previous one stays.",
       } as Record<string, string>,
-      navegar: (k: string, m: string) => `Filtered ${k} of ${m} · ⌘↓/⌘↑ steps through them`,
+      navegar: (k: string, m: string) => tecla(`Filtered ${k} of ${m} · ⌘↓/⌘↑ steps through them`),
       semFiltro: "No filter: in Structure, F filters the records of the path or shape.",
     },
     ausente: "missing field (not the same as null)",
