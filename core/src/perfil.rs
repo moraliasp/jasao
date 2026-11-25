@@ -437,10 +437,12 @@ fn faixa(x: f64) -> i32 {
         return 0;
     }
     let a = x.abs();
-    let mut e = a.log10().floor();
-    // log10 arredonda: 1 ulp abaixo de 1e3 dá 3. Acerta pelo literal `1e{e}`, o mesmo que o jq
-    // de "salvar como" compara, para a Tabela e o arquivo salvo contarem igual.
-    if e.is_finite() {
+    let l = a.log10();
+    let mut e = l.floor();
+    // log10 arredonda: 1 ulp abaixo de 1e3 dá 3. Perto de uma potência (o resto é ~1e-16),
+    // acerta pelo literal `1e{e}`, o mesmo que o jq de "salvar como" compara, para a Tabela e o
+    // arquivo salvo contarem igual; longe dela, o `format!` ficaria no laço quente à toa.
+    if e.is_finite() && (l - l.round()).abs() < 1e-9 {
         let p = |e: f64| format!("1e{e}").parse::<f64>().unwrap_or(f64::INFINITY);
         if a < p(e) {
             e -= 1.0;
