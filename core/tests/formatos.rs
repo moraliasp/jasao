@@ -525,3 +525,33 @@ fn bignum_cbor_ate_1_kib_vira_inteiro() {
     let l = c.linhas("b.cbor", &bignum(1025));
     assert!(l[0].starts_with("\"AQAA"), "{}", &l[0][..20]);
 }
+
+/// Achado 14 (#81) na conversão: `para_cache` lê o MessagePack por `mmap`. O progresso (a cada
+/// 1 MiB lido) trunca o original no meio da conversão; com o original mapeado, o resto da leitura
+/// dá SIGBUS e derruba o processo de teste. Com a cópia do app, converte o arquivo de antes.
+#[test]
+fn truncar_o_original_no_meio_da_conversao_nao_derruba() {
+    let c = Caso::novo();
+    // 3 Mi valores soltos (fixint 1, uma linha cada): ~750 páginas; o progresso chama no caminho.
+    let n = 3 << 20;
+    let p = c.escrever("grande.msgpack", &vec![0x01; n]);
+    let truncou = std::cell::Cell::new(false);
+    let truncar = |_: u64, _: u64| {
+        if !truncou.replace(true) {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_len(0)
+                .unwrap();
+        }
+    };
+    let op = Opcoes {
+        progresso: Some(&truncar),
+        ..c.op()
+    };
+    let a = ArquivoLinhas::abrir_com(&p, &op).unwrap();
+    assert!(truncou.get(), "o progresso não chamou no meio da conversão");
+    assert_eq!(fs::metadata(&p).unwrap().len(), 0);
+    assert_eq!(a.linhas(), n);
+}

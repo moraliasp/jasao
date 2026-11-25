@@ -171,9 +171,9 @@ pub(crate) fn para_cache(caminho: &Path, entrada: Entrada, op: &Opcoes) -> io::R
             let mapa = if arquivo.metadata()?.len() == 0 {
                 None
             } else {
-                // SAFETY: só leitura; truncar o original durante a conversão é o mesmo caso do
-                // `mmap` de `ArquivoLinhas`.
-                Some(unsafe { Mmap::map(&*arquivo)? })
+                // SAFETY: só leitura, e de uma cópia do app (`privada`): truncar o original
+                // durante a conversão não chega ao mapa.
+                Some(unsafe { Mmap::map(&crate::linhas::privada(arquivo.try_clone()?, op)?)? })
             };
             converter(mapa.as_deref().unwrap_or_default(), entrada, saida, op)
         },
