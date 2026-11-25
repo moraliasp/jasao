@@ -3212,10 +3212,26 @@ fn arquivo<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Submenu
     filhos.push(&separador);
     filhos.push(&limpar);
     let abrir = Submenu::with_items(app, "Abrir recente", true, &filhos)?;
-    Submenu::with_items(app, "Arquivo", true, &[&abrir])
+    // Ações da interface (id `ui:<id do botão>`): o front clica o botão de mesmo id.
+    let ui = |id: &str, texto: &str, atalho: Option<&str>| {
+        MenuItem::with_id(app, format!("ui:{id}"), texto, true, atalho)
+    };
+    Submenu::with_items(
+        app,
+        "Arquivo",
+        true,
+        &[
+            &ui("abrir", "Abrir…", Some("CmdOrCtrl+O"))?,
+            &ui("abrir-url", "Abrir URL…", None)?,
+            &abrir,
+            &PredefinedMenuItem::separator(app)?,
+            &ui("ir-menu", "Ir para linha…", Some("CmdOrCtrl+L"))?,
+            &ui("tema", "Alternar tema", None)?,
+        ],
+    )
 }
 
-/// Escolha no menu Arquivo: recente vai pelo mesmo caminho de um pedido do sistema.
+/// Escolha no menu Arquivo: recente vai pelo mesmo caminho de um pedido do sistema; `ui:` vira evento pro front.
 #[cfg(target_os = "macos")]
 fn no_menu<R: Runtime>(app: &AppHandle<R>, evento: tauri::menu::MenuEvent) {
     let id = evento.id().as_ref();
@@ -3226,6 +3242,8 @@ fn no_menu<R: Runtime>(app: &AppHandle<R>, evento: tauri::menu::MenuEvent) {
             eprintln!("recentes: {e}");
         }
         recentes_mudaram(app);
+    } else if let Some(botao) = id.strip_prefix("ui:") {
+        let _ = app.emit("menu", botao);
     }
 }
 

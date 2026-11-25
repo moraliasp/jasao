@@ -263,6 +263,8 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
       marcarSalvo();
       mostrar(s, s?.msg ?? "", s?.erro);
     },
+    /** Há filtro em uso na aba ativa (resultado aberto, rodando ou expressão no campo): a faixa fica. */
+    ativa: (): boolean => !!s && (s.original !== null || s.rodando || !!campo.value.trim()),
     /** Aba fechada: esquece a consulta dela (o Rust apaga o temporário ao fechar o documento). */
     fechar: (id: number) => void estados.delete(id),
   };

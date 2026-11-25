@@ -20,50 +20,55 @@ export interface Laudo {
   atencao_mais: number;
 }
 
-/** O que depende do resto da interface: a Tabela serve (`null`: ainda não se sabe) e há outra aba
- * com arquivo para comparar. */
-export interface Contexto { tabela: boolean | null; outraAba: boolean }
+/** O que depende do resto da interface: valores da legenda da régua, na ordem das cores c1…c4
+ * (o formato fora dela é "outros", c5). */
+export interface Contexto { cores: string[] }
 
 /** Ações dos botões, lidas por delegação de clique em `main.ts`. */
-export type Acao = "tabela" | "variante" | "estrutura" | "exportar" | "diff";
+export type Acao = "variante" | "estrutura" | "exportar" | "diff";
 
-const botao = (acao: Acao, rotulo: string, dado = "") =>
-  `<button type="button" class="lk" data-acao="${acao}"${dado}>${rotulo}</button>`;
+const botao = (acao: Acao, rotulo: string, dado = "", classe = "lk") =>
+  `<button type="button" class="${classe}" data-acao="${acao}"${dado}>${rotulo}</button>`;
 
-/** HTML do laudo; `null` enquanto a inferência não acabou. */
+/** Até `MAX` achados por seção; o resto vira "e mais n". */
+const MAX = 3;
+
+/** HTML do laudo no inspetor; `null` enquanto a inferência não acabou. */
 export function laudoHtml(l: Laudo | null, ctx: Contexto, t: Textos, fmt: (n: number) => string): string {
   const L = t.laudo;
-  if (!l) return `<h2>${L.titulo}</h2><p class="pm">${L.analisando}</p>`;
+  if (!l) return `<p class="more">${L.analisando}</p>`;
   const c = (s: string) => `<code>${visivel(s)}</code>`;
-  const forma: string[] = [];
+  const lista = (xs: string[], resto: number, mais: (n: string) => string) => {
+    const corte = Math.max(0, xs.length - MAX) + resto;
+    return `<ul class="find">${xs.slice(0, MAX).map((x) => `<li>${x}</li>`).join("")}${corte ? `<li class="more">${mais(fmt(corte))}</li>` : ""}</ul>`;
+  };
+  let html = l.varridas < l.total ? `<p class="aviso">${L.parcial(fmt(l.varridas), fmt(l.total))}</p>` : "";
+
   const d = l.discriminador;
   if (d) {
-    const vs = d.variantes.map((v) => {
-      const txt = `${c(v.valor)} (${fmt(v.registros)})`;
-      return v.linha === null ? txt : botao("variante", txt, ` data-linha="${v.linha}" title="${L.verVariante}"`);
+    const topo = Math.max(1, ...d.variantes.map((v) => v.registros));
+    const linhas = d.variantes.map((v) => {
+      const i = ctx.cores.indexOf(v.valor);
+      const cor = i >= 0 && i < 4 ? i + 1 : 5;
+      const nome = v.linha === null ? c(v.valor) : botao("variante", c(v.valor), ` data-linha="${v.linha}" title="${L.verVariante}"`);
+      return `<span class="sw pt c${cor}"></span><span class="nm">${nome}</span><span class="n">${fmt(v.registros)}</span>` +
+        `<span class="bar"><span class="pt c${cor}" style="width:${((v.registros / topo) * 100).toFixed(1)}%"></span></span>`;
     });
-    forma.push(`${L.formas(fmt(d.variantes.length + d.mais), c(d.campo))}: ${vs.join(", ")}${d.mais ? ` ${L.eMais(fmt(d.mais))}` : ""}`);
-  } else if (l.registros) forma.push(L.umaForma);
-  for (const o of l.opcionais) forma.push(botao("estrutura", L.falta(c(o.caminho), fmt(o.de - o.presenca), fmt(o.de)), ` data-indice="${o.indice}"`));
-  if (l.opcionais_mais) forma.push(L.maisOpcionais(fmt(l.opcionais_mais)));
-  else if (!l.opcionais.length && l.registros) forma.push(L.semOpcional);
+    html += `<h4>${L.formas(c(d.campo))}</h4><div class="fmt">${linhas.join("")}</div>` +
+      (d.mais ? `<p class="more">${L.eMais(fmt(d.mais))}</p>` : "");
+  } else if (l.registros) html += `<h4>${L.forma}</h4><p class="more">${L.umaForma}</p>`;
 
   const atencao: string[] = [];
-  if (l.invalidas) atencao.push(L.invalidas(fmt(l.invalidas), l.primeira_invalida === null ? null : fmt(l.primeira_invalida + 1)));
-  if (l.vazias) atencao.push(L.vazias(fmt(l.vazias)));
-  for (const a of l.atencao) atencao.push(botao("estrutura", `${c(a.caminho)}: ${t.estrutura.avisos[a.aviso] ?? visivel(a.aviso)}`, ` data-indice="${a.indice}"`));
-  if (l.atencao_mais) atencao.push(L.maisAvisos(fmt(l.atencao_mais)));
-  if (!atencao.length) atencao.push(L.semAviso);
+  if (l.invalidas) atencao.push(`<span class="bad">${L.invalidas(fmt(l.invalidas), l.primeira_invalida === null ? null : fmt(l.primeira_invalida + 1))}</span>`);
+  if (l.vazias) atencao.push(`<span>${L.vazias(fmt(l.vazias))}</span>`);
+  for (const a of l.atencao)
+    atencao.push(botao("estrutura", `${c(a.caminho)} <span>${t.estrutura.avisos[a.aviso] ?? visivel(a.aviso)}</span>`, ` data-indice="${a.indice}"`));
+  html += `<h4>${L.atencao}</h4>` + (atencao.length || l.atencao_mais ? lista(atencao, l.atencao_mais, L.maisAvisos) : `<p class="more">${L.semAviso}</p>`);
 
-  const passos: string[] = [];
-  if (ctx.tabela) passos.push(botao("tabela", L.abrirTabela));
-  if (l.registros) passos.push(botao("exportar", L.exportar));
-  if (ctx.outraAba) passos.push(botao("diff", L.comparar));
-
-  const ul = (xs: string[]) => `<ul>${xs.map((x) => `<li>${x}</li>`).join("")}</ul>`;
-  const parcial = l.varridas < l.total ? `<p class="aviso">${L.parcial(fmt(l.varridas), fmt(l.total))}</p>` : "";
-  return `<h2>${L.titulo}</h2>${parcial}` +
-    (forma.length ? `<h3>${L.forma}</h3>${ul(forma)}` : "") +
-    `<h3>${L.atencao}</h3>${ul(atencao)}` +
-    (passos.length ? `<div class="passos">${passos.join("")}</div>` : "");
+  if (l.registros) {
+    const opc = l.opcionais.map((o) => botao("estrutura", `${c(o.caminho)} <span>${L.falta(fmt(o.de - o.presenca))}</span>`, ` data-indice="${o.indice}"`));
+    html += `<h4>${L.opcionais}</h4>` + (opc.length || l.opcionais_mais ? lista(opc, l.opcionais_mais, L.maisOpcionais) : `<p class="more">${L.semOpcional}</p>`);
+    html += `<div class="acts">${botao("exportar", L.exportar, "", "btn")}${botao("diff", L.comparar, "", "btn")}</div>`;
+  }
+  return html;
 }
