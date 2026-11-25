@@ -205,3 +205,9 @@ test("corte não parte um par substituto", () => {
   assert.equal(corte(v), `${"a".repeat(79)}…`);
   assert.equal(corte("curto"), "curto");
 });
+
+test("detalhe: caminho sem escalares (a raiz) não mostra '0 distintos'", () => {
+  const raiz: Perfil = { ...p, distintos: 0, distintos_aprox: false, numeros: null, textos: null, comuns: [], comuns_aprox: false };
+  assert.ok(!detalhe(".", raiz, t, fmt).includes(t.estrutura.distintos("0")));
+  assert.ok(detalhe(".x", p, t, fmt).includes(t.estrutura.distintos("7")), "com escalares, distintos aparece");
+});

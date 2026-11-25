@@ -932,3 +932,10 @@ export function motivoDoRust(motivo: string, x: Textos = t): string {
   if (!motivo.startsWith("jasao:")) return motivo;
   return (x.motivos as Record<string, string>)[motivo.slice(6)] ?? x.motivos.outro;
 }
+
+/** O número do arquivo no título e no inspetor: linhas enquanto a inferência corre, registros
+ * (JSON válido) quando ela acaba (`registros` deixa de ser `null`). */
+export function contagemArquivo(registros: number | null, linhas: number, fmt: (n: number) => string): string {
+  const [n, [um, varios]] = registros !== null ? [registros, t.registros] : [linhas, t.linhas];
+  return `${fmt(n)} ${n === 1 ? um : varios}`;
+}

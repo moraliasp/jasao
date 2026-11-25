@@ -2,8 +2,9 @@
 //!
 //! - `conteudo` olha só o começo do arquivo (rápido, roda ao abrir).
 //! - `varrer` valida todas as linhas em paralelo, fora da thread da interface, com progresso e
-//!   cancelamento. A regra de "inválida" é a da árvore (`arvore::validar`); linha vazia (só
-//!   espaço) conta à parte, como no laudo, na Estrutura e em `erros`.
+//!   cancelamento. "Inválida" é o que a Estrutura e o laudo contam: não é JSON para a árvore
+//!   (`arvore::validar`) ou passa de `estrutura::PROFUNDIDADE_MAX` níveis (a árvore abre até
+//!   1000). Linha vazia (só espaço) conta à parte, como no laudo, na Estrutura e em `erros`.
 //! - `campos` conta as chaves do topo dos registros pela inferência (`estrutura::inferir`).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::Relaxed};
@@ -13,7 +14,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::ArquivoLinhas;
-use crate::arvore::validar;
+use crate::arvore::{passa_da_profundidade, validar};
 use crate::{estrutura, regua};
 
 /// Linhas olhadas por `conteudo` para dizer de que é feito um JSONL.
@@ -131,7 +132,9 @@ pub fn varrer(
                     for (i, l) in linhas.iter().enumerate() {
                         if l.iter().all(|c| matches!(c, b' ' | b'\t' | b'\r')) {
                             brancas += 1;
-                        } else if validar(l).is_err() {
+                        } else if validar(l).is_err()
+                            || passa_da_profundidade(l, estrutura::PROFUNDIDADE_MAX).is_some()
+                        {
                             marcas[b * BLOCO + i].store(regua::INVALIDA, Relaxed);
                             ruins += 1;
                         }
@@ -192,11 +195,25 @@ mod testes {
     }
 
     #[test]
-    fn conta_invalidas_como_a_arvore_e_vazias_a_parte() {
+    fn conta_invalidas_como_a_estrutura_e_vazias_a_parte() {
         let mut dados = Vec::new();
         for i in 0..10_000 {
             match i % 1000 {
                 7 => dados.extend_from_slice(b"{\"a\":tru}\n"),
+                // Aninhada acima do limite da inferência: inválida também aqui.
+                9 if i == 9 => {
+                    let n = estrutura::PROFUNDIDADE_MAX + 1;
+                    dados.extend_from_slice(
+                        format!("{}{}\n", "[".repeat(n), "]".repeat(n)).as_bytes(),
+                    )
+                }
+                // No limite: registro.
+                10 if i == 10 => {
+                    let n = estrutura::PROFUNDIDADE_MAX;
+                    dados.extend_from_slice(
+                        format!("{}{}\n", "[".repeat(n), "]".repeat(n)).as_bytes(),
+                    )
+                }
                 8 => dados.extend_from_slice(b"\n"),
                 _ => dados.extend_from_slice(format!("{{\"i\":{i}}}\n").as_bytes()),
             }
@@ -210,7 +227,7 @@ mod testes {
             Progresso {
                 varridas: 10_000,
                 total: 10_000,
-                invalidas: 10,
+                invalidas: 11,
                 vazias: 10,
                 fim: true,
                 cancelado: false

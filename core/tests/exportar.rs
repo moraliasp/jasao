@@ -615,7 +615,7 @@ fn tipos_ts_uniao_e_opcional() {
 
 #[test]
 fn invalida_vazia_e_recusada_contam_a_parte() {
-    // Vazia não conta; `{"a":}` e 200 níveis são inválidas (a inferência para em 128); `1e400` é
+    // Vazia não conta; `{"a":}` e 200 níveis são inválidas (a inferência para acima de 128); `1e400` é
     // registro que o `serde_json` não lê.
     let fundo = format!("{}{}", "[".repeat(200), "]".repeat(200));
     let dados = format!("{{\"a\":1}}\n\n{{\"a\":}}\n{{\"a\":1e400}}\n{{\"a\":{fundo}}}\n");
@@ -641,4 +641,29 @@ fn invalida_vazia_e_recusada_contam_a_parte() {
             (4, "jasao:aninhamento")
         ]
     );
+}
+
+#[test]
+fn validador_e_inferencia_cortam_no_mesmo_nivel() {
+    // Um nível a menos, o limite e um a mais: o que a Estrutura conta como registro o validador
+    // lê (o `serde_json` sozinho para em 127), e o que ela conta como inválida ele também conta.
+    let max = estrutura::PROFUNDIDADE_MAX;
+    for (n, registros, invalidas) in [(max - 1, 2, 0), (max, 2, 0), (max + 1, 1, 1)] {
+        let fundo = format!("{}{}", "[".repeat(n), "]".repeat(n));
+        let dados = format!("1\n{fundo}\n");
+        let inf = inferir(dados.as_bytes());
+        let r = &inf.resumo;
+        assert_eq!(
+            (r.registros(), r.invalidas.n),
+            (registros, invalidas),
+            "{n} níveis"
+        );
+        let v = validar(dados.as_bytes(), inf.entrada, "{}");
+        assert_eq!(
+            (v.passam, v.invalidas, v.recusadas),
+            (registros, invalidas, 0),
+            "{n} níveis: {:?}",
+            v.falhas
+        );
+    }
 }

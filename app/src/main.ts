@@ -12,7 +12,7 @@ import { criarBusca } from "./busca";
 import { abrirLinkDe, criarDetalhe, selo } from "./detalhe";
 import { EXEMPLOS, nomeExemplo } from "./exemplos";
 import { detalhe as detalheE, type Estrutura, faceta, type ItemE, itens as itensEstrutura, type Perfil } from "./estrutura";
-import { erroDoRust, type Motivo, t, tamanho, tecla } from "./i18n";
+import { contagemArquivo, erroDoRust, type Motivo, t, tamanho, tecla } from "./i18n";
 import { criarRegua, type Legenda } from "./regua";
 import { type Acao, type Laudo, laudoHtml } from "./laudo";
 import { espaco, geometria as geo, inteiras, mostrarLinha as mostrarEm, rolarPara } from "./rolagem";
@@ -1218,8 +1218,7 @@ function desenharAndamento(): void {
     for (const id of ids) $(id).textContent = "";
     return;
   }
-  // Registros (JSON válido) quando a inferência acaba; antes, só as linhas do arquivo.
-  const n = resumo.registros !== null ? plural(resumo.registros, t.registros) : plural(resumo.linhas, t.linhas);
+  const n = contagemArquivo(resumo.registros, resumo.linhas, fmt);
   $("meta").textContent = $("meta-st").textContent = `${t.painel.conteudo[resumo.conteudo]} · ${n} · ${tamanho(resumo.bytes)}`;
   $("aberto-ms").textContent = a.ms ? t.barra.abertoEm(a.ms) : "";
   $("painel-meta").innerHTML =

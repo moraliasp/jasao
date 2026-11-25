@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { chamar, docAtivo } from "./doc";
 import { porGeracao } from "./geracao";
 import { t } from "./i18n";
-import { htmlEstrutura, htmlValores, lerRegistros, mesmoArquivo, type DiffArquivos, type DiffEstrutura } from "./diff";
+import { htmlEstrutura, htmlValores, lerRegistros, mesmoArquivo, travarPar as travar, type DiffArquivos, type DiffEstrutura } from "./diff";
 import { htmlLinha, marcar, parMarcado, type Linha } from "./linhaTempo";
 import { escAtributo } from "./texto";
 
@@ -80,11 +80,7 @@ export function criarDiff(el: HTMLElement, o: Opcoes) {
     statusEl.innerHTML = msg;
   };
   const par = () => [Number(antesEl.value), Number(depoisEl.value)] as const;
-  /** Antes e Depois nunca são o mesmo arquivo: cada lista desabilita o que a outra escolheu. */
-  const travarPar = (abas = o.abas()) => {
-    for (const [sel, outro] of [[antesEl, depoisEl], [depoisEl, antesEl]] as const)
-      for (const op of sel.options) op.disabled = mesmoArquivo(abas, op.value, outro.value);
-  };
+  const travarPar = (abas = o.abas()) => travar(abas, antesEl, depoisEl);
 
   /** Refaz as listas de arquivos, mantendo a escolha que ainda existe; padrão: ativa × outra. */
   function opcoes(): boolean {

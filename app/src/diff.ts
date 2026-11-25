@@ -127,3 +127,15 @@ export function mesmoArquivo(abas: { doc: number; caminho: string | null }[], a:
   const ca = caminho(a);
   return ca !== null && ca === caminho(b);
 }
+
+/** Um `<select>` para `travarPar`: só o que a função lê e muda (testável sem DOM). */
+export interface Lista {
+  value: string;
+  options: Iterable<{ value: string; disabled: boolean }>;
+}
+
+/** Antes e Depois nunca são o mesmo arquivo: cada lista desabilita o que a outra escolheu. */
+export function travarPar(abas: { doc: number; caminho: string | null }[], antes: Lista, depois: Lista): void {
+  for (const [sel, outro] of [[antes, depois], [depois, antes]] as const)
+    for (const op of sel.options) op.disabled = mesmoArquivo(abas, op.value, outro.value);
+}

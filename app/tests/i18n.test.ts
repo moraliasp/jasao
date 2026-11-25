@@ -1,7 +1,7 @@
 // Tradução dos códigos de erro do Rust (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { erroDoRust, motivoDoRust, t } from "../src/i18n.ts";
+import { contagemArquivo, erroDoRust, motivoDoRust, t } from "../src/i18n.ts";
 
 test("códigos da descompactação e da concessão viram texto, ao abrir e na consulta", () => {
   assert.equal(erroDoRust("jasao:razao"), t.compactado.recusada);
@@ -24,4 +24,12 @@ test("motivo do validador: código jasao: vira texto; o do schema passa como vei
   }
   assert.equal(motivoDoRust("jasao:desconhecido"), t.motivos.outro);
   assert.equal(motivoDoRust("/a: 1 is not of type \"string\""), "/a: 1 is not of type \"string\"");
+});
+
+test("contagemArquivo: linhas enquanto infere, registros quando acaba", () => {
+  const fmt = (n: number) => String(n);
+  assert.equal(contagemArquivo(null, 1417, fmt), `1417 ${t.linhas[1]}`);
+  assert.equal(contagemArquivo(1411, 1417, fmt), `1411 ${t.registros[1]}`);
+  assert.equal(contagemArquivo(1, 3, fmt), `1 ${t.registros[0]}`);
+  assert.equal(contagemArquivo(0, 3, fmt), `0 ${t.registros[1]}`, "inferência acabada com zero registros não volta para linhas");
 });
