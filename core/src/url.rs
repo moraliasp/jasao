@@ -582,7 +582,7 @@ fn enviar(
 
 /// Faz o pedido seguindo até `MAX_REDIRECIONAMENTOS` saltos. A cada salto: nunca de https para
 /// http; para outro servidor (esquema, host ou porta), os cabeçalhos sensíveis (`sensivel`) não
-/// vão, e 307/308 com corpo é recusado (reenviaria o corpo a quem o usuário não escolheu);
+/// vão, e 307/308 de POST é recusado, com ou sem corpo (repetiria o POST a quem o usuário não escolheu);
 /// 303, e 301/302 de POST, viram GET sem corpo (como navegadores e cURL).
 fn pedir(pedido: &Pedido, op: &Opcoes) -> io::Result<Resposta> {
     let agente = agente(pedido, op);
@@ -639,11 +639,12 @@ fn pedir(pedido: &Pedido, op: &Opcoes) -> io::Result<Resposta> {
             }
         }
         if prox.origin() != url.origin() {
-            if matches!(st, 307 | 308) && corpo.is_some() {
+            // 307/308 repetem o método: um POST (com ou sem corpo) não vai a quem o usuário não escolheu.
+            if matches!(st, 307 | 308) && (corpo.is_some() || metodo == Metodo::Post) {
                 return Err(erro(
                     ErrorKind::PermissionDenied,
                     format!(
-                        "redirecionamento {st} com corpo para outro servidor ({}) recusado",
+                        "redirecionamento {st} de POST para outro servidor ({}) recusado",
                         sem_consulta(prox.as_str())
                     ),
                 ));

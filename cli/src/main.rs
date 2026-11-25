@@ -348,7 +348,8 @@ static HTTP: AtomicBool = AtomicBool::new(false);
 /// URL (`https://…`) ou comando cURL no lugar do arquivo: baixa para o cache (ver `nucleo::url`).
 fn remoto(arquivo: &str) -> bool {
     let a = arquivo.trim_start();
-    ["https://", "http://", "curl "]
+    // Os mesmos começos de cURL que `Pedido::interpretar` aceita.
+    ["https://", "http://", "curl ", "curl\t", "curl\\"]
         .iter()
         .any(|p| a.len() >= p.len() && a[..p.len()].eq_ignore_ascii_case(p))
 }

@@ -404,6 +404,72 @@ fn redirecionamento_307_com_corpo_para_outro_host_recusado() {
 }
 
 #[test]
+fn redirecionamento_307_de_post_sem_corpo_para_outro_host_recusado() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pb, rxb) = servir(vec![ok(b"{}", "")]);
+    let (pa, rxa) = servir(vec![redireciona(
+        "307 Temporary Redirect",
+        &format!("http://localhost:{pb}/"),
+    )]);
+    let curl = format!("curl -X POST http://127.0.0.1:{pa}/");
+    let e = url::baixar(&Pedido::interpretar(&curl).unwrap(), &op(dir.path())).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+    assert!(e.to_string().contains("307 de POST"), "{e}");
+    assert!(rxa.recv().unwrap().starts_with("POST / "));
+    assert!(rxb.recv_timeout(Duration::from_millis(300)).is_err());
+    assert!(cache_vazio(dir.path()));
+}
+
+/// Só http(s): `ftp:` e `file:` no `Location` são recusados com a mensagem própria (não pelo
+/// erro do ureq), de https e de http.
+#[test]
+fn redirecionamento_para_ftp_ou_file_recusado() {
+    let dir = tempfile::tempdir().unwrap();
+    // O destino `ftp` aponta para uma porta local que escuta: nenhuma conexão pode chegar nela.
+    let alvo = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    alvo.set_nonblocking(true).unwrap();
+    let ftp = format!(
+        "ftp://127.0.0.1:{}/x.json",
+        alvo.local_addr().unwrap().port()
+    );
+    for destino in [ftp.as_str(), "file:///etc/passwd"] {
+        let (porta, rx) = servir(vec![redireciona("302 Found", destino)]);
+        let p = Pedido::de_url(&format!("http://127.0.0.1:{porta}/")).unwrap();
+        let e = url::baixar(&p, &op(dir.path())).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{destino}: {e}");
+        assert!(
+            e.to_string().contains("esquema não suportado"),
+            "{destino}: {e}"
+        );
+        assert!(rx.recv().is_ok());
+        // Um pedido só (o do redirecionamento): o servidor não recebe um segundo.
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        assert!(
+            alvo.accept().is_err(),
+            "{destino}: o destino recebeu conexão"
+        );
+        assert!(cache_vazio(dir.path()));
+    }
+}
+
+/// `Location` relativo resolve contra a URL atual (caminho relativo e absoluto).
+#[test]
+fn redirecionamento_relativo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (porta, rx) = servir(vec![
+        redireciona("302 Found", "c.jsonl"),
+        redireciona("302 Found", "/fim/d.jsonl?v=1"),
+        ok(b"{\"a\":1}\n", ""),
+    ]);
+    let p = Pedido::de_url(&format!("http://127.0.0.1:{porta}/a/b.jsonl")).unwrap();
+    let t = url::baixar(&p, &op(dir.path())).unwrap();
+    assert_eq!(std::fs::read(t.caminho()).unwrap(), b"{\"a\":1}\n");
+    assert!(rx.recv().unwrap().starts_with("GET /a/b.jsonl "));
+    assert!(rx.recv().unwrap().starts_with("GET /a/c.jsonl "));
+    assert!(rx.recv().unwrap().starts_with("GET /fim/d.jsonl?v=1 "));
+}
+
+#[test]
 fn cinco_redirecionamentos_passam_e_o_sexto_falha() {
     let dir = tempfile::tempdir().unwrap();
     for (n, passa) in [(5, true), (6, false)] {

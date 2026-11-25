@@ -57,6 +57,24 @@ fn linhas_de_url_com_http_explicito() {
     assert!(err.contains("aviso: http://"), "{err}");
 }
 
+/// cURL colado com tab ou quebra de linha (`curl \`) logo depois de `curl` também baixa.
+#[test]
+fn curl_com_tab_ou_barra() {
+    let cache = tempfile::tempdir().unwrap();
+    let porta = servir(vec![
+        resposta("200 OK", "{\"a\":1}\n"),
+        resposta("200 OK", "{\"a\":1}\n"),
+    ]);
+    for curl in [
+        format!("curl\thttp://127.0.0.1:{porta}/x.jsonl"),
+        format!("curl\\\n  http://127.0.0.1:{porta}/x.jsonl"),
+    ] {
+        let (c, out, err) = jasao(&["linhas", &curl, "--http"], cache.path());
+        assert_eq!(c, 0, "{curl:?}: {err}");
+        assert!(out.starts_with("1 linha"), "{curl:?}: {out}");
+    }
+}
+
 #[test]
 fn curl_com_segredo_nao_vaza_no_erro() {
     let cache = tempfile::tempdir().unwrap();
