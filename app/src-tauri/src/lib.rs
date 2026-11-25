@@ -3976,7 +3976,12 @@ mod testes {
             !csv.contains("S3NT1N3LA") && csv.starts_with(".tipo,.id,.senha,.nome,.b"),
             "{csv}"
         );
-        // Sem máscara fica só do dono; mascarado, 0644.
+        let csv_cru = gravar(
+            "c.csv",
+            json!({"fonte": {"tipo": "tudo"}, "saida": "csv", "mascara": "sem_mascara"}),
+        );
+        assert!(csv_cru.contains("S3NT1N3LA"), "{csv_cru}");
+        // Sem máscara fica só do dono; mascarado, 0644. Vale para o CSV também.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -3988,6 +3993,7 @@ mod testes {
                     & 0o777
             };
             assert_eq!((modo("c.jsonl"), modo("m.jsonl")), (0o600, 0o644));
+            assert_eq!((modo("c.csv"), modo("m.csv")), (0o600, 0o644));
         }
 
         // Erro do jq num registro: grava o resto e devolve a contagem e o primeiro.

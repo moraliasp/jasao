@@ -329,7 +329,6 @@ const pt = {
     anonimizar: "Anonimizar segredos no resultado: cada valor vira um código estável nesta sessão (não é criptografia)",
     salvar: "Salvar filtro",
     esquecer: "Tirar dos filtros salvos",
-    salvo: (c: string) => `Salvo em ${c}`,
   },
   salvarComo: {
     abrir: "Salvar como…",
@@ -774,7 +773,6 @@ const en: Textos = {
     anonimizar: "Anonymize secrets in the result: each value becomes a code that is stable for this session (not cryptography)",
     salvar: "Save filter",
     esquecer: "Remove from saved filters",
-    salvo: (c: string) => `Saved to ${c}`,
   },
   salvarComo: {
     abrir: "Save as…",
