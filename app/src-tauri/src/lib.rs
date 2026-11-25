@@ -1650,7 +1650,8 @@ fn diff_valores<R: Runtime>(
                 emitir(&app, "diff_valores", antes, a);
             }
         };
-        let (a, b) = (fa.bytes(), fb.bytes());
+        // Compara o cru (segredo trocado é diferença), mostra o mascarado.
+        let (a, b) = (&*fa, &*fb);
         let r = match registros {
             Some([na, nb]) => {
                 nucleo::valores::registros(a, ia.entrada, na, b, ib.entrada, nb, &cancelar)
@@ -3307,6 +3308,19 @@ pub fn run() {
 
 #[cfg(test)]
 mod testes {
+    #[test]
+    fn diff_valores_compara_o_cru() {
+        // O comando precisa de AppHandle/State: confere-se na fonte que ele entrega as ArquivoLinhas
+        // (cru + mascarado) ao núcleo, e não a cópia mascarada (`.bytes()`), que escondia segredo trocado.
+        let fonte = include_str!("lib.rs");
+        let corpo = fonte.split("fn diff_valores<").nth(1).unwrap();
+        let corpo = &corpo[..corpo.find("\n}\n").unwrap()];
+        assert!(corpo.contains("let (a, b) = (&*fa, &*fb);"));
+        assert!(corpo.contains("valores::arquivos(a, ia.entrada, b, ib.entrada"));
+        assert!(corpo.contains("valores::registros(a, ia.entrada, na, b, ib.entrada, nb"));
+        assert!(!corpo.contains(".bytes()"));
+    }
+
     #[test]
     fn gravar_resultado_jsonl_e_csv() {
         let d = tempfile::tempdir().unwrap();

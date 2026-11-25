@@ -134,3 +134,7 @@ export function indiceDe(s: string, linha: number, coluna: number): number {
   for (let c = 1; c < coluna && i < s.length && s[i] !== "\n"; c++) i += s.codePointAt(i)! > 0xffff ? 2 : 1;
   return i;
 }
+
+/** `html` com `antes` logo depois do primeiro `<span>`. Função no `replace`: `$&`, `$1`… de um nome
+ * de arquivo não viram padrão. */
+export const aposSpan = (html: string, antes: string) => html.replace("<span>", () => `<span>${antes}`);

@@ -115,7 +115,12 @@ export function itens(e: Estrutura, t: Textos, fmt: Fmt): ItemE[] {
 
 /** Valor cru do núcleo para mostrar: cortado em `MAX` caracteres visíveis. */
 const MAX = 80;
-const corte = (v: string) => (v.length > MAX ? `${v.slice(0, MAX)}…` : v);
+export const corte = (v: string) => {
+  if (v.length <= MAX) return v;
+  // Não parte um par substituto (emoji etc.) no meio.
+  const n = /[\uD800-\uDBFF]/.test(v[MAX - 1]) ? MAX - 1 : MAX;
+  return `${v.slice(0, n)}…`;
+};
 const curto = (v: string) => visivel(corte(v));
 
 /** Faixa de grandeza: `0`, `1e2…1e3`, `−1e0…1e1`. */

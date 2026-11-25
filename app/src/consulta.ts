@@ -8,6 +8,7 @@ import { chamar } from "./doc";
 import { alternarFiltro, CHAVE_FILTROS, lerFiltros } from "./filtros";
 import { erroDoRust, t } from "./i18n";
 import { indiceDe } from "./texto";
+import { eventoVale } from "./geracao";
 
 interface Andamento {
   id: number;
@@ -212,7 +213,7 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
 
   void listen<Andamento>("consulta", ({ payload: p }) => {
     const e = estados.get(p.id);
-    if (!e || p.geracao < e.geracao || (e.esperando && p.geracao === e.geracao)) return;
+    if (!e || !eventoVale(e, p.geracao)) return;
     e.geracao = p.geracao;
     if (p.fim) return void fim(e, p);
     mostrar(e, t.consulta.andamento(o.fmt(p.resultados), Math.floor((p.linhas / Math.max(1, p.total)) * 100)));
