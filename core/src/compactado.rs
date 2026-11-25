@@ -507,10 +507,13 @@ fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
     let agora = SystemTime::now();
     let mut entradas = Vec::new();
     for e in fs::read_dir(dir)? {
-        let e = e?;
+        // Outra abertura pode renomear ou apagar a entrada entre listar e ler: pula, não falha.
+        let Ok(e) = e else { continue };
         let caminho = e.path();
-        let meta = e.metadata()?;
-        let quando = meta.modified()?;
+        let Ok(meta) = e.metadata() else { continue };
+        let Ok(quando) = meta.modified() else {
+            continue;
+        };
         match caminho.extension().and_then(|x| x.to_str()) {
             Some(EXT_CACHE) => {
                 // Cache de versão anterior foi criado aberto para todos.
@@ -545,6 +548,29 @@ fn limpar(dir: &Path, teto: u64, manter: Option<&Path>) -> io::Result<()> {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn limpar_nao_falha_com_arquivo_sumindo_no_meio() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_owned();
+        let fim = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = fim.clone();
+        let outro = std::thread::spawn(move || {
+            let mut i = 0u64;
+            while !f.load(std::sync::atomic::Ordering::Relaxed) {
+                let c = d.join(format!("x{}.{EXT_CACHE}", i % 64));
+                let _ = fs::write(&c, b"1");
+                let _ = fs::remove_file(&c);
+                i += 1;
+            }
+        });
+        let erros = (0..2000)
+            .filter(|_| limpar(dir.path(), u64::MAX, None).is_err())
+            .count();
+        fim.store(true, std::sync::atomic::Ordering::Relaxed);
+        outro.join().unwrap();
+        assert_eq!(erros, 0);
+    }
 
     #[test]
     fn detecta_pelos_bytes() {

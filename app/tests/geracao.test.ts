@@ -29,3 +29,12 @@ test("evento de geração velha ou parada é descartado", () => {
   assert.deepEqual(vistos, []);
   assert.equal(e.atual, 3);
 });
+
+test("fim de uma geração mais nova sobrevive a fixar uma mais velha (respostas fora de ordem)", () => {
+  const vistos: Ev[] = [];
+  const e = porGeracao<Ev>((v) => vistos.push(v));
+  e.receber({ geracao: 2, fim: true });
+  e.fixar(1); // resposta da 1ª chamada chega depois do fim da 2ª
+  e.fixar(2);
+  assert.deepEqual(vistos, [{ geracao: 2, fim: true }]);
+});

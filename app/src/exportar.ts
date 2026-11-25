@@ -68,7 +68,7 @@ export function criarExportar(el: HTMLElement, o: Opcoes) {
   const estado = (msg: string, classe = "") => {
     statusEl.className = `check ${classe}`;
     const sobre = alvo ? `<b>${esc(alvo.deFora ? x.contraSchema(alvo.nome) : alvo.nome)}</b> · ` : "";
-    statusEl.innerHTML = msg.replace("<span>", `<span>${sobre}`);
+    statusEl.innerHTML = msg.replace("<span>", () => `<span>${sobre}`); // função: `$` do nome não é padrão
   };
   const pronto = (ok: boolean) => botoes.forEach((b) => (b.disabled = !ok));
 

@@ -2,7 +2,7 @@
 // O idioma de `t` vem do ambiente; as expectativas usam o próprio `t` para não depender dele.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detalhe, type Estrutura, faceta, faixa, itens, type Perfil, presenca, segmento } from "../src/estrutura.ts";
+import { corte, detalhe, type Estrutura, faceta, faixa, itens, type Perfil, presenca, segmento } from "../src/estrutura.ts";
 import { t } from "../src/i18n.ts";
 
 const fmt = (n: number) => String(n);
@@ -197,4 +197,11 @@ test("facetas: faixa vira sinal e grandeza, inclusive a última e a do zero", ()
   assert.equal(ultima?.rotulo, t.tabela.filtro.faixa(".v", "1e2…1e3"));
   assert.equal(faceta(2, ".v", p, { faixa: String(fs.length) }, t), null);
   assert.equal(faceta(2, ".v", { ...p, numeros: null }, { faixa: "0" }, t), null);
+});
+
+test("corte não parte um par substituto", () => {
+  const v = `${"a".repeat(79)}😀resto`;
+  assert.ok(corte(v).isWellFormed());
+  assert.equal(corte(v), `${"a".repeat(79)}…`);
+  assert.equal(corte("curto"), "curto");
 });

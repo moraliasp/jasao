@@ -12,7 +12,8 @@ export function porGeracao<T extends { geracao: number }>(aplicar: (v: T) => voi
     fixar(g: number): void {
       atual = g;
       const v = adiantado;
-      adiantado = null;
+      // O de uma geração ainda mais nova continua guardado (respostas fora de ordem).
+      if (!g || !v || v.geracao <= g) adiantado = null;
       if (g && v?.geracao === g) aplicar(v);
     },
     get atual(): number {

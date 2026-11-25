@@ -289,7 +289,9 @@ fn posicao_stdin(args: &[&str]) -> Option<usize> {
     match args {
         ["buscar", "-", ..] => Some(1),
         ["buscar" | "linha-do-tempo", ..] | [] => None,
-        [_, resto @ ..] => resto.iter().position(|a| *a == "-").map(|i| i + 1),
+        // `-o -` é destino, não entrada (e é recusado em `opcoes_transformar`).
+        [_, resto @ ..] => (1..=resto.len())
+            .find(|&i| args[i] == "-" && !matches!(args[i - 1], "-o" | "--destino")),
     }
 }
 
@@ -348,10 +350,14 @@ static HTTP: AtomicBool = AtomicBool::new(false);
 /// URL (`https://…`) ou comando cURL no lugar do arquivo: baixa para o cache (ver `nucleo::url`).
 fn remoto(arquivo: &str) -> bool {
     let a = arquivo.trim_start();
-    // Os mesmos começos de cURL que `Pedido::interpretar` aceita.
-    ["https://", "http://", "curl ", "curl\t", "curl\\"]
+    // O esquema vale em qualquer caixa (`de_url` aceita); `curl` só minúsculo, como em
+    // `Pedido::interpretar` (`CURL …` daria "a URL precisa começar com https://").
+    ["https://", "http://"]
         .iter()
         .any(|p| a.len() >= p.len() && a[..p.len()].eq_ignore_ascii_case(p))
+        || ["curl ", "curl\t", "curl\\"]
+            .iter()
+            .any(|p| a.starts_with(p))
 }
 
 /// Temporários dos downloads; vivem até o fim do `main` (ver `Baixados`).
@@ -843,7 +849,8 @@ fn opcoes_transformar<'a>(args: &[&'a str]) -> Option<OpcoesTransformar<'a>> {
     let mut it = args.iter();
     while let Some(&a) = it.next() {
         match a {
-            "-o" | "--destino" => destino = Some(*it.next()?),
+            // Sem saída para stdout: `-o -` é erro de uso, não um arquivo chamado `-`.
+            "-o" | "--destino" => destino = Some(*it.next()?).filter(|d| *d != "-"),
             "--jq" => jq = Some(*it.next()?),
             "--manter" => t.manter.extend(lista(it.next()?)),
             "--tirar" => t.tirar.extend(lista(it.next()?)),
@@ -2097,6 +2104,34 @@ mod testes {
         let (_, f, op) = opcoes_exportar(&["a", "--ts", "--literal"]).unwrap();
         assert!(matches!(f, Formato::Ts) && op.literal);
         assert!(opcoes_exportar(&["a", "--ts", "--zod"]).is_none());
+    }
+
+    #[test]
+    fn transformar_com_destino_traco_nao_le_stdin() {
+        assert_eq!(posicao_stdin(&["transformar", "x.jsonl", "-o", "-"]), None);
+        assert!(opcoes_transformar(&["x.jsonl", "-o", "-"]).is_none());
+        assert_eq!(
+            posicao_stdin(&["transformar", "-", "-o", "y.jsonl"]),
+            Some(1)
+        );
+        assert_eq!(posicao_stdin(&["laudo", "-"]), Some(1));
+    }
+
+    #[test]
+    fn remoto_reconhece_so_o_que_interpretar_aceita() {
+        for sim in [
+            "https://x/a",
+            "HTTPS://x/a",
+            "  http://x",
+            "curl https://x",
+            "curl\thttps://x",
+        ] {
+            assert!(remoto(sim), "{sim:?}");
+            assert!(nucleo::url::Pedido::interpretar(sim).is_ok(), "{sim:?}");
+        }
+        // `interpretar` só reconhece `curl` minúsculo: `CURL …` é arquivo, não download.
+        assert!(!remoto("CURL https://x"));
+        assert!(!remoto("Curl https://x"));
     }
 
     #[test]

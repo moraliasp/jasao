@@ -212,7 +212,8 @@ export function criarConsulta(form: HTMLFormElement, o: Opcoes) {
 
   void listen<Andamento>("consulta", ({ payload: p }) => {
     const e = estados.get(p.id);
-    if (!e || p.geracao < e.geracao || (e.esperando && p.geracao === e.geracao)) return;
+    // `!rodando`: cancelada (ou outro arquivo aberto); o `fim` emitido no mesmo instante não abre.
+    if (!e || !e.rodando || p.geracao < e.geracao || (e.esperando && p.geracao === e.geracao)) return;
     e.geracao = p.geracao;
     if (p.fim) return void fim(e, p);
     mostrar(e, t.consulta.andamento(o.fmt(p.resultados), Math.floor((p.linhas / Math.max(1, p.total)) * 100)));
