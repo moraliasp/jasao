@@ -46,8 +46,38 @@ fn jasao(args: &[&str]) -> String {
     s(o.stdout) + &s(o.stderr)
 }
 
+/// Tira os códigos `anon:<16 hex>`: são hash com sal aleatório e podem conter "4821" por acaso.
+fn sem_anon(saida: &str) -> String {
+    let mut r = String::new();
+    let mut resto = saida;
+    while let Some(i) = resto.find("anon:") {
+        r.push_str(&resto[..i]);
+        let depois = &resto[i + 5..];
+        let n = depois
+            .bytes()
+            .take(16)
+            .take_while(u8::is_ascii_hexdigit)
+            .count();
+        resto = if n == 16 {
+            &depois[16..]
+        } else {
+            r.push_str("anon:");
+            depois
+        };
+    }
+    r + resto
+}
+
 fn vaza(saida: &str) -> Option<&'static str> {
-    SEGREDOS.iter().copied().find(|x| saida.contains(x))
+    let s = sem_anon(saida);
+    SEGREDOS.iter().copied().find(|x| s.contains(x))
+}
+
+#[test]
+fn crivo_ignora_so_o_codigo_anon() {
+    assert_eq!(vaza("x anon:b6ca7482150db1ff y"), None);
+    assert_eq!(vaza("anon:b6ca7482150db1ff 4821"), Some("4821"));
+    assert_eq!(vaza("anon:4821"), Some("4821"));
 }
 
 #[test]
