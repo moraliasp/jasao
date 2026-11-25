@@ -257,6 +257,31 @@ fn orfao_sai_na_proxima_leitura() {
 }
 
 #[test]
+fn validar_falha_de_schema_sai_em_frase_pt() {
+    let casa = Casa::nova("frase");
+    let schema = casa.0.join("s.json");
+    std::fs::write(
+        &schema,
+        br#"{"type":"object","required":["c"],"properties":{"a":{"type":"integer"}}}"#,
+    )
+    .unwrap();
+    let s = schema.to_str().unwrap();
+    let (c, out, err) = casa.jasao(
+        &["validar", "-", "--schema", s],
+        b"{\"a\":\"SEGREDO\",\"c\":1}\n{\"a\":1}\n",
+    );
+    assert_eq!(c, 1, "{err}");
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "linha 1: /a: deve ser do tipo inteiro",
+            "linha 2: falta a propriedade obrigatória \"c\""
+        ],
+        "{out}"
+    );
+}
+
+#[test]
 fn validar_conta_recusada_e_mostra_codigo_sem_prefixo() {
     let casa = Casa::nova("recusada");
     let schema = casa.0.join("s.json");

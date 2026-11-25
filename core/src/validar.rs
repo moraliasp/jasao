@@ -149,10 +149,21 @@ fn recusa(e: &serde_json::Error) -> &'static str {
     }
 }
 
-/// Caminho e mensagem (sem o valor do arquivo). Em `anyOf` (união), o erro do ramo que chegou
+/// Motivo do registro que o schema reprovou. Em `anyOf` (união), o erro do ramo que chegou
 /// mais perto: o do discriminador que bateu (sem erro de `const`), depois o de menos erros.
+///
+/// Os tipos comuns saem como código para a interface traduzir:
+/// `jasao:schema_<tipo>|<caminho>|<parâmetro>…`, campos separados por `|`, com `%` e `|` dentro
+/// de cada campo escritos `%25` e `%7C` (o caminho é a chave do arquivo e pode ter qualquer
+/// caractere). O caminho vem primeiro e é vazio na raiz. Os parâmetros vêm só do schema (tipo,
+/// limite, formato, `pattern`, valores de `enum`/`const`, propriedade exigida), nunca do valor
+/// do registro. Exceção: o nome da propriedade a mais (`additionalProperties`), que é chave do
+/// arquivo e que o `masked()` já mostrava. Tipo sem código: `"{caminho}: {mensagem}"` mascarada.
 fn motivo(e: &jsonschema::ValidationError) -> String {
-    use jsonschema::error::ValidationErrorKind::{AnyOf, Constant};
+    use jsonschema::error::ValidationErrorKind::{
+        AdditionalProperties, AnyOf, Constant, Enum, ExclusiveMaximum, ExclusiveMinimum, Format,
+        MaxLength, Maximum, MinLength, Minimum, Pattern, Required, Type,
+    };
     if let AnyOf { context } = e.kind()
         && let Some(ramo) = context.iter().filter(|r| !r.is_empty()).min_by_key(|r| {
             (
@@ -164,12 +175,127 @@ fn motivo(e: &jsonschema::ValidationError) -> String {
         return motivo(&ramo[0]);
     }
     let onde = e.instance_path().to_string();
-    let msg = e.masked().to_string();
-    if onde.is_empty() {
-        msg
-    } else {
-        format!("{onde}: {msg}")
+    let (cod, ps): (&str, Vec<String>) = match e.kind() {
+        Type { kind } => (
+            "tipo",
+            vec![match kind {
+                jsonschema::error::TypeKind::Single(t) => t.to_string(),
+                jsonschema::error::TypeKind::Multiple(ts) => ts
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            }],
+        ),
+        Required { property } => (
+            "obrigatoria",
+            vec![
+                property
+                    .as_str()
+                    .map_or_else(|| property.to_string(), str::to_owned),
+            ],
+        ),
+        Enum { options } => ("enum", vec![options.to_string()]),
+        Constant { expected_value } => ("const", vec![expected_value.to_string()]),
+        Minimum { limit } => ("minimo", vec![limit.to_string()]),
+        Maximum { limit } => ("maximo", vec![limit.to_string()]),
+        ExclusiveMinimum { limit } => ("minimo_exclusivo", vec![limit.to_string()]),
+        ExclusiveMaximum { limit } => ("maximo_exclusivo", vec![limit.to_string()]),
+        MinLength { limit } => ("tamanho_minimo", vec![limit.to_string()]),
+        MaxLength { limit } => ("tamanho_maximo", vec![limit.to_string()]),
+        Pattern { pattern } => ("pattern", vec![pattern.clone()]),
+        Format { format } => ("formato", vec![format.clone()]),
+        AdditionalProperties { unexpected } => ("propriedade_extra", vec![unexpected.join(",")]),
+        _ => {
+            let msg = e.masked().to_string();
+            return if onde.is_empty() {
+                msg
+            } else {
+                format!("{onde}: {msg}")
+            };
+        }
+    };
+    let campo = |s: &str| s.replace('%', "%25").replace('|', "%7C");
+    let mut m = format!("jasao:schema_{cod}|{}", campo(&onde));
+    for p in &ps {
+        m.push('|');
+        m.push_str(&campo(p));
     }
+    m
+}
+
+/// O motivo em frase PT para o terminal (as mesmas de `motivosSchema` em `app/src/i18n.ts`):
+/// `jasao:schema_*` é decodificado (desescape de passada única, o inverso do de `motivo`); os
+/// demais `jasao:<cod>` perdem só o prefixo; o que não é código passa como veio.
+pub fn motivo_legivel(m: &str) -> String {
+    let Some(r) = m.strip_prefix("jasao:schema_") else {
+        return m.strip_prefix("jasao:").unwrap_or(m).to_string();
+    };
+    let mut campos = r.split('|').map(desescapar);
+    let cod = campos.next().unwrap_or_default();
+    let onde = campos.next().unwrap_or_default();
+    let ps: Vec<String> = campos.collect();
+    let Some(p) = ps.first() else {
+        return m.strip_prefix("jasao:").unwrap_or(m).to_string();
+    };
+    let frase = match cod.as_str() {
+        "tipo" => {
+            let tipos: Vec<&str> = p
+                .split(',')
+                .map(|t| match t {
+                    "string" => "texto",
+                    "integer" => "inteiro",
+                    "number" => "número",
+                    "boolean" => "booleano",
+                    "array" => "lista",
+                    "object" => "objeto",
+                    "null" => "nulo",
+                    o => o,
+                })
+                .collect();
+            format!("deve ser do tipo {}", tipos.join(" ou "))
+        }
+        "obrigatoria" => format!("falta a propriedade obrigatória \"{p}\""),
+        "enum" => format!("deve ser um destes valores: {p}"),
+        "const" => format!("deve ser exatamente {p}"),
+        "minimo" => format!("deve ser maior ou igual a {p}"),
+        "maximo" => format!("deve ser menor ou igual a {p}"),
+        "minimo_exclusivo" => format!("deve ser maior que {p}"),
+        "maximo_exclusivo" => format!("deve ser menor que {p}"),
+        "tamanho_minimo" => format!("deve ter no mínimo {p} caracteres"),
+        "tamanho_maximo" => format!("deve ter no máximo {p} caracteres"),
+        "pattern" => format!("não bate com o padrão {p}"),
+        "formato" => format!("não está no formato \"{p}\""),
+        "propriedade_extra" => format!("propriedade não permitida: {p}"),
+        _ => return m.strip_prefix("jasao:").unwrap_or(m).to_string(),
+    };
+    if onde.is_empty() {
+        frase
+    } else {
+        format!("{onde}: {frase}")
+    }
+}
+
+/// Inverso de `campo` em `motivo`: `%25` -> `%`, `%7C` -> `|`, numa passada (`%257C` -> `%7C`).
+fn desescapar(c: &str) -> String {
+    let mut o = String::with_capacity(c.len());
+    let mut r = c;
+    while let Some(i) = r.find('%') {
+        o.push_str(&r[..i]);
+        r = &r[i..];
+        if let Some(t) = r.strip_prefix("%25") {
+            o.push('%');
+            r = t;
+        } else if let Some(t) = r.strip_prefix("%7C") {
+            o.push('|');
+            r = t;
+        } else {
+            o.push('%');
+            r = &r[1..];
+        }
+    }
+    o.push_str(r);
+    o
 }
 
 /// Lê o schema de um arquivo sem trazer mais que `MAX_SCHEMA + 1` bytes para a memória: o
@@ -602,4 +728,130 @@ fn json_unico(
         total,
     });
     r
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    fn motivo_de(schema: &str, dado: &str) -> String {
+        let v = compilar(schema).unwrap();
+        let j: serde_json::Value = serde_json::from_str(dado).unwrap();
+        motivo(&v.validate(&j).unwrap_err())
+    }
+
+    #[test]
+    fn validar_motivo_vira_codigo_sem_valor_do_arquivo() {
+        let casos = [
+            (
+                r#"{"type":"integer"}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tipo||integer",
+            ),
+            (
+                r#"{"type":["integer","null"]}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tipo||null,integer",
+            ),
+            (
+                r#"{"required":["a"]}"#,
+                r#"{"b":1}"#,
+                "jasao:schema_obrigatoria||a",
+            ),
+            (
+                r#"{"enum":["x","y"]}"#,
+                r#""SEGREDO""#,
+                r#"jasao:schema_enum||["x","y"]"#,
+            ),
+            (
+                r#"{"const":"x"}"#,
+                r#""SEGREDO""#,
+                r#"jasao:schema_const||"x""#,
+            ),
+            (r#"{"minimum":5}"#, "1", "jasao:schema_minimo||5"),
+            (r#"{"maximum":5}"#, "99", "jasao:schema_maximo||5"),
+            (
+                r#"{"exclusiveMinimum":5}"#,
+                "5",
+                "jasao:schema_minimo_exclusivo||5",
+            ),
+            (
+                r#"{"exclusiveMaximum":5}"#,
+                "5",
+                "jasao:schema_maximo_exclusivo||5",
+            ),
+            (
+                r#"{"minLength":9}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tamanho_minimo||9",
+            ),
+            (
+                r#"{"maxLength":2}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tamanho_maximo||2",
+            ),
+            (
+                r#"{"pattern":"^a|b$"}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_pattern||^a%7Cb$",
+            ),
+            (
+                r#"{"properties":{"a%7C":{"type":"string"}}}"#,
+                r#"{"a%7C":1}"#,
+                "jasao:schema_tipo|/a%257C|string",
+            ),
+            (
+                r#"{"properties":{"a|%":{"type":"string"}}}"#,
+                r#"{"a|%":1}"#,
+                "jasao:schema_tipo|/a%7C%25|string",
+            ),
+            (
+                r#"{"properties":{"a":{}},"additionalProperties":false}"#,
+                r#"{"x":"SEGREDO"}"#,
+                "jasao:schema_propriedade_extra||x",
+            ),
+        ];
+        for (s, d, esperado) in casos {
+            let m = motivo_de(s, d);
+            assert_eq!(m, esperado, "{s}");
+            assert!(!m.contains("SEGREDO"), "{m}");
+        }
+    }
+
+    #[test]
+    fn validar_motivo_tipo_sem_codigo_fica_mascarado() {
+        // `format` não é aplicado pelo validador (só anotação): o braço `Format` é defensivo.
+        let m = motivo_de(r#"{"minItems":3}"#, r#"["SEGREDO"]"#);
+        assert!(!m.starts_with("jasao:") && !m.contains("SEGREDO"), "{m}");
+    }
+
+    #[test]
+    fn validar_motivo_legivel_em_pt() {
+        let l = |s, d| motivo_legivel(&motivo_de(s, d));
+        assert_eq!(
+            l(
+                r#"{"properties":{"a":{"type":"integer"}}}"#,
+                r#"{"a":"SEGREDO"}"#
+            ),
+            "/a: deve ser do tipo inteiro"
+        );
+        assert_eq!(
+            l(r#"{"type":["integer","null"]}"#, r#""x""#),
+            "deve ser do tipo nulo ou inteiro"
+        );
+        assert_eq!(
+            l(r#"{"required":["c"]}"#, "{}"),
+            "falta a propriedade obrigatória \"c\""
+        );
+        assert_eq!(
+            l(
+                r#"{"properties":{"a%7C":{"type":"string"}}}"#,
+                r#"{"a%7C":1}"#
+            ),
+            "/a%7C: deve ser do tipo texto"
+        );
+        assert_eq!(motivo_legivel("jasao:valor"), "valor");
+        assert_eq!(motivo_legivel("jasao:schema_novo|/a|x"), "schema_novo|/a|x");
+        assert_eq!(motivo_legivel("/a: texto"), "/a: texto");
+    }
 }

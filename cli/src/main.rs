@@ -1180,7 +1180,7 @@ fn exportar(
     // validador não leu vem como código `jasao:…` (a interface traduz; aqui sai o código).
     let mut err = erro();
     for f in &v.falhas {
-        let motivo = f.motivo.strip_prefix("jasao:").unwrap_or(&f.motivo);
+        let motivo = validar::motivo_legivel(&f.motivo);
         writeln!(err, "linha {}: {motivo}", f.linha + 1)?;
     }
     Ok(v.falham == 0 && v.invalidas == 0 && v.recusadas == 0)
@@ -1250,7 +1250,7 @@ fn validar(
     let v = validar::validar(a.cru(), entrada, &schema, &nada, |_| {})?;
     // O motivo cita caminho de chave do arquivo: sai neutralizado no terminal.
     for f in &v.falhas {
-        let motivo = f.motivo.strip_prefix("jasao:").unwrap_or(&f.motivo);
+        let motivo = validar::motivo_legivel(&f.motivo);
         writeln!(out, "linha {}: {}", f.linha + 1, motivo)?;
     }
     out.flush()?;
