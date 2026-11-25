@@ -14,9 +14,9 @@ JSONL de 1 GB com 6,46 milhões de registros, Apple M5 Pro, arquivo no cache do 
 | Primeira tela | 0,26 s | CLI ponta a ponta, [`scripts/medir.sh`](scripts/medir.sh) |
 | Índice de linhas | 0,23 s | CLI ponta a ponta, `scripts/medir.sh` |
 | Buscar no arquivo inteiro (até o fim) | 0,28 s literal, 0,27 s regex | CLI ponta a ponta, `scripts/medir.sh` |
-| Validar contra o schema gerado | 1 a 3 s | app release |
+| Validar contra o schema gerado | 1,0 a 2,9 s quando tudo passa; até 3,3 s quando reprova | app release, outro arquivo de 1 GB (6.306.549 registros, [docs/decisoes.md](docs/decisoes.md), "Exportar Zod e JSON Schema") |
 
-Mediana de 5 rodadas do `medir.sh`, numa máquina com outras cargas. Detalhes, metas e o que não foi medido em [docs/decisoes.md](docs/decisoes.md), "Medidas de desempenho". Leitura a frio do disco não foi medida. O alvo do plano é abrir e navegar até 10 GB.
+As três linhas do CLI são a mediana de 5 rodadas do `medir.sh`, numa máquina com outras cargas; as do app são medidas avulsas. Detalhes, metas e o que não foi medido em [docs/decisoes.md](docs/decisoes.md), "Medidas de desempenho". Leitura a frio do disco não foi medida. O alvo do plano é abrir e navegar até 10 GB.
 
 ## O que ele faz
 
@@ -27,6 +27,8 @@ Mediana de 5 rodadas do `medir.sh`, numa máquina com outras cargas. Detalhes, m
 - **Abas, arrastar e soltar, recentes, associação de arquivo.** Associa `.json`, `.jsonl` e `.ndjson` como visualizador alternativo, sem tomar o app padrão do sistema.
 - **Linha inválida não derruba o resto.** Ela aparece na lista com posição e motivo.
 - **Laudo ao abrir.** Um resumo do arquivo no painel e em `jasao laudo`.
+- **De uma URL ou de um cURL colado.** "Abrir URL…" no app, ou a URL no lugar do arquivo no CLI. Só baixa quando você pede, sem cookies nem telemetria; o cURL aceita GET/POST, `-H`, `-d`, `-u` e `--compressed`; `http://` só com aviso (`--http` no CLI).
+- **stdin.** `-` no lugar do arquivo lê um pipe (exemplos em [Rodar](#rodar)).
 - **Arquivo vivo.** Seguir/Pausar como `tail -f`; se o arquivo for truncado, rotacionado ou reescrito, reabre com aviso.
 
 ### Ver
@@ -56,6 +58,7 @@ Mediana de 5 rodadas do `medir.sh`, numa máquina com outras cargas. Detalhes, m
   - Tipo, formato e "N de M registros" por caminho, com evidência.
   - Avisos: número como texto, data fora do ISO, campo que parece segredo.
   - Estatísticas por campo e lista dos registros que fogem do padrão.
+  - Clicar num valor comum ou numa faixa de números abre a Tabela já filtrada (menos em campo que parece segredo).
 - **União discriminada.** Uma linha por variante (`.tipo = "X"`), e Enter abre o primeiro registro daquela variante.
 - **Diff estrutural, quebra × compatível.**
   - Compara duas versões do arquivo e classifica cada mudança no padrão oasdiff/buf. Na dúvida, conta como quebra.
@@ -104,6 +107,8 @@ O mesmo núcleo do app, para scripts e CI. Por padrão, os segredos saem mascara
 
 ```bash
 jasao laudo dados.jsonl                                   # resumo do arquivo
+jasao laudo https://exemplo.test/eventos.jsonl            # ou um cURL entre aspas
+cat dados.jsonl | jasao inferir -                          # stdin
 jasao buscar dados.jsonl 'pedido-42' --ignorar-caixa
 jasao jq '.cliente.id' dados.jsonl --saida csv
 jasao inferir dados.jsonl --json                          # estrutura por caminho
@@ -171,3 +176,7 @@ cargo bench -p nucleo --bench indice              # NUCLEO_BENCH_MB=1024 para 1 
 - `cli/Cargo.toml`: `[[bin]] name` (binário de linha de comando).
 
 Pacotes e pastas têm nomes neutros e não mudam.
+
+## Licença
+
+MIT, ver [LICENSE](LICENSE).
