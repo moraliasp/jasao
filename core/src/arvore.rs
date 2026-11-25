@@ -581,9 +581,10 @@ pub(crate) fn formatar(raw: &str, max: usize) -> Formatado {
             b' ' | b'\t' | b'\n' | b'\r' => i += 1,
             b'"' => {
                 let mut j = i + 1;
-                while b[j] != b'"' {
+                while j < b.len() && b[j] != b'"' {
                     j += if b[j] == b'\\' { 2 } else { 1 };
                 }
+                let j = j.min(b.len() - 1);
                 saida.push_str(&raw[i..=j]);
                 i = j + 1;
             }
@@ -1087,6 +1088,31 @@ mod testes {
                 (Tipo::Objeto, true, "{\"a\" : 1}"),
             ]
         );
+    }
+
+    #[test]
+    fn controle_cru_em_string_e_erro() {
+        // Quem recusa é o sonic-rs (0.5.12): o teste fixa isso, e a regra da RFC 8259, na leitura.
+        for (json, byte) in [
+            ("[\"a\0b\"]", 3),
+            ("[\"a\tb\"]", 3),
+            ("\"\u{1f}\"", 1),
+            ("[\"a\\\"\0\"]", 5),
+            ("[\"a\\\\\0\"]", 5),
+        ] {
+            let e = validar(json.as_bytes()).expect_err(json);
+            assert_eq!((e.byte, e.motivo), (byte, Motivo::Controle), "{json}");
+        }
+        assert!(validar(br#"["a\u0000b", "\\"]"#).is_ok());
+        // Fora de string o controle (espaço em branco) segue válido.
+        assert!(validar(b"[1,\n\t2]").is_ok());
+    }
+
+    #[test]
+    fn formatar_string_aberta_no_fim_nao_entra_em_panico() {
+        for raw in ["\"abc\\", "\"abc"] {
+            assert_eq!(formatar(raw, 1000).texto, raw);
+        }
     }
 
     #[test]
