@@ -289,6 +289,8 @@ const pt = {
   inicio: "Início",
   recentes: {
     titulo: "Recentes",
+    limpar: "Limpar",
+    limparDica: "Tira todos os arquivos da lista de recentes (os arquivos continuam no disco)",
     sumiu: (nome: string) => `${nome} não existe mais e saiu dos recentes.`,
   },
   busca: {
@@ -727,6 +729,8 @@ const en: Textos = {
   inicio: "Home",
   recentes: {
     titulo: "Recent",
+    limpar: "Clear",
+    limparDica: "Removes every file from the Recent list (the files stay on disk)",
     sumiu: (nome: string) => `${nome} no longer exists and was removed from Recent.`,
   },
   busca: {

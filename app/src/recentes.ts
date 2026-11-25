@@ -21,6 +21,15 @@ export function criarRecentes(el: HTMLElement, escolher: (caminho: string) => vo
     if (!lista.length) return;
     const h = document.createElement("h2");
     h.textContent = t.recentes.titulo;
+    const limpar = document.createElement("button");
+    limpar.type = "button";
+    limpar.className = "limpar";
+    limpar.textContent = t.recentes.limpar;
+    limpar.title = t.recentes.limparDica;
+    // O Rust avisa `recentes` depois de limpar e a lista se redesenha (vazia, some).
+    limpar.addEventListener("click", () => void invoke("limpar_recentes"));
+    const topo = document.createElement("header");
+    topo.append(h, limpar);
     const ul = document.createElement("ul");
     for (const r of lista) {
       const b = document.createElement("button");
@@ -37,7 +46,7 @@ export function criarRecentes(el: HTMLElement, escolher: (caminho: string) => vo
       li.append(b);
       ul.append(li);
     }
-    el.append(h, ul);
+    el.append(topo, ul);
   }
   void listen("recentes", () => void desenhar());
   void desenhar();

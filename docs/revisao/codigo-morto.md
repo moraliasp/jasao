@@ -9,8 +9,8 @@ instalado.
 - **Removido (4 itens):** 4 re-exports do `nucleo` sem consumidor, uma constante TS, uma chave de
   i18n.
 - **Deduplicado (1):** `icone` (3 cópias idênticas) passa a vir de `texto.ts`.
-- **Mantido com motivo:** comando Tauri `limpar_recentes` (sem UI; decisão de produto), falsos
-  positivos de varredura.
+- **Ligado:** o comando Tauri `limpar_recentes` não tinha botão; agora tem, na lista de recentes.
+- **Mantido com motivo:** falsos positivos de varredura.
 - **Dedup proposto, não feito:** `esc` local × `escAtributo` (muda saída) e três `decodificar` no
   núcleo (semânticas diferentes).
 
@@ -27,7 +27,7 @@ Nenhuma remoção muda comportamento: tudo o que saiu não tinha leitor.
 | `export const INVALIDA = 255` | `app/src/regua.ts:10` | `rg -w INVALIDA app/src app/tests`: só a definição. A cor de inválida vem pronta do Rust (`nucleo::regua::INVALIDA`). | **Removido.** |
 | chave i18n `tabela.ajuda` (pt e en) | `app/src/i18n.ts:224`, `:663` | script que percorre `t` e procura cada chave fora do bloco de definição (`src/*.ts`, `index.html`): só `ajuda` aparece sem leitor; `git log -S ajuda -- app/src`: nunca teve leitor | **Removido.** Se a intenção era descrever a grade para leitor de tela, isso é feature, não código morto (anotado abaixo). |
 | `icone` triplicado | `app/src/main.ts:77`, `app/src/grade.ts:46`, `app/src/apresenta.ts:22` | corpo idêntico, byte a byte | **Deduplicado**: `export const icone` em `app/src/texto.ts`, importado pelos três (todos já importavam de `texto`). |
-| comando `limpar_recentes` | `app/src-tauri/src/lib.rs:683`, registrado em `:3079` | `rg limpar_recentes`: só o registro e o teste `recentes_pelo_ipc` (`lib.rs:5070`); nenhum `chamar`/`invoke` no front, nenhum item de menu. `docs/decisoes.md:253` descreve "Limpar recentes" como decisão. | **Mantido.** Funcionalidade documentada e testada, só falta o botão. Decidir: ligar na UI (lista de recentes) ou remover comando + `recentes::limpar`. |
+| comando `limpar_recentes` | `app/src-tauri/src/lib.rs:683`, registrado em `:3079` | `rg limpar_recentes`: só o registro e o teste `recentes_pelo_ipc` (`lib.rs:5070`); nenhum `chamar`/`invoke` no front, nenhum item de menu. `docs/decisoes.md:253` descreve "Limpar recentes" como decisão. | **Ligado na UI** neste PR: botão "Limpar" no cabeçalho da lista de recentes da aba vazia (`app/src/recentes.ts`). |
 | demais comandos Tauri | `app/src-tauri/src/lib.rs:3072-3132` | `comm` entre os 59 registrados e as strings de `chamar(...)`/`invoke(...)` em `app/src` | Todos chamados. Nenhum `invoke` para comando inexistente. |
 | `serde_json` em `core/fuzz/Cargo.toml` | `core/fuzz/Cargo.toml:15` | `cargo machete` acusa | **Mantido (falso positivo):** usado em `core/fuzz/comum/formatos.rs:29`, incluído por `#[path]` nos alvos `formato_*`. |
 | demais dependências Rust | `Cargo.toml` de core, cli, app | `cargo machete`: nada além do item acima | Nada a remover. |
@@ -49,5 +49,5 @@ Nenhuma remoção muda comportamento: tudo o que saiu não tinha leitor.
   sem `semInvisiveis`, ao contrário de `main.ts`, `estrutura.ts` e `apresenta.ts`. Nome de campo com
   caractere bidi/invisível aparece cru nesses três. Se for para neutralizar, trocar por
   `escAtributo` resolve e remove a duplicação.
-- **Produto:** `limpar_recentes` existe e é testado, mas não há botão. E `tabela.ajuda` (removida)
+- **Produto:** `tabela.ajuda` (removida)
   sugere que a grade teria uma descrição de teclado para leitor de tela; hoje não tem.
