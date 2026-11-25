@@ -40,6 +40,9 @@ export const visivelTexto = (s: string) =>
  * o usuário vê ou o leitor de tela lê. Para `textContent`/`title` pelo DOM. */
 export const semInvisiveis = (s: string) => s.replace(INVISIVEIS, (c) => `<U+${codigo(c)}>`);
 
+/** Ícone do sprite SVG de `index.html`, decorativo. */
+export const icone = (id: string) => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
+
 /** `semInvisiveis` escapado para atributo em HTML montado como texto. */
 export const escAtributo = (s: string) =>
   semInvisiveis(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
