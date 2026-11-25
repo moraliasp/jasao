@@ -180,14 +180,20 @@ fn motivo(e: &jsonschema::ValidationError) -> String {
             "tipo",
             vec![match kind {
                 jsonschema::error::TypeKind::Single(t) => t.to_string(),
-                jsonschema::error::TypeKind::Multiple(ts) => {
-                    ts.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",")
-                }
+                jsonschema::error::TypeKind::Multiple(ts) => ts
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
             }],
         ),
         Required { property } => (
             "obrigatoria",
-            vec![property.as_str().map_or_else(|| property.to_string(), str::to_owned)],
+            vec![
+                property
+                    .as_str()
+                    .map_or_else(|| property.to_string(), str::to_owned),
+            ],
         ),
         Enum { options } => ("enum", vec![options.to_string()]),
         Constant { expected_value } => ("const", vec![expected_value.to_string()]),
@@ -202,7 +208,11 @@ fn motivo(e: &jsonschema::ValidationError) -> String {
         AdditionalProperties { unexpected } => ("propriedade_extra", vec![unexpected.join(",")]),
         _ => {
             let msg = e.masked().to_string();
-            return if onde.is_empty() { msg } else { format!("{onde}: {msg}") };
+            return if onde.is_empty() {
+                msg
+            } else {
+                format!("{onde}: {msg}")
+            };
         }
     };
     let campo = |s: &str| s.replace('%', "%25").replace('|', "%7C");
@@ -659,25 +669,78 @@ mod testes {
     #[test]
     fn validar_motivo_vira_codigo_sem_valor_do_arquivo() {
         let casos = [
-            (r#"{"type":"integer"}"#, r#""SEGREDO""#, "jasao:schema_tipo||integer"),
-            (r#"{"type":["integer","null"]}"#, r#""SEGREDO""#, "jasao:schema_tipo||"),
-            (r#"{"required":["a"]}"#, r#"{"b":1}"#, "jasao:schema_obrigatoria||a"),
-            (r#"{"enum":["x","y"]}"#, r#""SEGREDO""#, r#"jasao:schema_enum||["x","y"]"#),
-            (r#"{"const":"x"}"#, r#""SEGREDO""#, r#"jasao:schema_const||"x""#),
+            (
+                r#"{"type":"integer"}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tipo||integer",
+            ),
+            (
+                r#"{"type":["integer","null"]}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tipo||",
+            ),
+            (
+                r#"{"required":["a"]}"#,
+                r#"{"b":1}"#,
+                "jasao:schema_obrigatoria||a",
+            ),
+            (
+                r#"{"enum":["x","y"]}"#,
+                r#""SEGREDO""#,
+                r#"jasao:schema_enum||["x","y"]"#,
+            ),
+            (
+                r#"{"const":"x"}"#,
+                r#""SEGREDO""#,
+                r#"jasao:schema_const||"x""#,
+            ),
             (r#"{"minimum":5}"#, "1", "jasao:schema_minimo||5"),
             (r#"{"maximum":5}"#, "99", "jasao:schema_maximo||5"),
-            (r#"{"exclusiveMinimum":5}"#, "5", "jasao:schema_minimo_exclusivo||5"),
-            (r#"{"exclusiveMaximum":5}"#, "5", "jasao:schema_maximo_exclusivo||5"),
-            (r#"{"minLength":9}"#, r#""SEGREDO""#, "jasao:schema_tamanho_minimo||9"),
-            (r#"{"maxLength":2}"#, r#""SEGREDO""#, "jasao:schema_tamanho_maximo||2"),
-            (r#"{"pattern":"^a|b$"}"#, r#""SEGREDO""#, "jasao:schema_pattern||^a%7Cb$"),
-            (r#"{"properties":{"a|%":{"type":"string"}}}"#, r#"{"a|%":1}"#, "jasao:schema_tipo|/a%7C%25|string"),
-            (r#"{"properties":{"a":{}},"additionalProperties":false}"#, r#"{"x":"SEGREDO"}"#, "jasao:schema_propriedade_extra||x"),
+            (
+                r#"{"exclusiveMinimum":5}"#,
+                "5",
+                "jasao:schema_minimo_exclusivo||5",
+            ),
+            (
+                r#"{"exclusiveMaximum":5}"#,
+                "5",
+                "jasao:schema_maximo_exclusivo||5",
+            ),
+            (
+                r#"{"minLength":9}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tamanho_minimo||9",
+            ),
+            (
+                r#"{"maxLength":2}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_tamanho_maximo||2",
+            ),
+            (
+                r#"{"pattern":"^a|b$"}"#,
+                r#""SEGREDO""#,
+                "jasao:schema_pattern||^a%7Cb$",
+            ),
+            (
+                r#"{"properties":{"a|%":{"type":"string"}}}"#,
+                r#"{"a|%":1}"#,
+                "jasao:schema_tipo|/a%7C%25|string",
+            ),
+            (
+                r#"{"properties":{"a":{}},"additionalProperties":false}"#,
+                r#"{"x":"SEGREDO"}"#,
+                "jasao:schema_propriedade_extra||x",
+            ),
         ];
         for (s, d, esperado) in casos {
             let m = motivo_de(s, d);
             if esperado.ends_with("||") {
-                assert!(m.starts_with("jasao:schema_tipo||") && m.contains("integer") && m.contains("null"), "{m}");
+                assert!(
+                    m.starts_with("jasao:schema_tipo||")
+                        && m.contains("integer")
+                        && m.contains("null"),
+                    "{m}"
+                );
             } else {
                 assert_eq!(m, esperado, "{s}");
             }
