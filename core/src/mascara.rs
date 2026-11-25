@@ -158,7 +158,7 @@ pub struct Estado {
     /// No objeto do topo: a chave do valor que vem é sensível.
     chave: bool,
     /// `chave_de_segredo` já respondida (aloca por chamada; as mesmas chaves se repetem).
-    chaves: HashMap<Box<[u8]>, bool>,
+    chaves: HashMap<Box<[u8]>, bool, foldhash::fast::RandomState>,
     /// Documento que se perdeu: `Some(true)` se a chave aberta era sensível (o resto todo sai).
     estragado: Option<bool>,
 }

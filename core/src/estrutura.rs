@@ -9,7 +9,11 @@
 //!   é associativa e comutativa: o resultado não depende do bloco nem da ordem.
 //! - Critérios de mapa e de união discriminada: `docs/decisoes.md`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+/// Hash rápido (foldhash, com semente aleatória): o SipHash do std era o maior custo da
+/// inferência (docs/revisao/performance.md).
+type HashMap<K, V> = std::collections::HashMap<K, V, foldhash::fast::RandomState>;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc;
 use std::thread;
@@ -329,7 +333,7 @@ impl Default for No {
             tipos: Default::default(),
             presenca: 0,
             ordem: (u64::MAX, u32::MAX),
-            filhos: HashMap::new(),
+            filhos: HashMap::default(),
             mapa: None,
             elementos: None,
             max_chaves: 0,
@@ -478,7 +482,13 @@ impl Candidato {
         let v = self.valores.get_mut(valor).expect("inserido acima");
         v.registros.ver(linha);
         for &k in chaves {
-            *v.chaves.entry(k.into()).or_default() += 1;
+            // Sem `entry`: a chave só vira `Box` na 1ª vez (as mesmas se repetem em todo registro).
+            match v.chaves.get_mut(k) {
+                Some(n) => *n += 1,
+                None => {
+                    v.chaves.insert(k.into(), 1);
+                }
+            }
         }
     }
 
