@@ -448,7 +448,7 @@ As regras continuam separadas (alargado × estreitado × trocado, virou obrigat�
 
 Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB do gerador (`gerar … 1024 1`: 1.073.741.850 bytes, 6.456.439 linhas), com o arquivo já no cache de páginas.
 
-**Máquina:** MacBook com Apple M5 Pro, 18 núcleos, 48 GB, macOS 27.2.1. É mais forte que a de referência do plano (8 núcleos), então estes números não valem para ela. **Versão:** `aeb17f3` (main) + esta fatia (bench, script e docs; nenhuma mudança em `core/src` nem `cli/src`), Rust 1.99.1. **Comando:** `scripts/medir.sh` (mediana de 5 rodadas; memória é o maior *peak memory footprint* do `/usr/bin/time -l`, que não conta as páginas limpas do `mmap`). **Carga:** load average de 25 (1 min) antes de medir, com outras sessões ativas na mesma máquina.
+**Máquina:** MacBook com Apple M5 Pro, 18 núcleos, 48 GB, macOS 27.2.1. É mais forte que a de referência do plano (8 núcleos), então estes números não valem para ela. **Versão:** `6d39da9` (main) + esta fatia (bench, script e docs; nenhuma mudança em `core/src` nem `cli/src`), Rust 1.99.1. **Comando:** `scripts/medir.sh` (mediana de 5 rodadas; memória é o maior *peak memory footprint* do `/usr/bin/time -l`, que não conta as páginas limpas do `mmap`). **Carga:** load average de 25 (1 min) antes de medir, com outras sessões ativas na mesma máquina.
 
 | Medida | Meta | Medido | Pico alocado | RSS máximo (com `mmap`) |
 |---|---|---|---|---|
@@ -461,7 +461,7 @@ Metas da seção 3 do `plano.md`, medidas pelo CLI de release num JSONL de 1 GB 
 
 **Memória além do `mmap`:** a meta de < 300 MB passou com folga em todas as linhas (no máximo 65 MB). O script confere cada linha e sai com erro se alguma meta não passar.
 
-**Primeira tela no limite:** em 23/11, sobre `cf7cc7f` e com load average entre 187 e 211, deu 0,28 s numa rodada e 0,34 s em outra, e esta última não passou. O motivo é estrutural: `ArquivoLinhas::abrir_com` constrói o índice de linhas inteiro antes da primeira janela, e o app abre pelo mesmo caminho. Assim, a primeira tela custa o índice de 1 GB (0,23 a 0,29 s) mais a janela, e a folga até 300 ms some com carga na máquina. A correção seria mostrar a primeira janela antes do índice completo (índice parcial ou progressivo); não foi feita nesta fatia. A medida é do processo CLI, sem a renderização do webview: no app, o número real é maior.
+**Primeira tela no limite:** em 23/11, sobre `547b303` e com load average entre 187 e 211, deu 0,28 s numa rodada e 0,34 s em outra, e esta última não passou. O motivo é estrutural: `ArquivoLinhas::abrir_com` constrói o índice de linhas inteiro antes da primeira janela, e o app abre pelo mesmo caminho. Assim, a primeira tela custa o índice de 1 GB (0,23 a 0,29 s) mais a janela, e a folga até 300 ms some com carga na máquina. A correção seria mostrar a primeira janela antes do índice completo (índice parcial ou progressivo); não foi feita nesta fatia. A medida é do processo CLI, sem a renderização do webview: no app, o número real é maior.
 
 **Não medidos aqui:** estrutura parcial em < 500 ms, primeiro resultado da busca em < 200 ms (o bench `busca` mede, mas não entrou na tabela), rolagem e expandir em 60 fps (bench `arvore`, em 64 MB) e o teto de 10 GB.
 

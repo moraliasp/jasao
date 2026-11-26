@@ -1,6 +1,6 @@
 # Revisão: código morto e duplicação
 
-Base: `main` em `f5fa2e0`. Linhas citadas são as dessa base. Ferramentas: `rg`, `cargo machete`
+Base: `main` em `e8e44dc`. Linhas citadas são as dessa base. Ferramentas: `rg`, `cargo machete`
 (já instalado), `tsc` (`noUnusedLocals`) e compilação. `cargo udeps` não está instalado e não foi
 instalado.
 

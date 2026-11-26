@@ -15,15 +15,15 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# Runner auto-hospedado enquanto o repositório é privado (cota do Actions zerada).
-# Sem rust-cache: ele limpa ~/.cargo/bin, o que estragaria a máquina do runner.
-# Antes de tornar o repositório público, voltar para runners do GitHub.
+# Runners do GitHub em macOS (ARM64), a plataforma principal do app.
+# Runner auto-hospedado num repositório público deixaria PR de fork rodar código na máquina.
 
 jobs:
   rust:
-    runs-on: [self-hosted, jasao-local]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # rust-toolchain.toml fixa a versão; o rustup do runner instala sozinho.
       # O app embute app/dist; o clippy do workspace precisa dele existir.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -48,9 +48,10 @@ jobs:
         run: cargo bench -p nucleo --no-run
 
   app:
-    runs-on: [self-hosted, jasao-local]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: app/package.json
@@ -66,7 +67,7 @@ jobs:
         working-directory: app
 
   fuzz:
-    runs-on: [self-hosted, jasao-local]
+    runs-on: macos-latest
     env:
       # Versões fixas: nightly por data e cargo-fuzz exato (atualizar os dois juntos, aqui e em
       # scripts/gates.sh). Orçamento: ~300 s de fuzz no total, repartidos entre os alvos.
@@ -74,6 +75,9 @@ jobs:
       FUZZ_SEG: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: core/fuzz
       - run: rustup toolchain install "$NIGHTLY" --profile minimal
       - run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz curto do índice de linhas

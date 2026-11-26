@@ -1,6 +1,6 @@
 # Radar: Jasão × top 5
 
-Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 80e4967 (PRs #6 a #61 mergeados, com duas exceções: #14 fechado sem merge e #36 é issue). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
+Placar vivo do Jasão contra o mercado. Atualizado em 24/11/2026, com `main` em 47dc9ee (PRs #6 a #61 mergeados, com duas exceções: #14 fechado sem merge e #36 é issue). A fonte de cada concorrente está em [concorrencia.md](concorrencia.md).
 
 **Premissa: o Jasão é gratuito.** A barra a bater são os pagos (Dadroit, OK JSON Pro), e o adversário de preço são os grátis (JSON Hero, quicktype, Compass). Nenhum deles entrega o pacote completo: gratuito, desktop, arquivo de 10 GB, estrutura, diff e export.
 
@@ -111,7 +111,7 @@ O top 5 fica como está: ele mede o visualizador desktop de JSON, e nenhum dos d
 
 ## Esquecemos algo?
 
-Conferido contra `docs/plano.md`, `docs/decisoes.md`, `docs/concorrencia.md` e o código na `main` (80e4967).
+Conferido contra `docs/plano.md`, `docs/decisoes.md`, `docs/concorrencia.md` e o código na `main` (47dc9ee).
 
 | Expectativa | Quem cria | Situação no Jasão |
 |---|---|---|
@@ -176,5 +176,5 @@ Fora de propósito, registrados para não voltar: plugins, compartilhar por link
 - 24/11/2026 (noite): mergeado #40 (valores inteligentes na árvore e no painel do valor, tudo local: o link só abre com clique e o JWT nunca é conferido nem enviado). Valores inteligentes passa a ✅ e empata com as prévias do JSON Hero. Recontagem eixo a eixo: 25 de 26 pontos, e o único ponto aberto é o diff estrutural sem interface; as somas de 22/11 (20) e 24/11 (25) foram corrigidas para 18 e 23 nesta recontagem.
 - 24/11/2026 (tarde): mergeados #44 (seguir arquivo vivo, como `tail -f`), #45 (tipos TypeScript e `jasao validar` contra estrutura salva ou JSON Schema de fora, com `$ref` só local e custo limitado) e #46 (MessagePack, CBOR, BSON, YAML e TOML como entrada). O export fica mais largo, mas o placar não muda: 25 de 26. Arquivo vivo e formatos ficam fora do placar até haver fonte do que os concorrentes fazem.
 - 24/11/2026 (fim do dia): mergeados #42 (interface do diff estrutural e diff de valores), #43 (avisos, estatísticas por campo e registros que fogem), #47 (jq ao vivo, filtros salvos, exportar JSONL/CSV) e #49 (filtrar a Tabela por variante ou caminho). Diff passa a ✅ e o Jasão fecha 26 de 26 pontos; o eixo do diff segue sem nenhum concorrente. Gap 1 continua o benchmark público contra o Dadroit. Em PR: máscara de segredos (#50), linha do tempo de pasta (#51) e laudo ao abrir (#52).
-- 24/11/2026 (rodada ampliada): mergeados #52 (laudo ao abrir, no painel e em `jasao laudo`, 7b9b6c7), #50 (máscara de segredos e anonimização, 1aa6fee) e o radar anterior #48 (7d00a59). Placar declarado eixo a eixo (13 eixos, 0 a 2) para ser recontável; segue 26 de 26. Diff passa a dizer só "estrutural" no diferencial: diff de valores já existe em jd, jsondiffpatch e Graphtage. Varredura fora do top 5 (19 ferramentas, só páginas oficiais): o que mais falta é abrir de stdin e URL, notarização do Mac e filtrar clicando na contagem por campo. Preço do OK JSON corrigido para US$ 24,99 único; o do Dadroit fica não confirmado.
+- 24/11/2026 (rodada ampliada): mergeados #52 (laudo ao abrir, no painel e em `jasao laudo`, e5fc31c), #50 (máscara de segredos e anonimização, 04ae58b) e o radar anterior #48 (a9ab115). Placar declarado eixo a eixo (13 eixos, 0 a 2) para ser recontável; segue 26 de 26. Diff passa a dizer só "estrutural" no diferencial: diff de valores já existe em jd, jsondiffpatch e Graphtage. Varredura fora do top 5 (19 ferramentas, só páginas oficiais): o que mais falta é abrir de stdin e URL, notarização do Mac e filtrar clicando na contagem por campo. Preço do OK JSON corrigido para US$ 24,99 único; o do Dadroit fica não confirmado.
 - 24/11/2026 (noite, 2): mergeados #54 (salvar como), #55 (stdin), #56 e #61 (facetas clicáveis filtram a Tabela), #57 (abrir de URL e colar cURL, só por ação explícita), #58 (licença MIT), #60 (fuzz) e o README #59. Placar segue 26 de 26: nenhum dos 13 eixos muda. Fora do placar, saem da lista de "faz e o Jasão não" o abrir de URL/cURL (OK JSON) e a importação por URL com autenticação (Dadroit, via `-H`/`-u` do cURL). Das fatias sugeridas, 1, 3 e 4 estão feitas; a próxima de maior impacto é a notarização do Mac, que depende da conta Apple.
