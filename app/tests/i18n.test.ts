@@ -1,5 +1,6 @@
 // Tradução dos códigos de erro do Rust (roda com `node --test`, sem navegador).
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { contagemArquivo, erroDoRust, motivoDoRust, t } from "../src/i18n.ts";
 
@@ -62,4 +63,10 @@ test("motivos de schema: frase exata por código e idioma; desconhecido cai no t
     assert.equal(motivoDoRust(`jasao:schema_${c}`, en), e, c);
   }
   assert.equal(motivoDoRust("jasao:schema_novo|/a|x"), "jasao:schema_novo|/a|x");
+});
+
+test("motivos de schema: dourado compartilhado com o Rust (core/src/validar.rs)", async () => {
+  const { pt } = await import("../src/i18n.ts");
+  const casos: { codigo: string; pt: string }[] = JSON.parse(readFileSync(new URL("./dourados/motivos.json", import.meta.url), "utf8"));
+  for (const c of casos) assert.equal(motivoDoRust(c.codigo, pt), c.pt, c.codigo);
 });

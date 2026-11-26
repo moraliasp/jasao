@@ -820,9 +820,31 @@ mod testes {
 
     #[test]
     fn validar_motivo_tipo_sem_codigo_fica_mascarado() {
-        // `format` não é aplicado pelo validador (só anotação): o braço `Format` é defensivo.
         let m = motivo_de(r#"{"minItems":3}"#, r#"["SEGREDO"]"#);
         assert!(!m.starts_with("jasao:") && !m.contains("SEGREDO"), "{m}");
+    }
+
+    #[test]
+    fn validar_motivo_formato_com_schema_declarado() {
+        // `format` só é aplicado quando o schema declara `$schema` (draft 4/6/7); sem ele é anotação.
+        let s = r#"{"$schema":"http://json-schema.org/draft-07/schema#","format":"email"}"#;
+        assert_eq!(motivo_de(s, r#""SEGREDO""#), "jasao:schema_formato||email");
+        let sem = compilar(r#"{"format":"email"}"#).unwrap();
+        assert!(sem.is_valid(&serde_json::json!("SEGREDO")));
+    }
+
+    #[test]
+    fn validar_motivo_legivel_dourado_compartilhado_com_a_interface() {
+        // O mesmo arquivo é conferido em `app/tests/i18n.test.ts` contra `motivoDoRust`.
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../app/tests/dourados/motivos.json");
+        let casos: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        assert!(casos.len() >= 13);
+        for c in casos {
+            let (cod, pt) = (c["codigo"].as_str().unwrap(), c["pt"].as_str().unwrap());
+            assert_eq!(motivo_legivel(cod), pt, "{cod}");
+        }
     }
 
     #[test]
