@@ -1,0 +1,20 @@
+[
+  { "codigo": "jasao:schema_tipo||string", "pt": "deve ser do tipo texto" },
+  { "codigo": "jasao:schema_tipo||null,integer", "pt": "deve ser do tipo nulo ou inteiro" },
+  { "codigo": "jasao:schema_tipo|/a/0|integer", "pt": "/a/0: deve ser do tipo inteiro" },
+  { "codigo": "jasao:schema_obrigatoria||nome", "pt": "falta a propriedade obrigatória \"nome\"" },
+  { "codigo": "jasao:schema_enum||[\"x\",\"y\"]", "pt": "deve ser um destes valores: [\"x\",\"y\"]" },
+  { "codigo": "jasao:schema_const||\"x\"", "pt": "deve ser exatamente \"x\"" },
+  { "codigo": "jasao:schema_minimo||5", "pt": "deve ser maior ou igual a 5" },
+  { "codigo": "jasao:schema_maximo||5", "pt": "deve ser menor ou igual a 5" },
+  { "codigo": "jasao:schema_minimo_exclusivo||5", "pt": "deve ser maior que 5" },
+  { "codigo": "jasao:schema_maximo_exclusivo||5", "pt": "deve ser menor que 5" },
+  { "codigo": "jasao:schema_tamanho_minimo||9", "pt": "deve ter no mínimo 9 caracteres" },
+  { "codigo": "jasao:schema_tamanho_maximo||2", "pt": "deve ter no máximo 2 caracteres" },
+  { "codigo": "jasao:schema_pattern||^a%7Cb$", "pt": "não bate com o padrão ^a|b$" },
+  { "codigo": "jasao:schema_pattern||a%257C", "pt": "não bate com o padrão a%7C" },
+  { "codigo": "jasao:schema_formato||email", "pt": "não está no formato \"email\"" },
+  { "codigo": "jasao:schema_propriedade_extra||x", "pt": "propriedade não permitida: x" },
+  { "codigo": "jasao:schema_tipo|/a%257C|string", "pt": "/a%7C: deve ser do tipo texto" },
+  { "codigo": "jasao:schema_tipo|/a%7C%25|string", "pt": "/a|%: deve ser do tipo texto" }
+]
