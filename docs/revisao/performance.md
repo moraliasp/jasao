@@ -15,7 +15,7 @@ frentes de revisão; aqui só aparecem anotados.
   rodada**: `base` → `A` → `B` → `C` → `base` … Assim a carga de um momento cai sobre todas as
   versões, e a mediana é por versão. As tabelas dos achados usam essa medição.
   Binários:
-  - `base` = f5fa2e0;
+  - `base` = e8e44dc;
   - `A` = só o achado 1;
   - `B` = A + foldhash na estrutura;
   - `C` = head do PR (A + achados 2 e 3 completos).
@@ -30,7 +30,7 @@ frentes de revisão; aqui só aparecem anotados.
 
   `scripts/medir.sh` dá a tabela de metas de uma versão só.
 
-## Linha de base (f5fa2e0, `scripts/medir.sh`, carga 7,9)
+## Linha de base (e8e44dc, `scripts/medir.sh`, carga 7,9)
 
 | Medida | Mediana | Meta |
 |---|---|---|
