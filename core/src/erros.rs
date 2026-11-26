@@ -483,25 +483,47 @@ mod testes {
         }
     }
 
+    /// Duas linhas com `n` níveis: só `[` (vazio no fundo), e `{"a":` e `[` alternados
+    /// (valor no fundo).
+    fn linhas_com_niveis(n: usize) -> [String; 2] {
+        let listas = format!("{}{}", "[".repeat(n), "]".repeat(n));
+        let mut misto = String::new();
+        for k in 0..n {
+            misto.push_str(if k % 2 == 0 { "{\"a\":" } else { "[" });
+        }
+        misto.push('1');
+        for k in (0..n).rev() {
+            misto.push(if k % 2 == 0 { '}' } else { ']' });
+        }
+        [listas, misto]
+    }
+
     #[test]
     fn corta_no_mesmo_nivel_da_inferencia() {
         let max = crate::estrutura::PROFUNDIDADE_MAX;
         for n in [max - 1, max, max + 1, max + 50, 200_000] {
-            // Só `[` (vazio no fundo), e `{"a":` e `[` alternados (valor no fundo).
-            let listas = format!("{}{}", "[".repeat(n), "]".repeat(n));
-            let mut misto = String::new();
-            for k in 0..n {
-                misto.push_str(if k % 2 == 0 { "{\"a\":" } else { "[" });
-            }
-            misto.push('1');
-            for k in (0..n).rev() {
-                misto.push(if k % 2 == 0 { '}' } else { ']' });
-            }
-            for l in [listas, misto] {
+            for l in linhas_com_niveis(n) {
                 let corte = crate::arvore::passa_da_profundidade(l.as_bytes(), max);
                 match v(&l) {
                     Err((c, Aninhamento)) => assert_eq!(Some(c), corte, "{n} níveis"),
                     r => assert!(r == Ok(true) && corte.is_none(), "{n} níveis: {r:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalida_na_inferencia_sse_aninhamento_em_erros() {
+        let max = crate::estrutura::PROFUNDIDADE_MAX;
+        for n in [max - 1, max, max + 1] {
+            for l in linhas_com_niveis(n) {
+                let invalidas = crate::estrutura::resumir_linhas(l.as_bytes(), 1)
+                    .invalidas
+                    .n;
+                match v(&l) {
+                    Err((_, Aninhamento)) => assert_eq!(invalidas, 1, "{n} níveis"),
+                    Ok(true) => assert_eq!(invalidas, 0, "{n} níveis"),
+                    r => panic!("{n} níveis: {r:?}"),
                 }
             }
         }
